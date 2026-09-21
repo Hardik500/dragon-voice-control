@@ -13,7 +13,6 @@ export type TurnHandler = (turn: TranscriptEvent) => void;
 export class DeepgramFluxConnection {
   private ws: WebSocket | null = null;
   private turnIndexToUtterance = new Map<number, string>();
-  private currentUtteranceId: string | null = null;
   private opened = false;
 
   constructor(

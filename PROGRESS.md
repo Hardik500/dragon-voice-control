@@ -150,11 +150,29 @@ What could **not** be verified in this environment, and exactly what to do about
   `setActivationMode` and the Settings-window `onSettingsChanged` path now set `listening =
   true` whenever the new mode isn't `push_to_talk`. Push-to-talk is unaffected; it still
   requires the explicit hotkey/tray toggle.
+- **Transcript shown, nothing executed (2026-09-21, second pass).** A real macOS run with the
+  above fix applied showed STT/overlay working but almost no commands actually firing. Root
+  causes and fixes, all in this pass (see `DECISIONS.md` for full detail): wake-word mode gave
+  no feedback when the wake phrase wasn't heard; the always-listening `addressed` question was
+  worded to require literally naming the assistant, defeating the point of that mode; the
+  `stopStreaming` wrapper silently dropped its arguments so the new push-to-talk graceful-stop
+  option could never reach the pipeline; the Settings window's Save button always resent
+  `activationMode`, so *every* save stopped an active session; the tray menu never refreshed
+  after hotkey/emergency-stop/Settings-driven changes; there was no reconnect after an
+  unexpected Deepgram disconnect; browser-page snapshot fetching was gated on a sometimes-flaky
+  frontmost-app read instead of the extension bridge's own connection state; media commands'
+  "is it running" check went through System Events (needs Accessibility) instead of plain
+  `pgrep`; and `APP_ALIASES` was missing common apps like Cursor, iTerm, Docker, Discord,
+  Notion, Figma, and the Office suite. Also added a `chrome.alarms` keepalive to the extension's
+  background worker (MV3 workers can be evicted after ~30s idle).
 
 ## Exact next task
 
 Hand off to a macOS machine and work through the "Manual alpha check" section of `README.md`
-top to bottom, fixing anything that the AppleScript-by-inspection review got wrong (most likely
-spot: window-control keystrokes and volume AppleScript syntax, since those are the least
-commonly hand-written snippets). Then remove this paragraph and mark milestone 5 as fully
-verified in this file.
+top to bottom. Priorities given the two bug-fix rounds above: (1) confirm push-to-talk actually
+delivers the final utterance after release (the `ForceEndTurn` graceful-stop fix), (2) confirm
+always-listening now accepts plain commands like "open chrome" without saying "Dragon" first,
+(3) confirm the tray checkbox/radio state stays in sync with hotkey/Settings-driven changes,
+(4) otherwise fix anything the AppleScript-by-inspection review got wrong (most likely spot:
+window-control keystrokes and volume AppleScript syntax). Then remove this paragraph and mark
+milestone 5 as fully verified in this file.

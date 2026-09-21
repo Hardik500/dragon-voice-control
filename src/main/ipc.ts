@@ -1,5 +1,5 @@
 import { ipcMain, shell, BrowserWindow } from "electron";
-import { DragonSettings, toRendererSafe } from "../types/settings";
+import { ActivationMode, DragonSettings, toRendererSafe } from "../types/settings";
 import { SettingsStore } from "./settings-store";
 import { DragonPipeline } from "./pipeline";
 import { logger } from "../logging/logger";
@@ -7,7 +7,9 @@ import { logger } from "../logging/logger";
 export interface IpcDeps {
   settingsStore: SettingsStore;
   pipeline: DragonPipeline;
-  onSettingsChanged: (settings: DragonSettings, partial: Partial<DragonSettings>) => void;
+  /** `changedMode` is only set when the activation mode actually changed, not merely
+   * present in the update payload (the Settings window always submits every field). */
+  onSettingsChanged: (settings: DragonSettings, changedMode?: ActivationMode) => void;
   getStatus: () => Record<string, unknown>;
 }
 
@@ -15,9 +17,11 @@ export function registerIpc(deps: IpcDeps) {
   ipcMain.handle("settings:get", () => toRendererSafe(deps.settingsStore.get()));
 
   ipcMain.handle("settings:update", (_e, partial: Partial<DragonSettings>) => {
+    const previous = deps.settingsStore.get();
     const updated = deps.settingsStore.update(partial);
     logger.event("settings.updated", { fields: Object.keys(partial) });
-    deps.onSettingsChanged(updated, partial);
+    const modeChanged = partial.activationMode != null && partial.activationMode !== previous.activationMode;
+    deps.onSettingsChanged(updated, modeChanged ? partial.activationMode : undefined);
     return toRendererSafe(updated);
   });
 

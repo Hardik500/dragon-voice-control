@@ -125,11 +125,11 @@ export async function volumeUnmute(): Promise<void> {
 }
 
 async function isAppRunning(appName: string): Promise<boolean> {
+  // Plain `pgrep`, not System Events, so this works even before the user has
+  // granted Accessibility permission (which media commands otherwise don't need at all).
   try {
-    const { stdout } = await osascript(
-      `tell application "System Events" to (name of processes) contains "${escapeAS(appName)}"`
-    );
-    return stdout.trim() === "true";
+    await run("pgrep", ["-x", appName]);
+    return true;
   } catch {
     return false;
   }

@@ -114,7 +114,7 @@ export function buildQuestions(opts: {
     questions.addressed = {
       type: "noul",
       instructions:
-        'The speech is a direct command addressed to a voice assistant named "Dragon", not incidental background conversation or speech directed at another person.',
+        "The speaker wants a computer/voice assistant to actually perform this right now (open something, click/type/scroll, adjust volume, control media, etc.), as opposed to talking to another person, narrating/thinking aloud, or reading something unrelated out loud. The speaker does not need to say a wake word or name an assistant for this to be true — a plain instruction like 'open chrome' or 'turn the volume up' on its own counts as wanting the assistant to act.",
     };
   }
 

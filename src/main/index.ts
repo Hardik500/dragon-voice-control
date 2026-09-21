@@ -19,6 +19,7 @@ let settingsWindow: BrowserWindow;
 let overlayWindow: BrowserWindow;
 let micWindow: BrowserWindow;
 let tray: Tray;
+let refreshTray: () => void = () => {};
 let listening = false;
 
 function currentStatus() {
@@ -35,37 +36,47 @@ function pushStatus() {
   broadcastStatus([settingsWindow], currentStatus());
 }
 
-function applyListeningState() {
-  const settings = settingsStore.get();
+function applyListeningState(opts: { gracefulStop?: boolean } = {}) {
   if (!listening) {
-    pipeline.stopStreaming();
+    // Push-to-talk release: give Deepgram a moment to flush the final EndOfTurn
+    // for whatever was just said instead of yanking the connection (see
+    // DragonPipeline.stopStreaming).
+    pipeline.stopStreaming({ graceful: opts.gracefulStop ?? false });
     pushStatus();
     return;
   }
-  if (settings.activationMode === "push_to_talk") {
-    // Push-to-talk starts/stops explicitly via the hotkey/tray toggle itself;
-    // nothing to auto-start here.
-  } else {
-    pipeline.startStreaming();
-  }
+  // Push-to-talk (start on toggle-on) and the two continuous modes all start
+  // streaming the same way; only how `listening` gets flipped differs.
+  pipeline.startStreaming();
   pushStatus();
 }
 
 function toggleListening() {
   listening = !listening;
   logger.event("app.listening_toggled", { listening });
+  const graceful = !listening && settingsStore.get().activationMode === "push_to_talk";
+  applyListeningState({ gracefulStop: graceful });
+  refreshTray();
+}
+
+/**
+ * Shared by the tray's mode picker and the Settings-window save path so both
+ * behave identically: always stop whatever session was running under the old
+ * mode (its turn-handling logic no longer applies once the mode changes),
+ * then auto-start listening again for the two continuous modes. Push-to-talk
+ * still requires the explicit hotkey/tray toggle to start.
+ */
+function applyModeChange(mode: ActivationMode) {
+  logger.event("app.activation_mode_changed", { mode });
+  pipeline.stopStreaming();
+  listening = mode !== "push_to_talk";
   applyListeningState();
+  refreshTray();
 }
 
 function setActivationMode(mode: ActivationMode) {
   settingsStore.update({ activationMode: mode });
-  logger.event("app.activation_mode_changed", { mode });
-  // Switching modes stops any in-progress continuous/ptt session cleanly.
-  pipeline.stopStreaming();
-  // Wake word / always listening imply the user wants listening on now;
-  // push-to-talk still requires the explicit hotkey/tray toggle.
-  if (mode !== "push_to_talk") listening = true;
-  applyListeningState();
+  applyModeChange(mode);
 }
 
 function toggleOverlay() {
@@ -74,6 +85,7 @@ function toggleOverlay() {
   settingsStore.update({ overlayVisible: next });
   if (next) overlayWindow.showInactive();
   else overlayWindow.hide();
+  refreshTray();
 }
 
 async function requestMicPermission() {
@@ -122,16 +134,14 @@ app.whenReady().then(async () => {
   registerIpc({
     settingsStore,
     pipeline,
-    onSettingsChanged: (settings, partial) => {
+    onSettingsChanged: (settings, changedMode) => {
       logger.setVerbosity(settings.logVerbosity);
       registerAppShortcuts();
-      // Settings window can also change activation mode; keep behavior in
-      // sync with the tray's setActivationMode (auto-start wake/always modes).
-      if (partial.activationMode && partial.activationMode !== "push_to_talk") {
-        listening = true;
-        applyListeningState();
+      if (changedMode) {
+        applyModeChange(changedMode);
       } else {
         pushStatus();
+        refreshTray(); // e.g. wake phrase changed, which the tray label shows.
       }
     },
     getStatus: () => currentStatus(),
@@ -141,15 +151,15 @@ app.whenReady().then(async () => {
   const originalStart = pipeline.startStreaming.bind(pipeline);
   pipeline.startStreaming = async () => {
     await originalStart();
-    micWindow.webContents.send("mic:start");
+    if (!micWindow.isDestroyed()) micWindow.webContents.send("mic:start");
   };
   const originalStop = pipeline.stopStreaming.bind(pipeline);
-  pipeline.stopStreaming = () => {
-    originalStop();
-    micWindow.webContents.send("mic:stop");
+  pipeline.stopStreaming = (opts) => {
+    originalStop(opts);
+    if (!micWindow.isDestroyed()) micWindow.webContents.send("mic:stop");
   };
 
-  tray = createTray({
+  const trayHandle = createTray({
     getSettings: () => settingsStore.get(),
     isListening: () => listening,
     toggleListening: () => {
@@ -169,6 +179,8 @@ app.whenReady().then(async () => {
       app.quit();
     },
   });
+  tray = trayHandle.tray;
+  refreshTray = trayHandle.refresh;
 
   function registerAppShortcuts() {
     const settings = settingsStore.get();
@@ -177,13 +189,13 @@ app.whenReady().then(async () => {
       emergencyStopAccelerator: settings.emergencyStopShortcut,
       onPushToTalk: () => {
         if (settingsStore.get().activationMode !== "push_to_talk") return;
-        listening = !listening;
-        applyListeningState();
+        toggleListening();
       },
       onEmergencyStop: () => {
         listening = false;
         pipeline.emergencyStop();
         pushStatus();
+        refreshTray();
       },
     });
   }

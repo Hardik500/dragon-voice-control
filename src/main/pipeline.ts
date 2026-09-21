@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
@@ -8,7 +7,7 @@ import { buildQuestions, buildState, buildTargetCandidates } from "../decision/q
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
-import { HistoryEntry, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
+import { HistoryEntry, JevAnswerSummary, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
 import { HistoryStore } from "./history-store";
 
@@ -32,7 +31,17 @@ export class DragonPipeline {
   private ignoredLoggedUtterances = new Set<string>();
   private utteranceCounter = 0;
   private micStreaming = false;
+  /** Set right before an intentional close so the connection's `onClose` handler knows not
+   * to auto-reconnect (see startStreaming's onClose callback). */
+  private intentionalClose = false;
+  /** Bumped on every startStreaming() call so a stale connection's delayed close (e.g. from
+   * a graceful push-to-talk stop) can't trigger a reconnect after a newer one has already
+   * taken over. */
+  private streamGeneration = 0;
   private history = new HistoryStore();
+  /** Avoids asking Jev the exact same question twice for one utterance (e.g. EagerEndOfTurn
+   * then EndOfTurn arriving with identical transcript text). Keyed by `${utteranceId}::${text}`. */
+  private jevAnswerCache = new Map<string, JevAnswerSummary>();
 
   constructor(
     private getSettings: () => DragonSettings,
@@ -62,6 +71,9 @@ export class DragonPipeline {
       this.onOverlay(this.baseOverlay("error", "Deepgram API key is not set"));
       return;
     }
+    this.intentionalClose = false;
+    this.streamGeneration += 1;
+    const myGeneration = this.streamGeneration;
     this.deepgram = new DeepgramFluxConnection(
       settings.deepgramApiKey,
       (turn) => this.onTurn(turn),
@@ -70,7 +82,21 @@ export class DragonPipeline {
         this.onOverlay(this.baseOverlay("error", err.message));
       },
       () => {
+        const wasIntentional = this.intentionalClose;
+        const isStaleGeneration = myGeneration !== this.streamGeneration;
         this.micStreaming = false;
+        this.deepgram = null;
+        // Reconnect automatically after an unexpected drop (network blip, idle
+        // timeout, etc.) so the mic (still capturing in the hidden renderer)
+        // doesn't end up silently talking to a dead socket while the tray/UI
+        // still reads as "listening". Skip if a newer connection has already
+        // taken over (e.g. a rapid push-to-talk toggle raced this close).
+        if (!wasIntentional && !isStaleGeneration) {
+          logger.event("stt.unexpected_close_reconnecting", {});
+          setTimeout(() => {
+            if (!this.micStreaming) this.startStreaming();
+          }, 1000);
+        }
       },
       () => this.newUtteranceId()
     );
@@ -84,10 +110,29 @@ export class DragonPipeline {
     }
   }
 
-  stopStreaming(): void {
-    this.deepgram?.close();
+  /**
+   * Stops streaming. When `graceful` is set (push-to-talk release), asks Flux to end the
+   * current turn immediately via `ForceEndTurn` and gives it a moment to flush the resulting
+   * `EndOfTurn` (and therefore the Jev decision for whatever was just said) before actually
+   * closing the socket, instead of yanking the connection and dropping the last utterance.
+   */
+  stopStreaming(opts: { graceful?: boolean } = {}): void {
+    if (!this.micStreaming) {
+      this.onOverlay(this.baseOverlay("idle", ""));
+      return;
+    }
+    this.intentionalClose = true;
+    const dg = this.deepgram;
     this.deepgram = null;
     this.micStreaming = false;
+    if (dg) {
+      if (opts.graceful) {
+        dg.forceEndTurn();
+        setTimeout(() => dg.close(), 1500);
+      } else {
+        dg.close();
+      }
+    }
     this.onOverlay(this.baseOverlay("idle", ""));
   }
 
@@ -154,7 +199,19 @@ export class DragonPipeline {
     if (settings.activationMode === "wake_word") {
       const stripped = this.stripWakeWord(turn.transcript, settings.wakePhrase);
       if (stripped == null || stripped.length === 0) {
-        return; // Wake phrase not present (yet); ignore this turn.
+        // Wake phrase not present (yet). Surface this in the overlay instead of going
+        // silent, so it doesn't look like the app simply ignored what was said.
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "idle",
+          transcript: turn.transcript,
+          isFinal: turn.isFinal,
+          action: null,
+          status: `Say "${settings.wakePhrase}" first to give a command`,
+          latencyMs: null,
+          activationMode: settings.activationMode,
+        });
+        return;
       }
       effectiveText = stripped;
     }
@@ -171,6 +228,13 @@ export class DragonPipeline {
       }
       return true;
     });
+  }
+
+  private pruneCacheForUtterance(utteranceId: string) {
+    const prefix = `${utteranceId}::`;
+    for (const key of this.jevAnswerCache.keys()) {
+      if (key.startsWith(prefix)) this.jevAnswerCache.delete(key);
+    }
   }
 
   private registerInFlight(utteranceId: string): AbortController {
@@ -207,7 +271,11 @@ export class DragonPipeline {
     try {
       const activeApp = await macos.getActiveAppName();
       const isChromeActive = activeApp === "Google Chrome";
-      const browserPage = isChromeActive ? await this.browserBridge.requestSnapshot() : null;
+      // Fetch the page snapshot whenever the extension is connected, not only when our
+      // own (sometimes-unreliable) frontmost-app detection says "Google Chrome" — the
+      // user may be looking at Chrome while a different app briefly reports as frontmost,
+      // and this call is a cheap local WebSocket round trip either way.
+      const browserPage = this.browserBridge.isConnected() ? await this.browserBridge.requestSnapshot() : null;
       const payload = extractPayload(effectiveText, browserPage);
       const targetCandidates = buildTargetCandidates(payload);
       const questions = buildQuestions({
@@ -216,20 +284,37 @@ export class DragonPipeline {
       });
       const state = buildState({ transcript: effectiveText, activeApp, browserPage });
 
-      logger.event("pipeline.decision_request", {
-        utteranceId: turn.utteranceId,
-        turnEvent: turn.event,
-        activeApp,
-        effectiveText,
-        appCandidates: payload.appCandidates.map((c) => c.appName),
-        elementCandidates: payload.browserElementCandidates.length,
-      });
+      const cacheKey = `${turn.utteranceId}::${effectiveText}::${settings.activationMode}`;
+      const cached = this.jevAnswerCache.get(cacheKey);
+      let summary: JevAnswerSummary;
+      let decisionMs: number;
 
-      const result = await callJev(settings.openRouterApiKey, state, questions, controller.signal);
-      this.unregisterInFlight(controller);
+      if (cached) {
+        // Same utterance, same text, same mode as an already-answered request (typically
+        // EagerEndOfTurn immediately followed by an EndOfTurn with no new words) — reuse the
+        // answer instead of spending another Jev call on an identical question.
+        this.unregisterInFlight(controller);
+        logger.event("pipeline.decision_cache_hit", { utteranceId: turn.utteranceId, turnEvent: turn.event });
+        summary = cached;
+        decisionMs = Date.now() - startedAt;
+      } else {
+        logger.event("pipeline.decision_request", {
+          utteranceId: turn.utteranceId,
+          turnEvent: turn.event,
+          activeApp,
+          effectiveText,
+          appCandidates: payload.appCandidates.map((c) => c.appName),
+          elementCandidates: payload.browserElementCandidates.length,
+        });
 
-      const summary = summarizeAnswers(result.answers);
-      const decisionMs = Date.now() - startedAt;
+        const result = await callJev(settings.openRouterApiKey, state, questions, controller.signal);
+        this.unregisterInFlight(controller);
+
+        summary = summarizeAnswers(result.answers);
+        decisionMs = Date.now() - startedAt;
+        this.jevAnswerCache.set(cacheKey, summary);
+      }
+      if (turn.isFinal) this.pruneCacheForUtterance(turn.utteranceId);
 
       if (settings.activationMode === "always_listening") {
         if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
@@ -290,7 +375,7 @@ export class DragonPipeline {
       const execStarted = Date.now();
       let execError: string | null = null;
       try {
-        await this.executeCommand(resolved, isChromeActive);
+        await this.executeCommand(resolved);
       } catch (err) {
         execError = err instanceof Error ? err.message : String(err);
       }
@@ -367,7 +452,7 @@ export class DragonPipeline {
     });
   }
 
-  private async executeCommand(cmd: ResolvedCommand, isChromeActive: boolean): Promise<void> {
+  private async executeCommand(cmd: ResolvedCommand): Promise<void> {
     switch (cmd.kind) {
       case "open_app":
         return macos.openApp(cmd.appName!);

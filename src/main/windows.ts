@@ -40,12 +40,16 @@ export function createOverlayWindow(): BrowserWindow {
     skipTaskbar: true,
     show: false,
     hasShadow: false,
+    focusable: false,
     webPreferences: {
       preload: path.join(PRELOAD_DIR, "overlay-preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  // Purely informational: never take focus (which would corrupt
+  // getActiveAppName()'s frontmost-app read) and let clicks pass through.
+  win.setIgnoreMouseEvents(true);
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.loadFile(path.join(RENDERER_DIR, "overlay.html"));
   return win;

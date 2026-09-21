@@ -154,3 +154,15 @@ connect();
 // Manifest V3 service workers go idle; wake on demand and keep retrying the
 // bridge connection so the desktop app can always reach a live connection.
 chrome.runtime.onStartup?.addListener(connect);
+
+// MV3 service workers are evicted after ~30s idle even with an open
+// WebSocket in some Chrome versions. `chrome.alarms` is the standard
+// keepalive: each firing wakes this worker (if it was terminated) and
+// reconnects if the socket isn't open. 0.5 minutes is Chrome's enforced
+// floor for alarm periods.
+chrome.alarms.create("dragon-keepalive", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "dragon-keepalive" && (!socket || socket.readyState !== WebSocket.OPEN)) {
+    connect();
+  }
+});

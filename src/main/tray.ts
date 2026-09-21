@@ -14,7 +14,16 @@ export interface TrayCallbacks {
   quit: () => void;
 }
 
-export function createTray(cb: TrayCallbacks): Tray {
+export interface TrayHandle {
+  tray: Tray;
+  /** Rebuilds the menu template from current state. `Menu.buildFromTemplate` bakes in
+   * label/checked values at build time — Electron does not re-evaluate them on open — so
+   * this must be called whenever listening/mode/overlay state changes from *any* source
+   * (tray clicks, the push-to-talk/emergency-stop hotkeys, or the Settings window). */
+  refresh: () => void;
+}
+
+export function createTray(cb: TrayCallbacks): TrayHandle {
   const iconPath = path.join(__dirname, "..", "..", "assets", "tray-icon.png");
   const image = nativeImage.createFromPath(iconPath);
   image.setTemplateImage(true);
@@ -35,10 +44,7 @@ export function createTray(cb: TrayCallbacks): Tray {
         label: cb.isListening() ? "Listening: On" : "Listening: Off",
         type: "checkbox",
         checked: cb.isListening(),
-        click: () => {
-          cb.toggleListening();
-          rebuild();
-        },
+        click: () => cb.toggleListening(),
       },
       { type: "separator" },
       { label: "Activation Mode", enabled: false },
@@ -62,5 +68,5 @@ export function createTray(cb: TrayCallbacks): Tray {
   };
 
   rebuild();
-  return tray;
+  return { tray, refresh: rebuild };
 }
