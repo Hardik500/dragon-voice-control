@@ -24,3 +24,14 @@ mac:
   gatekeeperAssess: false
   extendInfo:
     NSMicrophoneUsageDescription: "Dragon needs the microphone to listen for voice commands."
+win:
+  target:
+    # Portable first, per DECISIONS.md/plan: a single unsigned .exe, no installer, no
+    # SmartScreen-reputation concerns beyond the one-time "Windows protected your PC" bypass.
+    - target: portable
+      arch:
+        - x64
+  icon: assets/app-icon.ico
+  # Personal, unsigned local alpha build: no code signing. Unsigned .exe triggers Windows
+  # SmartScreen on first run ("More info" -> "Run anyway"); see README.md.
+  signAndEditExecutable: false

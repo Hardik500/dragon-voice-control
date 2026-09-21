@@ -97,6 +97,36 @@ async function performAction(action) {
         else await chrome.tabs.create({ url });
         return { ok: true };
       }
+      case "focus_or_open": {
+        // "Open my existing tabs": reuse a tab that already matches this hostname instead of
+        // always creating a new one.
+        let targetHost;
+        try {
+          targetHost = new URL(action.url).hostname.replace(/^www\./, "");
+        } catch {
+          targetHost = null;
+        }
+        if (targetHost) {
+          const allTabs = await chrome.tabs.query({});
+          const existing = allTabs.find((t) => {
+            if (!t.url) return false;
+            try {
+              return new URL(t.url).hostname.replace(/^www\./, "") === targetHost;
+            } catch {
+              return false;
+            }
+          });
+          if (existing && existing.id != null) {
+            await chrome.tabs.update(existing.id, { active: true });
+            if (existing.windowId != null) await chrome.windows.update(existing.windowId, { focused: true });
+            return { ok: true };
+          }
+        }
+        const tab = await getActiveTab();
+        if (tab && tab.id) await chrome.tabs.update(tab.id, { url: action.url });
+        else await chrome.tabs.create({ url: action.url });
+        return { ok: true };
+      }
       case "back": {
         const tab = await getActiveTab();
         if (tab && tab.id) await chrome.tabs.goBack(tab.id);

@@ -32,6 +32,9 @@ export type ExtensionToServerMessage =
 export type BrowserAction =
   | { kind: "navigate"; url: string }
   | { kind: "search"; query: string }
+  /** Focuses a tab whose URL already matches (by hostname), instead of always opening a new
+   * one — how "open my existing tabs" avoids duplicate tabs for sites already open. */
+  | { kind: "focus_or_open"; url: string }
   | { kind: "click"; elementId: string }
   | { kind: "type"; elementId: string; text: string }
   | { kind: "select"; elementId: string; text?: string }

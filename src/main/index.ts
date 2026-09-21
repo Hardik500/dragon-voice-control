@@ -6,7 +6,7 @@ import { DragonPipeline } from "./pipeline";
 import { createMicWindow, createOverlayWindow, createSettingsWindow } from "./windows";
 import { createTray } from "./tray";
 import { registerIpc, broadcastStatus } from "./ipc";
-import { registerShortcuts } from "./shortcuts";
+import { registerShortcuts, ShortcutRegistrationStatus } from "./shortcuts";
 import { ActivationMode } from "../types/settings";
 import { OverlayUpdate } from "../types/pipeline";
 
@@ -21,6 +21,7 @@ let micWindow: BrowserWindow;
 let tray: Tray;
 let refreshTray: () => void = () => {};
 let listening = false;
+let shortcutStatus: ShortcutRegistrationStatus = { pushToTalkOk: true, emergencyStopOk: true };
 
 function currentStatus() {
   const settings = settingsStore.get();
@@ -29,6 +30,7 @@ function currentStatus() {
     streaming: pipeline.isStreaming(),
     activationMode: settings.activationMode,
     browserConnected: browserBridge.isConnected(),
+    shortcutStatus,
   };
 }
 
@@ -188,7 +190,7 @@ app.whenReady().then(async () => {
 
   function registerAppShortcuts() {
     const settings = settingsStore.get();
-    registerShortcuts({
+    shortcutStatus = registerShortcuts({
       pushToTalkAccelerator: settings.pushToTalkShortcut,
       emergencyStopAccelerator: settings.emergencyStopShortcut,
       onPushToTalk: () => {
@@ -202,6 +204,10 @@ app.whenReady().then(async () => {
         refreshTray();
       },
     });
+    if (!shortcutStatus.pushToTalkOk || !shortcutStatus.emergencyStopOk) {
+      logger.event("shortcuts.registration_failed", { ...shortcutStatus });
+    }
+    pushStatus();
   }
   registerAppShortcuts();
 

@@ -5,7 +5,7 @@
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
-    "clean": "rm -rf dist dist-renderer",
+    "clean": "node scripts/clean.js",
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "tsc -p tsconfig.renderer.json",
     "build": "npm run clean && npm run build:main && npm run build:renderer",
@@ -13,6 +13,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "package:mac": "npm run build && electron-builder --mac --arm64 --dir",
+    "package:win": "npm run build && electron-builder --win portable --x64",
     "icons": "node scripts/make-icons.js"
   },
   "author": "",

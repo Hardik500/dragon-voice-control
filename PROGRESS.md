@@ -2,195 +2,254 @@
 
 ## Current milestone
 
-**Milestone 5 (alpha cleanup) — implementation complete, pending macOS hardware verification.**
+**Milestone 8 (Windows packaging and documentation) — implementation complete for both
+platforms, pending real macOS *and* real Windows hardware verification.**
 
-All five milestones from the plan have working code. The full vertical slice builds and
-typechecks cleanly, and everything verifiable without macOS/live API keys has been smoke-tested.
+All eight milestones from the updated plan have working code: the shared macOS alpha
+(Milestones 1-5), the extracted `PlatformAutomation` boundary (Milestone 6), the Windows
+execution adapter (Milestone 7), and Windows packaging/docs (Milestone 8). The voice
+dictation/editing feature, site-aware search, tab reuse, and generic in-app search requested
+alongside Windows support are also implemented. Everything builds and typechecks cleanly on
+this Linux sandbox; everything verifiable without real macOS/Windows hardware or live API
+keys has been smoke-tested (see "Manual check results" below for exactly what that means).
 
 ## Completed capabilities
 
-- **Electron/TypeScript skeleton**: tray app, settings window, floating overlay window, hidden
-  mic-capture window, JSON settings persisted to `userData/settings.json`, JSONL logging from
-  process start (`src/logging/logger.ts`), global shortcuts for push-to-talk-toggle and
-  emergency stop.
-- **Microphone capture**: hidden renderer (`src/renderer/mic-capture.ts`) requests
-  `getUserMedia`, downsamples to 16 kHz mono Int16 PCM in-browser, streams frames to the main
-  process over IPC, which forwards them to Deepgram. Media permission auto-granted for the
-  app's own windows via `session.setPermissionRequestHandler`. `systemPreferences.
-  askForMediaAccess("microphone")` is called on launch (macOS only; no-op elsewhere).
-- **Deepgram Flux streaming STT** (`src/stt/deepgram-client.ts`): connects to
-  `wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000`,
-  parses `Connected`/`TurnInfo`/`Error` messages, tracks turn index → utterance ID, surfaces
+- **Electron/TypeScript skeleton**: tray/menu-bar app, settings window, floating overlay
+  window, hidden mic-capture window, JSON settings persisted to `userData/settings.json`,
+  JSONL logging from process start, global shortcuts for push-to-talk-toggle and emergency
+  stop (platform-specific defaults: `Alt+Space`/`Alt+Escape` on macOS, `Control+Alt+D`/
+  `Control+Alt+Escape` on Windows — the macOS defaults conflict with a Windows system
+  shortcut). Shortcut registration failure is surfaced in both the log and a Settings-window
+  warning banner, not just logged.
+- **Microphone capture**: hidden renderer requests `getUserMedia`, downsamples to 16 kHz mono
+  Int16 PCM in-browser, streams frames to the main process over IPC, which forwards them to
+  Deepgram. Media permission auto-granted for the app's own windows.
+- **Deepgram Flux streaming STT**: connects to `wss://api.deepgram.com/v2/listen`, parses
+  `Connected`/`TurnInfo`/`Error` messages, tracks turn index → utterance ID, surfaces
   `Update`/`StartOfTurn`/`EagerEndOfTurn`/`TurnResumed`/`EndOfTurn` events.
-- **Jev via OpenRouter** (`src/decision/jev-client.ts`, `questions.ts`, `resolve.ts`): single
-  combined request per utterance with `complete` + `intent` + `target` + `direction` (+
-  `addressed` in always-listening mode) questions; typed answers resolved against
-  deterministically-extracted payload (`src/decision/extract.ts`) into a concrete
-  `ResolvedCommand`.
+- **Jev via OpenRouter**: single combined request per utterance with `complete` + `intent` +
+  `target` + `direction` (+ `addressed` in always-listening mode) questions; typed answers
+  resolved against deterministically-extracted payload into a concrete `ResolvedCommand`. A
+  narrow, deterministic code-level override (`resolve.ts`'s `openAppOverride`) corrects for
+  Jev occasionally misclassifying the extremely common "open/launch/start X" pattern.
+- **Shared `PlatformAutomation` boundary** (`src/automation/types.ts`/`index.ts`): the pipeline
+  imports one `automation` object selected by `process.platform`; never touches
+  `macos.ts`/`windows.ts` directly. Vocabulary is split the same way
+  (`commands/registry-common.ts` + `registry-macos.ts`/`registry-windows.ts`, selected by
+  `commands/registry.ts`, which throws at startup if either platform is missing a common
+  name). Voice-alias → executable resolution happens inside each platform module using its
+  own registry; shared code only ever sees alias keys (`AppCandidate.appAlias`).
 - **macOS execution** (`src/automation/macos.ts`): open/activate/hide/quit app, switch to
-  previous app (Cmd+Tab), clipboard-paste text entry (restores previous clipboard), named-key
-  press table, shortcuts (copy/cut/paste/select-all/undo/redo/save/find/etc.), window
-  minimize/close/fullscreen("maximize" = fullscreen, see DECISIONS.md), volume up/down/set/mute/
-  unmute, media play-pause/next/previous (tries Spotify then Music), System Settings panes,
-  Finder locations, `say` with barge-in cancellation, active-app detection.
-- **Chrome extension + bridge**: unpacked MV3 extension (`chrome-extension/`) with a content
-  script that snapshots visible interactive elements (temporary `data-dragon-id`s, capped at 60,
-  compact `{id, tag, role, text}` only) and performs click/type/select/scroll; a background
-  service worker that owns the WebSocket connection to the desktop app and handles
-  navigate/search/back/forward/reload/new-tab/close-tab/switch-tab directly via `chrome.tabs.*`.
-  Desktop-side server: `src/browser/server.ts`, a `ws` `WebSocketServer` on
-  `127.0.0.1:17872` with request/response correlation and timeouts.
-- **All three activation modes** (`src/main/pipeline.ts` + `src/main/index.ts`): push-to-talk
-  (toggle, see DECISIONS.md), wake-word (strips everything up to and including the configured
-  phrase, case-insensitive), always-listening (adds the `addressed` Jev question and only acts
-  above a 0.55 probability threshold).
-- **Reliability controls**: only `EagerEndOfTurn`/`EndOfTurn` events trigger a Jev call (debounces
-  `Update` noise); max 2 concurrent Jev requests, oldest aborted via `AbortController` when a
-  3rd arrives; `TurnResumed` aborts the in-flight request for that utterance; per-utterance
-  `executedUtterances` set prevents a duplicate terminal action if both an eager and a final
-  turn would otherwise both fire; interim (`EagerEndOfTurn`) execution is restricted to a
-  closed set of intents (`INTERIM_ELIGIBLE_INTENTS` in `resolve.ts`) that cannot be truncated
-  mid-word (app control, window control, volume, media, tab/scroll/navigation) — free-form
-  intents (`type_text`, `chrome_search`, `chrome_type`, `chrome_select`, `chrome_open_url`,
-  `volume_set`) always wait for `EndOfTurn`.
-- **Overlay, voice replies, history, logs**: floating always-on-top overlay shows
-  state/transcript/action/status/latency; short native `say` acknowledgements with barge-in
-  (new speech kills any in-progress reply); command history persisted to
-  `userData/history.json` (last 200), viewable/clearable from Settings; JSONL debug logs
-  rotated per day under `userData/logs/`, with a `redact()` pass that strips any field literally
-  named like a key/token/authorization/audio value and truncates large arrays — never logs raw
-  PCM, API keys, or Authorization headers.
-- **Settings UI**: paste OpenRouter/Deepgram keys (masked, shown as "saved" placeholder once
-  set, never re-displayed), activation mode, shortcuts, wake phrase, voice-reply toggle, log
-  verbosity, open-logs button, history table + clear button.
-- **Unsigned macOS packaging**: `electron-builder.yml` configured for an unsigned, non-notarized
-  `mac`/`dir` target with `NSMicrophoneUsageDescription` baked into `Info.plist`.
+  previous app (Cmd+Tab), clipboard-paste text entry, named-key press table (including a
+  "delete word" and "quick switcher" entry added for dictation/search-in-app), shortcuts,
+  window minimize/close/fullscreen("maximize" = fullscreen), volume up/down/set/mute/unmute,
+  media play-pause/next/previous (Spotify then Music, via plain `pgrep` — no Accessibility
+  needed), System Settings panes, Finder locations, `say` with barge-in cancellation,
+  active-app detection, a friendlier error message for the classic
+  "osascript is not allowed to send keystrokes" Accessibility-permission failure, and a new
+  `deleteBackward(count)` (precise multi-backspace in one process call, for dictation editing).
+- **Windows execution** (`src/automation/windows.ts`, new): every `PlatformAutomation` method
+  implemented via per-action `powershell.exe` processes with an inline C# `User32` P/Invoke
+  helper (`keybd_event`, `GetForegroundWindow`, `SetForegroundWindow`, `ShowWindow`,
+  `PostMessage`, `GetWindowThreadProcessId`). App launch via `cmd.exe /c start "" <token>`
+  (Win+R-style resolution); Chrome gets explicit install-path probing
+  (`Program Files`/`Program Files (x86)`/per-user `LocalAppData`). Alt+Tab via a real
+  hold-Alt/tap-Tab/wait/release-Alt sequence (more reliable than a bare SendKeys). Active-app
+  name comes from the foreground window's process's `FileVersionInfo.FileDescription` (so
+  Chrome reports as "Google Chrome", matching the macOS convention, with no manual mapping
+  table needed). **Unverified on real Windows hardware** — see below for exactly what was and
+  wasn't checked.
+- **Chrome extension + bridge** (unchanged by the Windows work — pure JS, identical on both
+  OSes): unpacked MV3 extension with a content script that snapshots visible interactive
+  elements and performs click/type/select/scroll; a background service worker owning the
+  WebSocket connection to the desktop app, handling navigate/search/back/forward/reload/
+  new-tab/close-tab/switch-tab, plus a new `focus_or_open` action (reuse an existing tab
+  matching the target hostname instead of always opening a new one — "open my existing tabs").
+  A `chrome.alarms` keepalive fights MV3 service-worker eviction.
+- **All three activation modes**: push-to-talk (toggle), wake-word (strips up to the phrase,
+  surfaces "say the wake phrase first" in the overlay when absent instead of going silent),
+  always-listening (the `addressed` question is worded to not require literally naming the
+  assistant — a plain "open chrome" counts).
+- **Voice dictation and in-session editing** (new): after any "type X" command, subsequent
+  utterances Jev doesn't recognize as another command are typed verbatim and folded into a
+  tracked `dictationBuffer`, so the user doesn't have to repeat "type" every sentence. A small
+  deterministic (no-Jev-round-trip) set of editing phrases works on that tracked buffer with
+  exact character counts: "new line", "delete the last N words"/"delete the last word",
+  "delete/undo that" (last chunk only), "delete everything"/"clear all of that", and
+  "replace X with Y" (backspaces only the changed tail, retypes only the changed suffix). Any
+  other successfully-executed command ends the dictation session.
+- **Site-aware search & generic in-app search** (new): `chrome_search` uses a URL-template
+  table (`SITE_SEARCH_TEMPLATES`) keyed by the *current* page's hostname when Chrome is on a
+  known site (YouTube, YouTube Music, GitHub, Reddit, Amazon, Wikipedia, Netflix, X/Twitter),
+  instead of always falling back to a generic Google search. A new `search_in_app` intent
+  presses Cmd/Ctrl+K (the near-universal quick-open/jump-to convention — Slack, Notion,
+  VS Code, Discord, etc.) and types the query, for non-browser apps.
+- **Reliability controls**: only `EagerEndOfTurn`/`EndOfTurn` trigger a Jev call; max 2
+  concurrent Jev requests with oldest-abort; `TurnResumed` aborts the in-flight request;
+  per-utterance `executedUtterances` set prevents duplicate terminal actions; interim
+  execution restricted to a closed intent set; identical (utteranceId, text) Jev calls are
+  cached instead of re-sent; the completeness gate (`complete < 0.5`) now only applies to
+  *interim* turns — a final (`EndOfTurn`) turn is judged on intent recognition alone, since
+  Jev's "complete" answer reflects sentence-grammar completeness, not speech completeness, and
+  a short final command like "Open Slack?" was previously rejected despite being fully spoken.
+  Deepgram auto-reconnects after an unexpected drop, but only if the connection had actually
+  opened before dropping (not a connection that never opens at all, e.g. a bad key — that
+  would otherwise retry forever), capped at 5 attempts.
+- **Overlay, voice replies, history, logs**: floating always-on-top overlay; short native
+  spoken acknowledgements with barge-in; command history persisted and viewable/clearable from
+  Settings; JSONL debug logs rotated per day with key/audio redaction, now including explicit
+  latency breakdowns (`sttToDecisionMs`, `decisionMs`, `executionMs`, `totalMs`) on every
+  `pipeline.execution`/`pipeline.decision_request`/`pipeline.dictation_*` event.
+- **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, shortcuts, wake phrase,
+  voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a new
+  shortcut-registration-failure warning banner.
+- **Unsigned packaging for both platforms**: `electron-builder.yml` has both a macOS `dir`
+  target and a Windows `portable` target (`npm run package:mac` / `npm run package:win`), with
+  a real `.ico` (hand-built, `file`-verified as a valid multi-size PNG-compressed icon
+  container — no external icon tool needed) and a Windows-appropriate colored tray icon.
 
-## Manual check results (this environment: Linux/WSL2, no macOS)
+## Manual check results (this environment: Linux/WSL2, no macOS or Windows machine)
 
-What was actually run and observed:
+What was actually run and observed, this round:
 
-- `npm install`, `npm run typecheck`, `npm run build` all succeed cleanly.
-- `npx electron . --dev` launches the full app (tray + hidden windows + settings/overlay
-  windows load their HTML/JS) and logs `app.start` → `browser.server_started` →
-  `shortcuts.registered` → `app.ready` with no errors, then shuts down cleanly on
-  `before-quit`/emergency-stop. Confirmed twice.
-- Connected a throwaway WebSocket client to `ws://127.0.0.1:17872` standing in for the Chrome
-  extension: `hello` handshake logged as `browser.extension_connected`, disconnect logged as
-  `browser.extension_disconnected`. This exercises the exact protocol the real extension uses.
-- Ran `extractPayload(...)` and `resolveCommand(...)` directly against the required scenarios:
-  - `"open notepad"` → app candidate `TextEdit` → resolves to `{ kind: "open_app", appName:
-    "TextEdit" }`.
-  - `"type hello from dragon"` → `dictatedText: "hello from dragon"` (verbatim, exact required
-    text) → resolves to `{ kind: "type_text", text: "hello from dragon" }`.
-  - `"set volume to 40"` → `number: 40` → `{ kind: "volume_set", amount: 40 }`.
-  - `"search for best pizza near me"` → `searchQuery` extracted verbatim → `{ kind:
-    "chrome_search", query: "best pizza near me" }`.
-  - `"scroll down"` → `{ kind: "chrome_scroll", direction: "down" }`.
-- `npm run package:mac` (via `electron-builder --mac --dir`, run without the `--arm64` flag
-  once to see default behavior) produced a real unsigned `Dragon.app` bundle with a correct
-  `Info.plist` (bundle id, `NSMicrophoneUsageDescription`, category) — but as `darwin-x64`,
-  because `@electron/rebuild`'s native-dependency step ran on this x64 Linux host. The
-  `package:mac` npm script now passes `--arm64` explicitly; **this must be re-run on an actual
-  Apple Silicon Mac** to confirm it truly cross-compiles the native module step to arm64 from an
-  arm64 host (expected to work fine there, but unverified here).
+- `npm run typecheck` / `npm run build` succeed cleanly after the full Windows-boundary
+  refactor and all new features.
+- `npx electron . --dev` boots cleanly end-to-end (tray/windows/IPC/logging all initialize,
+  clean shutdown) — `automation/index.ts`'s Linux dev-only fallback (uses the macOS module,
+  logs `automation.unsupported_platform_dev_fallback`) makes this possible; real end users on
+  Linux get a hard error instead.
+- **Windows registry coverage** verified by monkey-patching `process.platform` to `"win32"`
+  and requiring `dist/commands/registry.js` directly — the startup coverage check
+  (`checkCoverage` in `registry.ts`) passed, confirming `registry-windows.ts` has an entry for
+  every name in `registry-common.ts`'s `KEY_PHRASE_NAMES`/`SETTINGS_PANE_NAMES`/
+  `LOCATION_NAMES`.
+- **Windows automation logic** verified with a purpose-built harness: monkey-patched
+  `require("electron")` to a stub and `child_process.execFile`/`spawn` to capture arguments
+  instead of executing them, then called every `PlatformAutomation` method with `process.
+  platform` forced to `"win32"`. Confirmed (by reading the captured PowerShell/`cmd` text) that
+  `openApp`, `activateApp`, `quitApp`, `windowMinimize`, `pressNamedKey` (both a plain
+  virtual-key case and a Ctrl+letter case), `deleteBackward`, `typeText`, `switchToPreviousApp`,
+  `getActiveAppName`, `openFinderLocation` (both a plain folder and a `shell:` URI),
+  `openSettingsPane`, and `say` all produce syntactically plausible, correctly-parameterized
+  scripts — virtual-key codes checked by hand (e.g. Ctrl+A → `keybd_event(17,...)` then
+  `keybd_event(65,...)`; Alt+F4 for "close window" → `keybd_event(18,...)` then
+  `keybd_event(115,...)`). **This never executed a real `powershell.exe`/`user32.dll` call.**
+- `npm run package:win` (`electron-builder --win portable --x64`) produced a real, valid,
+  unsigned Windows PE32 portable `.exe` (`file` confirmed: "PE32 executable (GUI) Intel 80386,
+  for MS Windows, Nullsoft Installer self-extracting archive") — no `wine` installed on this
+  machine, so electron-builder's portable target evidently doesn't need it. This proves the
+  packaging *config* is valid and *buildable*, not that the resulting exe runs correctly on
+  Windows (untested — no Windows machine).
+- Re-ran `npm run package:mac` (`electron-builder --mac --arm64 --dir`) after all the changes
+  in this pass — still produces a valid unsigned `.app` bundle (as `darwin-x64` from this x64
+  Linux host, same caveat as before; needs a real Apple Silicon Mac to confirm true arm64
+  cross-compilation).
+- Extraction/resolution unit checks against the exact failing transcripts from two real macOS
+  test runs (logs supplied directly by the user, not reconstructed):
+  - `"Open cursor."` with Jev answers matching *both* observed misclassifications
+    (`intent: "none"` and `intent: "shortcut"`, both low confidence) → both now resolve to
+    `{ kind: "activate_app", appName: "Cursor", appAlias: "cursor" }` via the new override.
+  - `"Open Slack?"` with `intent: "open_app"`, `complete: 0.31` → now resolves correctly (the
+    completeness gate no longer blocks a final turn).
+  - `extractDeleteWordCount`: "delete the last 3 words" → 3, "delete the last few words" → 3,
+    "delete the last word" → 1.
+  - `extractReplacePair("replace draft with final")` → `["draft", "final"]`.
+  - Site-aware search: with a mock Chrome page on `music.youtube.com`, "search for imagine
+    dragons" → `siteSearchUrl: "https://music.youtube.com/search?q=imagine%20dragons"`.
+  - (From an earlier pass, re-confirmed still passing): "open notepad" → TextEdit; "type hello
+    from dragon" → exact verbatim text; "set volume to 40" → 40; "search for X dot com" → a
+    direct URL, not a literal Google search for the words "dot com".
 
 What could **not** be verified in this environment, and exactly what to do about it:
 
-1. **Deepgram/OpenRouter live calls.** No API keys were supplied and this is a sandboxed
-   environment; `callJev()` and `DeepgramFluxConnection.connect()` were reviewed against the
-   fetched, current API docs (see `DECISIONS.md`) but never hit the real endpoints.
-   → *Manual step*: paste real keys into Settings on a Mac and speak a command; watch
-   `userData/logs/dragon-YYYY-MM-DD.jsonl` for `stt.turn`, `jev.response`, and
-   `pipeline.execution` events.
-2. **`osascript`/`open`/`say` execution.** These binaries don't exist on Linux. All AppleScript
-   strings in `src/automation/macos.ts` were reviewed by hand for syntax correctness (key
-   codes, modifier syntax, quoting/escaping) but never actually run.
-   → *Manual step*: run the "Manual alpha check" list below on a Mac.
-3. **Real microphone capture end-to-end.** `getUserMedia` needs a real input device;
-   confirmed only that the window loads, the permission handler is wired, and the
-   downsampling/IPC code typechecks.
-   → *Manual step*: same as above; also grant the macOS microphone permission prompt.
-4. **Chrome extension loaded in real Chrome.** Verified the localhost protocol independently
-   (see above) and read through `content.js`/`background.js` carefully, but never loaded the
-   extension in an actual Chrome instance or clicked a real page element.
-   → *Manual step*: `chrome://extensions` → Developer mode → "Load unpacked" →
-   `chrome-extension/` folder in this repo; confirm the tray/log shows
-   `browser.extension_connected`.
-5. **macOS Accessibility permission prompts.** The first `osascript ... System Events`
-   keystroke/window call on a fresh macOS install triggers an Accessibility permission prompt
-   for the Dragon app (or for Terminal/Electron in dev mode); this alpha does not special-case
-   that prompt.
-   → *Manual step*: System Settings → Privacy & Security → Accessibility → enable Dragon (or
-   the terminal you launched it from, in dev mode).
-6. **arm64 packaging.** See above — re-run `npm run package:mac` on Apple Silicon.
+1. **Everything Windows-specific, on real hardware.** The harness above checked that the
+   generated PowerShell/`cmd` text is syntactically sound and correctly parameterized, but
+   never ran it. → *Manual step*: run the Windows manual check below on Windows 11 x64.
+2. **Deepgram/OpenRouter live calls, real microphone capture, real Accessibility permission
+   flow, real Chrome extension loading.** Unchanged from before this pass — see the equivalent
+   section in git history / the macOS manual check below.
+3. **arm64 macOS packaging and real Windows portable-exe execution.** Both package builds
+   succeeded structurally on this x64 Linux host; neither was run on its target architecture/OS.
+4. **The dictation buffer-drift risk.** If the user manually clicks elsewhere, edits the text
+   by hand, or an app rejects the paste Dragon assumes succeeded, `dictationBuffer` silently
+   goes out of sync with reality, and a later "delete the last 3 words" will backspace the
+   wrong number of characters. Documented as an accepted limitation (see DECISIONS.md); not
+   fixable without reading the target app's actual text content, which is out of scope.
+5. **The `search_in_app` Cmd/Ctrl+K assumption and the "ambient phrase collides with an editing
+   command" risk** (e.g. dictating a sentence that happens to literally be "delete that") are
+   both best-effort/accepted trade-offs, not yet observed in real use.
 
 ## Known limitations / simplifications (see DECISIONS.md for full reasoning)
 
 - Push-to-talk is a toggle, not press-and-hold.
-- "Maximize" window = fullscreen toggle, not a distinct zoomed state.
-- Media controls only work if Spotify or Music.app is the active player; other players are
-  silently no-op'd (logged as `automation.media_no_player`).
-- The Chrome bridge assumes a single Chrome window/extension connection at a time (fine for a
-  personal alpha).
-- Manifest V3 service workers go idle; `background.js` reconnects on a 2s timer, so there can be
-  a brief window right after Chrome starts (or after long idle) where a command fails with
-  "Chrome extension is not connected" until it reconnects. `chrome_open_url`/`chrome_search`
-  are unaffected since they don't need the extension.
+- macOS: "maximize" window = fullscreen toggle. Windows: "maximize"/"fullscreen" are two
+  genuinely different things (`ShowWindow(SW_MAXIMIZE)` vs. F11), since Windows actually has a
+  real maximize concept unlike macOS.
+- Windows: exact volume percentage (`volume_set`) is not implemented — throws a clear error
+  suggesting "volume up"/"volume down" instead (would need Core Audio COM interop; deferred
+  per the plan). Windows `volume_mute`/`volume_unmute` both send the same hardware mute-toggle
+  key — there's no separate set-true/set-false without that same COM interop, so "unmute"
+  while already unmuted will mute it.
+- Windows: third-party app launching (Slack, Discord, Cursor, Docker Desktop, etc.) is
+  best-effort — works if the app is on `PATH` or registered a Windows "App Paths" registry
+  key (true for Chrome, Firefox, VS Code with "Add to PATH", Office), may fail for apps
+  installed only via a per-user/appx installer that registers neither. Only Chrome gets
+  explicit install-path probing.
+- Media controls only work if Spotify or Music.app (macOS) is the active player; Windows uses
+  the OS-level media keys, which work with whatever app is registered with Windows' System
+  Media Transport Controls (broader coverage than macOS's per-app AppleScript approach).
+- The Chrome bridge assumes a single Chrome window/extension connection at a time.
+- Manifest V3 service workers go idle; `background.js` reconnects on a 2s timer plus a
+  `chrome.alarms` keepalive every 30s, so there can be a brief window right after Chrome starts
+  (or after long idle) where a DOM command fails with "Chrome extension is not connected"
+  until it reconnects. `chrome_open_url`/`chrome_search` are unaffected (don't need the
+  extension) unless a matching existing tab needs to be found, in which case they fall back to
+  always opening a new tab/window.
+- Dragon runs one command per utterance by design — "open Slack, search for X, and type a
+  message" must be spoken as three separate commands, not one. See AGENTS.md.
 - No automated tests, by design (see AGENTS.md / plan non-goals).
 
-## Bug fixes
+## Bug-fix history
 
-- **Wake word / always listening didn't actually start listening (2026-09-21).** Picking
-  "Wake word" or "Always listening" in the activation-mode dropdown (Settings window or tray)
-  only updated `settings.activationMode`; the separate `listening` flag stayed `false` until
-  toggled via the tray's "Listening: On/Off" item or the push-to-talk shortcut, so the mic
-  window never got `mic:start` and Deepgram never connected — symptom was `mic.status:
-  "stopped"` repeating with no `stt.*` events at all. Fixed in `src/main/index.ts`:
-  `setActivationMode` and the Settings-window `onSettingsChanged` path now set `listening =
-  true` whenever the new mode isn't `push_to_talk`. Push-to-talk is unaffected; it still
-  requires the explicit hotkey/tray toggle.
-- **Transcript shown, nothing executed (2026-09-21, second pass).** A real macOS run with the
-  above fix applied showed STT/overlay working but almost no commands actually firing. Root
-  causes and fixes, all in this pass (see `DECISIONS.md` for full detail): wake-word mode gave
-  no feedback when the wake phrase wasn't heard; the always-listening `addressed` question was
-  worded to require literally naming the assistant, defeating the point of that mode; the
-  `stopStreaming` wrapper silently dropped its arguments so the new push-to-talk graceful-stop
-  option could never reach the pipeline; the Settings window's Save button always resent
-  `activationMode`, so *every* save stopped an active session; the tray menu never refreshed
-  after hotkey/emergency-stop/Settings-driven changes; there was no reconnect after an
-  unexpected Deepgram disconnect; browser-page snapshot fetching was gated on a sometimes-flaky
-  frontmost-app read instead of the extension bridge's own connection state; media commands'
-  "is it running" check went through System Events (needs Accessibility) instead of plain
-  `pgrep`; and `APP_ALIASES` was missing common apps like Cursor, iTerm, Docker, Discord,
-  Notion, Figma, and the Office suite. Also added a `chrome.alarms` keepalive to the extension's
-  background worker (MV3 workers can be evicted after ~30s idle).
-- **Relaunching into a continuous mode didn't start listening; spoken "dot com" never became a
-  URL; auto-reconnect retried forever against a bad key (2026-09-21, third pass).** A real run
-  with both fixes above applied showed genuine progress — Chrome open/search/scroll executing
-  correctly — plus three new bugs, all fixed (see `DECISIONS.md` for full detail): `listening`
-  is now seeded from the persisted `activationMode` at startup instead of always defaulting to
-  `false`; `extractUrl` now normalizes spoken "X dot com" to "X.com" before matching (dictated
-  text is untouched); and the auto-reconnect added in the second pass now only fires for a
-  connection that actually opened before dropping (not one that never opened at all, e.g. a bad
-  key), is capped at 5 attempts, and a manual stop during the retry gap now reliably cancels
-  the pending retry. Also reworded the `open_app`/`shortcut` Jev criteria after observing "open
-  cursor" misclassified as `shortcut` once — unverified against live Jev calls in this
-  environment, so treat as a nudge, not a guaranteed fix.
-- **Still open / not yet re-verified:** clicking browser elements requires the unpacked
-  extension to be loaded (confirmed working-as-designed, user hadn't loaded it yet); STT
-  mis-hears (e.g. "reddit" → "retit") are an inherent Deepgram accuracy limit, not a code bug;
-  Jev occasionally misclassifies uncommon app names (see the `open_app` wording nudge above,
-  needs a live re-test to confirm it actually helped).
+See `DECISIONS.md` for full write-ups (dates, reasoning, verification performed) of each pass.
+Summary, oldest to newest:
+
+1. Wake-word/always-listening modes didn't auto-start listening (`listening` flag never set).
+2. Second pass: wake-word gave no feedback when the phrase was absent; always-listening's
+   `addressed` question wrongly required naming the assistant; `stopStreaming`'s wrapper
+   dropped its `{graceful}` argument; every Settings save stopped an active session; the tray
+   menu went stale after non-tray-driven state changes; no auto-reconnect after a dropped STT
+   connection; browser-snapshot fetching gated on a flaky frontmost-app read; media
+   `isAppRunning` needed Accessibility unnecessarily; missing common app aliases; MV3
+   service-worker eviction.
+3. Third pass: relaunching into a continuous mode didn't actually start listening (seeded from
+   the wrong default); spoken "X dot com" never became a URL; the second pass's auto-reconnect
+   retried forever against a permanently-bad connection.
+4. Fourth pass: a fully-spoken final command could be rejected as "incomplete" (completeness
+   gate applied regardless of finality); "open cursor" still occasionally misclassified
+   (added a deterministic override); latency logging was thin (added `sttToDecisionMs`/
+   `totalMs` throughout); unfriendly Accessibility-permission error message.
+5. This pass: added Windows support end-to-end (Milestones 6-8), voice dictation/editing,
+   site-aware search, tab reuse, generic in-app search.
 
 ## Exact next task
 
-Hand off to a macOS machine and work through the "Manual alpha check" section of `README.md`
-top to bottom. Priorities given the three bug-fix rounds above: (1) confirm the app resumes
-listening on its own after a relaunch into wake-word/always-listening mode, with no manual
-toggle, (2) confirm "search for/open X dot com" now navigates directly instead of failing to
-resolve, (3) load the unpacked Chrome extension and confirm click/type/select/scroll/tab
-commands work, (4) confirm push-to-talk delivers the final utterance after release, (5)
-otherwise fix anything the AppleScript-by-inspection review got wrong (most likely spot:
-window-control keystrokes and volume AppleScript syntax). Then remove this paragraph and mark
-milestone 5 as fully verified in this file.
+Two independent hardware verification tracks, either can go first:
+
+- **macOS**: work through the "macOS check" in `README.md` top to bottom on a real Mac,
+  paying particular attention to the newly-added dictation/editing commands ("delete the last
+  3 words", "replace X with Y", "new line", "stop dictation") and the site-aware search
+  ("open youtube music" then "search for a song").
+- **Windows**: work through the "Windows 11 check" in `README.md` top to bottom on a real
+  Windows 11 x64 machine. Given zero real-hardware verification exists yet, expect to find and
+  fix real bugs here — the most likely trouble spots, in rough order of risk, are: (1) the
+  inline C# `Add-Type` compiling correctly in a plain `-Command` invocation (vs. a `.ps1`
+  script file — untested difference), (2) `keybd_event`'s actual effect on modern Windows
+  11 (it's legacy; some apps/contexts may ignore synthetic events without `SendInput`'s
+  "injected" flag being visible in the expected way), (3) whether `FileVersionInfo.
+  FileDescription` is reliably non-null for the apps in the manual check, (4) Alt+Tab's
+  hold/tap/wait/release timing (150ms may need tuning), (5) third-party app launch tokens for
+  Slack/Discord/Cursor/Docker Desktop actually resolving.
+
+Then remove this paragraph and mark milestone 8 as fully verified in this file.

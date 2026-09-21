@@ -28,6 +28,8 @@
   button.secondary { background: #333; }
   .hint { font-size: 11px; color: #888; margin: -8px 0 12px; }
   .status { font-size: 11px; color: #7dd07d; margin-top: 4px; min-height: 14px; }
+  .warning { font-size: 11px; color: #ffb347; margin: -8px 0 12px; display: none; }
+  .warning.visible { display: block; }
   table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 8px; }
   td, th { text-align: left; padding: 3px 4px; border-bottom: 1px solid #2a2a30; }
   #historyBody { max-height: 160px; overflow: auto; display: block; }
@@ -56,6 +58,7 @@
   <label for="wakePhrase">Wake phrase</label>
   <input id="wakePhrase" type="text" placeholder="Dragon" />
   <div class="hint">Electron cannot detect key-up globally, so push-to-talk is a toggle: press once to start listening, press again (or use the tray menu) to stop.</div>
+  <div class="warning" id="shortcutWarning"></div>
 
   <div class="row">
     <label for="voiceReplyEnabled">Speak short replies (native <code>say</code>)</label>

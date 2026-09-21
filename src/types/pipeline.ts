@@ -28,8 +28,11 @@ export interface BrowserPageState {
 
 export interface AppCandidate {
   id: string;
+  /** Friendly display name (for Jev target descriptions, overlay, history, voice replies). */
   label: string;
-  appName: string;
+  /** The matched registry alias key (e.g. "chrome"), passed to `automation.*` for execution.
+   * Each platform resolves this to its own executable representation independently. */
+  appAlias: string;
   score: number;
 }
 
@@ -37,12 +40,19 @@ export interface ExtractedPayload {
   appCandidates: AppCandidate[];
   dictatedText: string | null;
   url: string | null;
+  /** Set when Chrome is on a known site (e.g. music.youtube.com) whose own search should be
+   * used instead of a generic Google search for this utterance's search query. */
+  siteSearchUrl: string | null;
   searchQuery: string | null;
   number: number | null;
   keyName: string | null;
   browserElementCandidates: BrowserElementCandidate[];
   settingsPane: string | null;
   finderLocation: string | null;
+  /** delete_text: how many trailing words, if a number/word-count was spoken. */
+  deleteWordCount: number | null;
+  /** replace_text: [find, replacement], extracted verbatim from "replace X with Y". */
+  replacePair: [string, string] | null;
 }
 
 export type Intent =
@@ -80,7 +90,14 @@ export type Intent =
   | "chrome_new_tab"
   | "chrome_close_tab"
   | "chrome_switch_tab"
+  | "delete_text"
+  | "replace_text"
+  | "insert_newline"
+  | "search_in_app"
   | "none";
+
+/** How much of the current dictation buffer a `delete_text` command should remove. */
+export type DeleteScope = "words" | "last_dictation" | "all";
 
 export type Direction =
   | "up"
@@ -107,7 +124,10 @@ export interface JevAnswerSummary {
 
 export interface ResolvedCommand {
   kind: Intent;
+  /** Friendly display name (overlay/history/voice replies). */
   appName?: string;
+  /** Registry alias key passed to `automation.*` for execution. */
+  appAlias?: string;
   text?: string;
   url?: string;
   query?: string;
@@ -117,6 +137,12 @@ export interface ResolvedCommand {
   direction?: Direction;
   pane?: string;
   location?: string;
+  /** delete_text */
+  deleteScope?: DeleteScope;
+  wordCount?: number;
+  /** replace_text */
+  find?: string;
+  replacement?: string;
 }
 
 export interface PipelineStageTiming {

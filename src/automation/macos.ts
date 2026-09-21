@@ -1,6 +1,6 @@
 import { clipboard } from "electron";
 import { execFile, spawn, ChildProcess } from "child_process";
-import { FINDER_LOCATIONS, KEY_PHRASES, SETTINGS_PANES } from "../commands/registry";
+import { APP_ALIASES, KEY_SPECS, LOCATIONS, SETTINGS_PANES } from "../commands/registry-macos";
 import { logger } from "../logging/logger";
 
 /**
@@ -12,12 +12,24 @@ function run(cmd: string, args: string[]): Promise<{ stdout: string; stderr: str
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 10_000 }, (err, stdout, stderr) => {
       if (err) {
-        reject(new Error(`${cmd} failed: ${err.message} ${stderr ?? ""}`.trim()));
+        reject(new Error(friendlyOsascriptError(`${cmd} failed: ${err.message} ${stderr ?? ""}`.trim())));
         return;
       }
       resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
     });
   });
+}
+
+/** osascript's Accessibility-permission errors are cryptic; surface a clear, actionable message. */
+function friendlyOsascriptError(message: string): string {
+  if (/not allowed to send keystrokes|1002|not allowed assistive access|-25211/i.test(message)) {
+    return (
+      "macOS blocked this because Dragon doesn't have Accessibility permission yet. " +
+      "Open System Settings -> Privacy & Security -> Accessibility, enable Dragon " +
+      "(or your terminal, in dev mode), then try again."
+    );
+  }
+  return message;
 }
 
 function escapeAS(value: string): string {
@@ -28,23 +40,29 @@ function osascript(script: string): Promise<{ stdout: string; stderr: string }> 
   return run("osascript", ["-e", script]);
 }
 
-export async function openApp(appName: string): Promise<void> {
-  await run("open", ["-a", appName]);
+/** Voice alias keys (e.g. "chrome") are resolved to the real macOS app name here, using this
+ * platform's own registry — shared code (extract.ts/resolve.ts) never sees the resolved name. */
+function resolveAppName(aliasKeyOrName: string): string {
+  return APP_ALIASES[aliasKeyOrName.toLowerCase()] ?? aliasKeyOrName;
 }
 
-export async function activateApp(appName: string): Promise<void> {
+export async function openApp(aliasKey: string): Promise<void> {
+  await run("open", ["-a", resolveAppName(aliasKey)]);
+}
+
+export async function activateApp(aliasKey: string): Promise<void> {
   // `open -a` both launches (if needed) and brings the app to the foreground.
-  await run("open", ["-a", appName]);
+  await run("open", ["-a", resolveAppName(aliasKey)]);
 }
 
-export async function hideApp(appName: string): Promise<void> {
+export async function hideApp(aliasKey: string): Promise<void> {
   await osascript(
-    `tell application "System Events" to set visible of application process "${escapeAS(appName)}" to false`
+    `tell application "System Events" to set visible of application process "${escapeAS(resolveAppName(aliasKey))}" to false`
   );
 }
 
-export async function quitApp(appName: string): Promise<void> {
-  await osascript(`tell application "${escapeAS(appName)}" to quit`);
+export async function quitApp(aliasKey: string): Promise<void> {
+  await osascript(`tell application "${escapeAS(resolveAppName(aliasKey))}" to quit`);
 }
 
 export async function switchToPreviousApp(): Promise<void> {
@@ -69,7 +87,7 @@ export async function typeText(text: string): Promise<void> {
 }
 
 export async function pressNamedKey(keyName: string): Promise<void> {
-  const spec = KEY_PHRASES[keyName];
+  const spec = KEY_SPECS[keyName];
   if (!spec) throw new Error(`Unknown key phrase: ${keyName}`);
   const mods = spec.modifiers.length > 0 ? ` using {${spec.modifiers.join(", ")}}` : "";
   if (spec.keyCode != null) {
@@ -79,6 +97,15 @@ export async function pressNamedKey(keyName: string): Promise<void> {
   } else {
     throw new Error(`Key phrase has no keyCode or character: ${keyName}`);
   }
+}
+
+/** Presses plain Backspace `count` times in a single osascript call. */
+export async function deleteBackward(count: number): Promise<void> {
+  const n = Math.max(0, Math.round(count));
+  if (n === 0) return;
+  await osascript(
+    `tell application "System Events"\n  repeat ${n} times\n    key code 51\n  end repeat\nend tell`
+  );
 }
 
 export async function windowMinimize(): Promise<void> {
@@ -169,7 +196,7 @@ export async function openSettingsPane(pane: string): Promise<void> {
 }
 
 export async function openFinderLocation(location: string): Promise<void> {
-  const rel = FINDER_LOCATIONS[location];
+  const rel = LOCATIONS[location];
   if (rel == null) throw new Error(`Unknown Finder location: ${location}`);
   const target = rel.startsWith("/") ? rel : `${process.env.HOME ?? ""}/${rel}`;
   await run("open", [target]);

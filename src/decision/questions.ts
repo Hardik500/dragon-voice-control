@@ -38,6 +38,12 @@ export const INTENT_CRITERIA: Record<Intent, string> = {
   chrome_new_tab: "Open a new Chrome tab.",
   chrome_close_tab: "Close the current Chrome tab.",
   chrome_switch_tab: "Switch to the next or previous Chrome tab.",
+  delete_text:
+    "Delete some of what was just dictated by voice: the last few words, the last thing said, or everything typed in this dictation session so far.",
+  replace_text: 'Replace one specific word/phrase that was just dictated with a different word/phrase, e.g. "replace draft with final".',
+  insert_newline: "Insert a new line / line break into the text currently being dictated, without submitting or sending anything.",
+  search_in_app:
+    "Open the current non-browser application's own quick search/jump-to feature (e.g. Slack's jump-to-conversation) and search it for a specific name or term.",
   none: "The transcript is not a recognizable command from this list, or is incidental speech.",
 };
 
@@ -63,7 +69,7 @@ export interface TargetCandidateMeta {
 export function buildTargetCandidates(payload: ExtractedPayload): TargetCandidateMeta[] {
   const out: TargetCandidateMeta[] = [];
   for (const app of payload.appCandidates as AppCandidate[]) {
-    out.push({ id: app.id, description: `Application named "${app.appName}" mentioned in the transcript.` });
+    out.push({ id: app.id, description: `Application named "${app.label}" mentioned in the transcript.` });
   }
   for (const el of payload.browserElementCandidates as BrowserElementCandidate[]) {
     const label = el.text.slice(0, 80) || "(unlabeled)";

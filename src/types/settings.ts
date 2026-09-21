@@ -14,12 +14,19 @@ export interface DragonSettings {
   overlayVisible: boolean;
 }
 
+// macOS's Alt+Space/Alt+Escape defaults conflict with common Windows shortcuts (Alt+Space
+// opens the window system menu on Windows), so Windows gets its own defaults per DECISIONS.md.
+// Settings already saved before an upgrade keep whatever was persisted; this only affects a
+// fresh install's first-run values.
+const DEFAULT_PUSH_TO_TALK_SHORTCUT = process.platform === "win32" ? "Control+Alt+D" : "Alt+Space";
+const DEFAULT_EMERGENCY_STOP_SHORTCUT = process.platform === "win32" ? "Control+Alt+Escape" : "Alt+Escape";
+
 export const DEFAULT_SETTINGS: DragonSettings = {
   openRouterApiKey: "",
   deepgramApiKey: "",
   activationMode: "push_to_talk",
-  pushToTalkShortcut: "Alt+Space",
-  emergencyStopShortcut: "Alt+Escape",
+  pushToTalkShortcut: DEFAULT_PUSH_TO_TALK_SHORTCUT,
+  emergencyStopShortcut: DEFAULT_EMERGENCY_STOP_SHORTCUT,
   wakePhrase: "Dragon",
   voiceReplyEnabled: true,
   logVerbosity: "normal",

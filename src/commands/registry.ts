@@ -1,164 +1,54 @@
-/** Closed vocabularies used by transcript extraction and macOS execution. */
+/**
+ * Platform selector: re-exports the active OS's app aliases / key specs / settings panes /
+ * locations, plus the platform-neutral common vocab (websites, canonical name lists, site
+ * search templates). This is the only registry module the decision layer (`extract.ts`,
+ * `resolve.ts`, `questions.ts`) should import from — never `registry-macos.ts` /
+ * `registry-windows.ts` directly (those are for `automation/macos.ts` / `automation/windows.ts`
+ * only, which know they're only ever running on their own OS).
+ */
+import * as common from "./registry-common";
+import * as mac from "./registry-macos";
+import * as win from "./registry-windows";
 
-/** Voice alias -> real macOS application name. */
-export const APP_ALIASES: Record<string, string> = {
-  notepad: "TextEdit",
-  textedit: "TextEdit",
-  "text edit": "TextEdit",
-  chrome: "Google Chrome",
-  "google chrome": "Google Chrome",
-  browser: "Google Chrome",
-  safari: "Safari",
-  finder: "Finder",
-  mail: "Mail",
-  terminal: "Terminal",
-  calculator: "Calculator",
-  music: "Music",
-  itunes: "Music",
-  photos: "Photos",
-  messages: "Messages",
-  imessage: "Messages",
-  preview: "Preview",
-  settings: "System Settings",
-  "system settings": "System Settings",
-  "system preferences": "System Settings",
-  spotify: "Spotify",
-  slack: "Slack",
-  "visual studio code": "Visual Studio Code",
-  vscode: "Visual Studio Code",
-  code: "Visual Studio Code",
-  cursor: "Cursor",
-  notes: "Notes",
-  calendar: "Calendar",
-  reminders: "Reminders",
-  facetime: "FaceTime",
-  maps: "Maps",
-  "app store": "App Store",
-  activity: "Activity Monitor",
-  "activity monitor": "Activity Monitor",
-  iterm: "iTerm",
-  "i term": "iTerm",
-  warp: "Warp",
-  docker: "Docker",
-  "docker desktop": "Docker",
-  discord: "Discord",
-  zoom: "zoom.us",
-  whatsapp: "WhatsApp",
-  telegram: "Telegram",
-  notion: "Notion",
-  obsidian: "Obsidian",
-  figma: "Figma",
-  xcode: "Xcode",
-  postman: "Postman",
-  "sublime text": "Sublime Text",
-  sublime: "Sublime Text",
-  firefox: "Firefox",
-  "microsoft word": "Microsoft Word",
-  word: "Microsoft Word",
-  excel: "Microsoft Excel",
-  powerpoint: "Microsoft PowerPoint",
-  outlook: "Microsoft Outlook",
-  teams: "Microsoft Teams",
-};
+const platform = process.platform === "win32" ? win : mac;
 
-/** Spoken key/shortcut phrase -> AppleScript key spec. */
-export interface KeySpec {
-  keyCode?: number; // System Events "key code"
-  character?: string; // System Events "keystroke"
-  modifiers: string[]; // "command down" | "shift down" | "option down" | "control down"
+const APP_ALIASES: Record<string, unknown> = platform.APP_ALIASES;
+
+/** All recognized voice alias keys for the active platform (e.g. "chrome", "notepad"). Shared
+ * code should only ever see these keys, never the platform-specific resolved value. */
+export function appAliasKeys(): string[] {
+  return Object.keys(APP_ALIASES);
 }
 
-export const KEY_PHRASES: Record<string, KeySpec> = {
-  enter: { keyCode: 36, modifiers: [] },
-  return: { keyCode: 36, modifiers: [] },
-  escape: { keyCode: 53, modifiers: [] },
-  tab: { keyCode: 48, modifiers: [] },
-  space: { keyCode: 49, modifiers: [] },
-  delete: { keyCode: 51, modifiers: [] },
-  backspace: { keyCode: 51, modifiers: [] },
-  "arrow up": { keyCode: 126, modifiers: [] },
-  "arrow down": { keyCode: 125, modifiers: [] },
-  "arrow left": { keyCode: 123, modifiers: [] },
-  "arrow right": { keyCode: 124, modifiers: [] },
-  up: { keyCode: 126, modifiers: [] },
-  down: { keyCode: 125, modifiers: [] },
-  left: { keyCode: 123, modifiers: [] },
-  right: { keyCode: 124, modifiers: [] },
-  "page up": { keyCode: 116, modifiers: [] },
-  "page down": { keyCode: 121, modifiers: [] },
-  home: { keyCode: 115, modifiers: [] },
-  end: { keyCode: 119, modifiers: [] },
-  f1: { keyCode: 122, modifiers: [] },
-  f2: { keyCode: 120, modifiers: [] },
-  f3: { keyCode: 99, modifiers: [] },
-  f4: { keyCode: 118, modifiers: [] },
-  f5: { keyCode: 96, modifiers: [] },
-  f6: { keyCode: 97, modifiers: [] },
-  f7: { keyCode: 98, modifiers: [] },
-  f8: { keyCode: 100, modifiers: [] },
-  f9: { keyCode: 101, modifiers: [] },
-  f10: { keyCode: 109, modifiers: [] },
-  f11: { keyCode: 103, modifiers: [] },
-  f12: { keyCode: 111, modifiers: [] },
-  copy: { character: "c", modifiers: ["command down"] },
-  cut: { character: "x", modifiers: ["command down"] },
-  paste: { character: "v", modifiers: ["command down"] },
-  "select all": { character: "a", modifiers: ["command down"] },
-  undo: { character: "z", modifiers: ["command down"] },
-  redo: { character: "z", modifiers: ["command down", "shift down"] },
-  save: { character: "s", modifiers: ["command down"] },
-  find: { character: "f", modifiers: ["command down"] },
-  "new tab": { character: "t", modifiers: ["command down"] },
-  "close tab": { character: "w", modifiers: ["command down"] },
-  "close window": { character: "w", modifiers: ["command down"] },
-  quit: { character: "q", modifiers: ["command down"] },
-  refresh: { character: "r", modifiers: ["command down"] },
-  reload: { character: "r", modifiers: ["command down"] },
-};
+/** Friendly display name for an alias key, for Jev target descriptions / overlay / history /
+ * voice replies. Platform automation modules resolve the same key to their own executable
+ * representation independently, using their own registry file. */
+export function appAliasLabel(aliasKey: string): string {
+  const entry = APP_ALIASES[aliasKey];
+  if (entry == null) return aliasKey;
+  if (typeof entry === "string") return entry; // macOS: value is already the app name
+  const winEntry = entry as { label?: string; processName: string };
+  return winEntry.label ?? winEntry.processName;
+}
 
-/** Voice phrase -> System Settings pane URL fragment (best effort across macOS versions). */
-export const SETTINGS_PANES: Record<string, string> = {
-  sound: "com.apple.preference.sound",
-  volume: "com.apple.preference.sound",
-  wifi: "com.apple.preference.network",
-  "wi-fi": "com.apple.preference.network",
-  network: "com.apple.preference.network",
-  bluetooth: "com.apple.preferences.Bluetooth",
-  displays: "com.apple.preference.displays",
-  display: "com.apple.preference.displays",
-  general: "com.apple.preference.general",
-  privacy: "com.apple.preference.security?Privacy",
-  security: "com.apple.preference.security",
-  "battery": "com.apple.preference.battery",
-  keyboard: "com.apple.preference.keyboard",
-  mouse: "com.apple.preference.mouse",
-  notifications: "com.apple.preference.notifications",
-};
+export const SETTINGS_PANES = platform.SETTINGS_PANES;
+export const LOCATIONS = platform.LOCATIONS;
+export const KEY_SPECS = platform.KEY_SPECS;
 
-/** Voice phrase -> Finder location path (relative to home). */
-export const FINDER_LOCATIONS: Record<string, string> = {
-  downloads: "Downloads",
-  documents: "Documents",
-  desktop: "Desktop",
-  home: "",
-  pictures: "Pictures",
-  music: "Music",
-  applications: "/Applications",
-  trash: ".Trash",
-};
+export const KNOWN_WEBSITES = common.KNOWN_WEBSITES;
+export const SITE_SEARCH_TEMPLATES = common.SITE_SEARCH_TEMPLATES;
+export const KEY_PHRASE_NAMES = common.KEY_PHRASE_NAMES;
+export const SETTINGS_PANE_NAMES = common.SETTINGS_PANE_NAMES;
+export const LOCATION_NAMES = common.LOCATION_NAMES;
 
-export const KNOWN_WEBSITES: Record<string, string> = {
-  google: "https://www.google.com",
-  youtube: "https://www.youtube.com",
-  github: "https://www.github.com",
-  amazon: "https://www.amazon.com",
-  wikipedia: "https://www.wikipedia.org",
-  reddit: "https://www.reddit.com",
-  gmail: "https://mail.google.com",
-  maps: "https://maps.google.com",
-  netflix: "https://www.netflix.com",
-  twitter: "https://www.twitter.com",
-  x: "https://www.x.com",
-  facebook: "https://www.facebook.com",
-  linkedin: "https://www.linkedin.com",
-};
+function checkCoverage(names: string[], map: Record<string, unknown>, mapLabel: string) {
+  const missing = names.filter((n) => !(n in map));
+  if (missing.length > 0) {
+    // Fail loudly at startup rather than silently no-op'ing a command at runtime — this only
+    // fires if a future edit adds a common name without updating both platform registries.
+    throw new Error(`${mapLabel} on ${process.platform} is missing entries for: ${missing.join(", ")}`);
+  }
+}
+checkCoverage(common.KEY_PHRASE_NAMES, platform.KEY_SPECS, "KEY_SPECS");
+checkCoverage(common.SETTINGS_PANE_NAMES, platform.SETTINGS_PANES, "SETTINGS_PANES");
+checkCoverage(common.LOCATION_NAMES, platform.LOCATIONS, "LOCATIONS");

@@ -24,9 +24,12 @@ export interface TrayHandle {
 }
 
 export function createTray(cb: TrayCallbacks): TrayHandle {
-  const iconPath = path.join(__dirname, "..", "..", "assets", "tray-icon.png");
+  // macOS auto-tints a monochrome "template" tray icon for light/dark menu bars; Windows has
+  // no equivalent, so it gets its own colored icon instead of appearing as a plain black blob.
+  const iconFile = process.platform === "win32" ? "tray-icon-win.png" : "tray-icon.png";
+  const iconPath = path.join(__dirname, "..", "..", "assets", iconFile);
   const image = nativeImage.createFromPath(iconPath);
-  image.setTemplateImage(true);
+  if (process.platform !== "win32") image.setTemplateImage(true);
   const tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
   tray.setToolTip("Dragon voice control");
 

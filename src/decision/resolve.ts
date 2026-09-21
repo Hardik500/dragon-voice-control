@@ -1,5 +1,5 @@
-import { SETTINGS_PANES, FINDER_LOCATIONS, KEY_PHRASES } from "../commands/registry";
-import { Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
+import { KEY_PHRASE_NAMES, LOCATION_NAMES, SETTINGS_PANE_NAMES } from "../commands/registry";
+import { AppCandidate, Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
 import { JevAnswers } from "./jev-client";
 
 /** Intents that may execute from a confident interim transcript (closed, low-risk-of-truncation commands). */
@@ -29,6 +29,7 @@ export const INTERIM_ELIGIBLE_INTENTS: ReadonlySet<Intent> = new Set([
   "chrome_close_tab",
   "chrome_switch_tab",
   "chrome_scroll",
+  "insert_newline",
 ]);
 
 export function summarizeAnswers(answers: JevAnswers): JevAnswerSummary {
@@ -43,10 +44,10 @@ export function summarizeAnswers(answers: JevAnswers): JevAnswerSummary {
   };
 }
 
-function findAppNameForTarget(target: string, payload: ExtractedPayload): string | undefined {
+function findAppCandidateForTarget(target: string, payload: ExtractedPayload): AppCandidate | undefined {
   const cand = payload.appCandidates.find((c) => c.id === target);
-  if (cand) return cand.appName;
-  if (payload.appCandidates.length > 0) return payload.appCandidates[0].appName;
+  if (cand) return cand;
+  if (payload.appCandidates.length > 0) return payload.appCandidates[0];
   return undefined;
 }
 
@@ -59,22 +60,48 @@ function findElementIdForTarget(target: string, payload: ExtractedPayload): stri
   return undefined;
 }
 
+/** "open/launch/start/switch to X" where X matched a known app alias is such an unambiguous,
+ * extremely common pattern that we trust the deterministic extraction over an occasional Jev
+ * misclassification (observed: "open cursor" sometimes scored intent "none" or "shortcut" at
+ * low confidence, likely because "cursor" also reads as a UI concept). This is a deterministic
+ * code override for one specific closed pattern, not a guardrail or a planner. */
+const OPEN_APP_PATTERN = /^\s*(?:please\s+)?(?:open|launch|start|switch to|go to)\b/i;
+
+function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
+  if (payload.appCandidates.length === 0) return null;
+  if (!OPEN_APP_PATTERN.test(effectiveText)) return null;
+  const cand = payload.appCandidates[0];
+  return { kind: "activate_app", appName: cand.label, appAlias: cand.appAlias };
+}
+
 /**
  * Combine Jev's typed decision with deterministically-extracted payload
  * spans into one concrete, executable command. Returns null when the
  * command cannot be resolved (missing required payload).
  */
-export function resolveCommand(summary: JevAnswerSummary, payload: ExtractedPayload): ResolvedCommand | null {
+export function resolveCommand(
+  summary: JevAnswerSummary,
+  payload: ExtractedPayload,
+  effectiveText: string
+): ResolvedCommand | null {
   const { intent, target, direction } = summary;
+
+  // Deterministic override applies before Jev's intent is even trusted, but only for the
+  // specific low-risk pattern above, and only when Jev didn't already choose a different,
+  // clearly-intentional app-lifecycle intent (don't override "quit cursor"/"hide cursor").
+  if (intent !== "quit_app" && intent !== "hide_app") {
+    const override = openAppOverride(effectiveText, payload);
+    if (override) return override;
+  }
 
   switch (intent) {
     case "open_app":
     case "activate_app":
     case "hide_app":
     case "quit_app": {
-      const appName = findAppNameForTarget(target, payload);
-      if (!appName) return null;
-      return { kind: intent, appName };
+      const cand = findAppCandidateForTarget(target, payload);
+      if (!cand) return null;
+      return { kind: intent, appName: cand.label, appAlias: cand.appAlias };
     }
     case "switch_previous_app":
       return { kind: intent };
@@ -84,12 +111,12 @@ export function resolveCommand(summary: JevAnswerSummary, payload: ExtractedPayl
     }
     case "press_key": {
       const key = payload.keyName;
-      if (!key || !(key in KEY_PHRASES)) return null;
+      if (!key || !KEY_PHRASE_NAMES.includes(key)) return null;
       return { kind: intent, keyName: key };
     }
     case "shortcut": {
       const key = payload.keyName;
-      if (!key || !(key in KEY_PHRASES)) return null;
+      if (!key || !KEY_PHRASE_NAMES.includes(key)) return null;
       return { kind: intent, keyName: key };
     }
     case "window_minimize":
@@ -112,12 +139,12 @@ export function resolveCommand(summary: JevAnswerSummary, payload: ExtractedPayl
       return { kind: intent };
     case "open_settings_pane": {
       const pane = payload.settingsPane;
-      if (!pane || !(pane in SETTINGS_PANES)) return null;
+      if (!pane || !SETTINGS_PANE_NAMES.includes(pane)) return null;
       return { kind: intent, pane };
     }
     case "open_finder_location": {
       const loc = payload.finderLocation;
-      if (!loc || !(loc in FINDER_LOCATIONS)) return null;
+      if (!loc || !LOCATION_NAMES.includes(loc)) return null;
       return { kind: intent, location: loc };
     }
     case "chrome_open_url": {
@@ -126,7 +153,7 @@ export function resolveCommand(summary: JevAnswerSummary, payload: ExtractedPayl
     }
     case "chrome_search": {
       if (!payload.searchQuery) return null;
-      return { kind: intent, query: payload.searchQuery };
+      return { kind: intent, query: payload.searchQuery, url: payload.siteSearchUrl ?? undefined };
     }
     case "chrome_click": {
       const elementId = findElementIdForTarget(target, payload);
@@ -153,6 +180,23 @@ export function resolveCommand(summary: JevAnswerSummary, payload: ExtractedPayl
       return { kind: intent };
     case "chrome_switch_tab":
       return { kind: intent, direction };
+    case "insert_newline":
+      return { kind: intent };
+    case "search_in_app": {
+      if (!payload.searchQuery) return null;
+      return { kind: intent, query: payload.searchQuery };
+    }
+    case "delete_text": {
+      // Handled deterministically in the pipeline's dictation fast-path when dictation is
+      // active; if it reaches here (dictation not active), there's nothing safe to delete
+      // without reading the target app's content, which Dragon doesn't do.
+      return null;
+    }
+    case "replace_text": {
+      if (!payload.replacePair) return null;
+      const [find, replacement] = payload.replacePair;
+      return { kind: intent, find, replacement };
+    }
     case "none":
     default:
       return null;

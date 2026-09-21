@@ -82,5 +82,20 @@ window.addEventListener("DOMContentLoaded", () => {
     await refreshHistory();
   });
   setInterval(refreshHistory, 4000);
+
+  const applyStatus = (status: any) => {
+    const warn = byId<HTMLDivElement>("shortcutWarning");
+    const problems: string[] = [];
+    if (status?.shortcutStatus?.pushToTalkOk === false) problems.push("push-to-talk/listen-toggle");
+    if (status?.shortcutStatus?.emergencyStopOk === false) problems.push("emergency stop");
+    if (problems.length > 0) {
+      warn.textContent = `Could not register the ${problems.join(" and ")} shortcut — it may already be in use by another app. Pick a different combination above and save.`;
+      warn.classList.add("visible");
+    } else {
+      warn.classList.remove("visible");
+    }
+  };
+  window.dragonSettings.getStatus().then(applyStatus);
+  window.dragonSettings.onStatus(applyStatus);
 });
 })();

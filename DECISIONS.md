@@ -237,3 +237,235 @@ Jev calls in this environment.
 
 **Consequences:** `DeepgramFluxConnection`'s constructor's 3rd callback parameter type changed
 from `() => void` to `(hadOpened: boolean) => void` (exported as `CloseHandler`).
+
+## 2026-09-21 — Windows support added: shared `PlatformAutomation` boundary
+
+**Decision:** Added `src/automation/types.ts` (the `PlatformAutomation` interface),
+`src/automation/index.ts` (selects `macos.ts` or `windows.ts` by `process.platform`), and
+`src/automation/windows.ts` (new, full Windows implementation). Split
+`src/commands/registry.ts` into `registry-common.ts` (platform-neutral names: known websites,
+canonical key/settings-pane/location name lists, site-search URL templates) plus
+`registry-macos.ts` and `registry-windows.ts` (the actual per-OS values), with `registry.ts`
+now a thin selector that also **throws at startup** if either platform's registry is missing
+an entry for a common name (`checkCoverage`).
+
+**Reason:** This is exactly Milestone 6 from the updated plan. The pipeline (`extract.ts`,
+`resolve.ts`, `pipeline.ts`) must never see OS-specific values (AppleScript key codes, Windows
+virtual-key codes, `ms-settings:` URIs, exe paths) — only semantic names. A build-time-ish
+coverage check (it runs once at module load) makes "I added a Windows-only alias but forgot
+the name on macOS" fail loudly instead of silently no-op'ing a command later.
+
+**Consequences:**
+- `AppCandidate`/`ResolvedCommand` gained an `appAlias` field (the raw registry key, e.g.
+  `"chrome"`) separate from `appName`/`label` (the friendly display string). Automation calls
+  use `appAlias`; overlay/history/voice-reply text uses `appName`. Alias→executable resolution
+  now happens *inside* `automation/macos.ts`/`automation/windows.ts`, each using its own
+  registry file directly — `extract.ts` only ever sees alias keys via `appAliasKeys()`/
+  `appAliasLabel()` in `registry.ts`.
+- `KEY_PHRASES` was renamed/restructured to `KEY_SPECS` (platform-specific representation) +
+  `KEY_PHRASE_NAMES` (common list, in `registry-common.ts`). Same pattern for
+  `SETTINGS_PANES`/`SETTINGS_PANE_NAMES` and `FINDER_LOCATIONS`→`LOCATIONS`/`LOCATION_NAMES`.
+- `src/automation/index.ts` has a **Linux dev-only fallback** (falls back to the macOS module,
+  logging `automation.unsupported_platform_dev_fallback`) purely so this Linux sandbox — the
+  only environment available while building this — can still boot the app for structural
+  verification. Real end users get a hard error on any platform other than `darwin`/`win32`.
+- `scripts/clean.js` replaces the shell-specific `rm -rf dist dist-renderer` (Windows has no
+  `rm`) using `fs.rmSync`.
+
+## 2026-09-21 — Windows execution: PowerShell + `keybd_event`, not a persistent C# helper
+
+**Decision:** `src/automation/windows.ts` implements every action as a fresh
+`powershell.exe -NoProfile -NonInteractive -Command "..."` process (per-action, per the plan),
+with a small inline C# type (`Add-Type -Namespace Dragon -Name Win32 -MemberDefinition ...`)
+providing `GetForegroundWindow`/`GetWindowThreadProcessId`/`SetForegroundWindow`/`ShowWindow`/
+`PostMessage`/`keybd_event`. App launching goes through `cmd.exe /c start "" <token>` (the same
+resolution Win+R uses: PATH, the "App Paths" registry, or a URI).
+
+**Reason:** The plan explicitly allows starting with per-action PowerShell processes and only
+building a persistent C# helper if measured latency/reliability requires it — premature to add
+that complexity before a single real Windows run. `keybd_event` (legacy but still fully
+supported) was chosen over the newer, Microsoft-recommended `SendInput` specifically because
+its P/Invoke signature (`void keybd_event(byte, byte, uint, UIntPtr)`) is simple enough to
+write correctly *without a Windows machine to test on*, whereas `SendInput` requires marshaling
+an `INPUT`/`KEYBDINPUT` struct — much easier to get subtly wrong blind.
+
+**Verification performed (no Windows machine available):** Ran `npm run package:win`
+(`electron-builder --win portable --x64`) successfully from this Linux sandbox — produced a
+real, valid, unsigned Windows PE32 portable `.exe` with no `wine` installed. Separately,
+built a small Node harness that stubs `electron` and `child_process.execFile`/`spawn` to
+capture the *exact* generated PowerShell/`cmd` command lines without executing them, and
+inspected them for every action (`openApp`, `activateApp`, `quitApp`, `windowMinimize`,
+`pressNamedKey` for both a virtual-key and a Ctrl+letter shortcut, `deleteBackward`,
+`typeText`, `switchToPreviousApp`, `getActiveAppName`, `openFinderLocation` for both a plain
+folder and a `shell:` URI, `openSettingsPane`, and `say`) — all produced syntactically
+plausible, correctly-parameterized scripts (verified virtual-key codes by hand, e.g.
+Ctrl+A = `keybd_event(17,...)` then `keybd_event(65,...)`, Alt+F4 for "close window" =
+`keybd_event(18,...)` then `keybd_event(115,...)`). **This is not the same as running them on
+Windows** — no real `powershell.exe`/`user32.dll` call was ever made. Treat the entire Windows
+adapter as unverified-on-real-hardware until someone runs the manual check on Windows 11.
+
+**Consequences (documented parity gaps, all explicitly allowed by the plan):**
+- `volumeSet` (exact percentage) throws a clear "not supported on Windows yet" error rather
+  than approximating — Core Audio COM interop (`IAudioEndpointVolume`) would be needed, and is
+  exactly the kind of low-level, hard-to-verify-blind code this alpha avoids per plan guidance
+  ("ship up/down/mute first... record exact setting as the first parity gap").
+- `volumeMute`/`volumeUnmute` both send the **same** `VK_VOLUME_MUTE` toggle key — Windows has
+  no separate set-true/set-false without the same COM interop. Calling "unmute" while already
+  unmuted will mute it. Logged as `automation.windows_mute_is_toggle` each time.
+- "Maximize"/"fullscreen" both approximate: `windowFullscreen` presses F11 (the closest
+  widely-supported convention — browsers, VS Code, most media players); `windowMaximize` calls
+  `ShowWindow(SW_MAXIMIZE)` directly (an actual maximize, unlike macOS where "maximize" is
+  aliased to fullscreen — Windows *does* have a real maximize concept via `ShowWindow`, so it
+  gets a real implementation here, not just parity with macOS's simplification).
+- Third-party app launching (Slack, Discord, Cursor, Docker Desktop, etc.) is best-effort:
+  Windows has no single equivalent of macOS's `open -a "<App Name>"`. It works if the app is on
+  PATH or registered an "App Paths" registry key (true for Chrome, Firefox, VS Code with "Add
+  to PATH" checked, Office, and many installers) and may fail for apps installed only via a
+  per-user/appx installer that doesn't register either. `Docker Desktop`'s launch token is a
+  literal guess (`"Docker Desktop"`) with no verified install-path probing like Chrome got.
+- `openApp`/`openUrlInChrome` special-case Chrome with `findChromeExe()`, probing the three
+  standard install locations (`Program Files`, `Program Files (x86)`, per-user `LocalAppData`)
+  since Chrome is the one third-party app the plan's manual check explicitly requires.
+
+## 2026-09-21 — Platform-specific default global shortcuts and tray icon
+
+**Decision:** `DEFAULT_SETTINGS` now resolves `pushToTalkShortcut`/`emergencyStopShortcut` to
+`Control+Alt+D`/`Control+Alt+Escape` on Windows (macOS keeps `Alt+Space`/`Alt+Escape`), per the
+plan. Shortcut *registration failure* (e.g. already claimed by another app) is now surfaced,
+not just logged: `registerShortcuts` returns `{pushToTalkOk, emergencyStopOk}`, which flows
+through the existing `status:get`/`status:update` IPC channel into a warning banner in the
+Settings window. Also added a colored Windows tray icon (`assets/tray-icon-win.png`) and a
+real multi-size `.ico` (`assets/app-icon.ico`, hand-built as a valid PNG-compressed ICO
+container, verified with `file`) — macOS's monochrome "template" tray icon convention doesn't
+apply on Windows, where an all-black icon would look wrong.
+
+**Reason:** `Alt+Space` opens the window system menu on Windows; a silently-failed shortcut
+registration with no user-visible feedback would otherwise look identical to "the app is
+broken" (this exact class of bug was already found and fixed once for tray-menu staleness in
+an earlier pass — apply the same "surface it, don't just log it" standard here).
+
+## 2026-09-21 — Voice dictation mode: continuous typing, deterministic in-session editing
+
+**Decision:** Added a small dictation state machine to `DragonPipeline`: `dictationActive`
+becomes true after any `type_text` executes; while active, an utterance Jev doesn't recognize
+as any other command (`intent: "none"` or low confidence) is typed verbatim and folded into a
+tracked `dictationBuffer` instead of being discarded, so a user can keep talking naturally
+after one initial "type ..." without repeating the word "type" every sentence. A small,
+*deterministic* set of editing phrases — "new line", "delete the last N words", "delete/undo
+that" (removes exactly the last appended chunk), "delete everything"/"clear all of that", and
+"replace X with Y" — are matched by regex and executed **without calling Jev at all**, using
+exact character counts computed from the tracked buffer (backspacing precisely `oldLength -
+newLength` characters, or for replace, backspacing only the tail after the longest shared
+prefix and retyping only the changed suffix). Any other successfully-executed command
+(`open_app`, `chrome_search`, etc.) ends the dictation session. Two new intents,
+`insert_newline` and `search_in_app` (see below), and two more, `delete_text`/`replace_text`,
+exist mainly so Jev's own classification of these phrases (when the fast path doesn't fire,
+e.g. dictation isn't active) still resolves sensibly instead of falling through to "no
+command recognized".
+
+**Reason:** Explicitly requested. Dragon does not read the focused app's actual text content
+(no Accessibility text APIs, no vision, per the plan's non-goals) — the *only* way to make
+"delete the last 3 words" or "replace draft with final" reliable without that is to track
+exactly what Dragon itself typed and compute exact keystroke counts from that tracked copy,
+which is why the buffer-tracking design was chosen over any heuristic based on word-boundary
+keystrokes alone (those remain as a documented fallback risk, not the primary mechanism).
+Bypassing Jev for the editing phrases themselves is a latency/reliability choice, not a
+guardrail — these are a small, fixed, unambiguous set of regexes.
+
+**Consequences:**
+- If the user manually edits the field, switches apps, or the app doesn't accept a paste the
+  way Dragon assumes, the tracked buffer silently drifts out of sync with reality, and a
+  subsequent delete/replace will backspace the wrong number of characters. This is an
+  inherent limitation of not reading the target app's content, documented in PROGRESS.md/
+  README.md rather than solved (solving it would require Accessibility text APIs on macOS and
+  UI Automation `ValuePattern` on Windows — a much bigger addition, deferred).
+  "Ambient" words that happen to match an editing phrase (e.g. dictating a sentence that
+  contains "select all my belongings") are not caught by this fast path (it requires the
+  *entire* utterance to match one of the control regexes, not a substring), which avoids the
+  worst false-positive risk, but real free-form dictation will occasionally contain a full
+  sentence that happens to *be* one of these phrases and get misinterpreted as a control
+  command instead of typed. Accepted trade-off, matches the plan's alpha philosophy.
+- Added `PlatformAutomation.deleteBackward(count)` — presses Backspace `count` times in a
+  single OS call (one `osascript`/`powershell.exe` process, not `count` of them).
+
+## 2026-09-21 — "Open youtube.com" (already worked); site-aware search; tab reuse; in-app search
+
+Four related, smaller additions toward the requested use cases:
+
+1. **"Open youtube.com" → Chrome:** already worked end-to-end before this pass (Deepgram
+   transcribes "open youtube dot com"; `normalizeSpokenDomain` in `extract.ts` — added in an
+   earlier pass for the "search for google dot com" bug — turns that into "youtube.com";
+   `extractUrl` matches the domain regex; `chrome_open_url` executes via
+   `automation.openUrlInChrome`, which explicitly launches Chrome regardless of what's
+   currently focused). No new code needed; confirmed via the extraction unit check in
+   PROGRESS.md.
+2. **Site-aware search ("open youtube music" then "search for X" plays the right thing):**
+   `registry-common.ts`'s `SITE_SEARCH_TEMPLATES` maps a hostname fragment (e.g.
+   `music.youtube.com`, `github.com`, `reddit.com`, `amazon.`, `wikipedia.org`) to a URL-based
+   search template. `extract.ts`'s `computeSiteSearchUrl` checks the *current* Chrome page's
+   hostname (from the extension's snapshot) and, if it matches, attaches that URL to the
+   `chrome_search` `ResolvedCommand` instead of a generic Google search. Two ordinary
+   sequential commands — no multi-step planning, no DOM click needed for the search step
+   itself (only for actually clicking a result afterward, which still needs the extension).
+3. **"Open my existing tabs" (avoid duplicate tabs):** added a new `BrowserAction` kind,
+   `focus_or_open`, implemented in `chrome-extension/background.js`: before opening a URL,
+   check whether any existing tab (any window) already has a matching hostname and, if so,
+   just focus that tab/window instead of creating a new one. `chrome_open_url`/`chrome_search`
+   now route through `DragonPipeline.openUrlPreferringExistingTab`, which tries this when the
+   extension is connected and falls back to the plain OS-level open (always a new tab/window)
+   when it isn't.
+4. **"Open Slack, ... type a message" (generic in-app search, not Slack-specific):** added a
+   `search_in_app` intent that presses the target app's own quick-open/jump-to shortcut
+   (Cmd/Ctrl+K — a near-universal convention: Slack, Notion, VS Code, Discord, Linear, and
+   many other apps all bind it), pastes the query, and presses Enter. This is generic, not
+   Slack-specific automation, and does not attempt to chain "open app" + "search" + "type" into
+   one action — per AGENTS.md's one-command-per-utterance rule, the user says three separate
+   commands and each one individually works.
+
+**Consequences:** `search_in_app`'s Cmd/Ctrl+K convention doesn't hold for every app (some use
+Cmd/Ctrl+F, some have no such shortcut at all) — best-effort, matching the plan's general
+stance on third-party app integration. `focus_or_open`'s hostname match is intentionally loose
+(any tab on the same hostname, not the exact URL/path) so "open youtube music" reuses an
+already-open YouTube Music tab even if it's on a different video/search page.
+
+## 2026-09-21 — Fourth pass: completeness-vs-finality gate, "open cursor" override, richer latency logs
+
+A further real macOS run (logs supplied directly, not reconstructed) surfaced two more
+concrete bugs, both fixed in this pass:
+
+1. **A fully-spoken, final command could still be rejected as "incomplete".** Jev's `complete`
+   answer is a *semantic* completeness judgment (is this a well-formed sentence), not a
+   *speech* completeness judgment (has the user finished talking) — Deepgram's `EndOfTurn`
+   already tells us the latter. Observed: `"Open Slack?"` scored `complete: 0.31` (the
+   trailing "?" read as a question, not a command) despite being a fully final, fully
+   executable utterance, and was silently dropped by the `summary.complete < COMPLETE_THRESHOLD`
+   check regardless of `turn.isFinal`. Fixed in `src/main/pipeline.ts`: the completeness gate
+   (`incomplete`) now only applies when the turn is *not yet final* — its job is purely to
+   avoid acting on a truncated interim guess; once `EndOfTurn` has fired, only the intent
+   confidence/recognition gates still apply.
+2. **"Open cursor" still occasionally misclassified.** Even after the `open_app`/`shortcut`
+   Jev-criteria wording nudge from an earlier pass, "open cursor" was observed scoring
+   `intent: "none"` (0.49 confidence) in one run and `intent: "shortcut"` (0.4 confidence) in
+   another — plausibly because "cursor" reads as a UI/mouse/text-cursor concept as often as
+   the app name. Added a small, deterministic, code-level override in `resolve.ts`
+   (`openAppOverride`): when the utterance matches `/^(?:open|launch|start|switch to|go to)/i`
+   **and** a known app alias was found in the transcript, resolve to `activate_app` for that
+   app regardless of what intent Jev chose (unless Jev chose `quit_app`/`hide_app`, which stay
+   intentional). This is documented as a narrow, closed-pattern exception in AGENTS.md — not a
+   general "trust extraction over Jev" policy.
+3. **Latency logging.** `pipeline.decision_request` now includes `sttToDecisionMs` (time from
+   the Deepgram turn event to Dragon starting to process it); `pipeline.execution` now includes
+   `sttToDecisionMs`, `decisionMs`, `executionMs`, and `totalMs` together (previously only
+   `decisionMs`/`executionMs` separately); the overlay's latency indicator now shows that same
+   `totalMs`. `pipeline.dictation_control`/`pipeline.dictation_continue` events (new, from the
+   dictation feature above) also carry a `totalMs`.
+4. Also added a friendlier error message in `automation/macos.ts` for the classic
+   `osascript ... "not allowed to send keystrokes" (1002)` Accessibility-permission error
+   (observed once in the same log batch) — it now names the exact System Settings path instead
+   of surfacing the raw AppleScript error text.
+
+**Verification performed:** re-ran the exact failing transcripts (`"Open cursor."` with Jev
+answers matching both observed misclassifications, `"Open Slack?"` with `complete: 0.31`)
+through `extractPayload`/`resolveCommand` directly — both now resolve correctly. Latency and
+the friendlier error message were verified by code inspection only (both are straightforward
+enough not to need a harness), consistent with AGENTS.md's verification-honesty rule.

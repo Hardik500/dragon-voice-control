@@ -1,8 +1,8 @@
 import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
-import * as macos from "../automation/macos";
-import { extractPayload } from "../decision/extract";
+import { automation } from "../automation";
+import { extractDeleteWordCount, extractPayload, extractReplacePair } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
@@ -17,12 +17,21 @@ const INTENT_CONFIDENCE_THRESHOLD = 0.35;
 const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
+const DEFAULT_DELETE_WORD_COUNT = 3;
 
 interface InFlight {
   utteranceId: string;
   controller: AbortController;
   startedAt: number;
 }
+
+type DictationControl =
+  | { type: "stop" }
+  | { type: "newline" }
+  | { type: "delete_all" }
+  | { type: "delete_last_chunk" }
+  | { type: "delete_words"; count: number }
+  | { type: "replace"; find: string; replacement: string };
 
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
@@ -47,6 +56,17 @@ export class DragonPipeline {
   /** Avoids asking Jev the exact same question twice for one utterance (e.g. EagerEndOfTurn
    * then EndOfTurn arriving with identical transcript text). Keyed by `${utteranceId}::${text}`. */
   private jevAnswerCache = new Map<string, JevAnswerSummary>();
+
+  // --- Dictation session state (see DECISIONS.md "voice dictation") -----------------------
+  /** True once "type X" has executed; lets subsequent utterances that Jev doesn't recognize
+   * as any other command continue being typed verbatim, without repeating "type" each time. */
+  private dictationActive = false;
+  /** Everything typed in the current dictation session, kept in sync with what's on screen
+   * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
+   * instead of guessing. Cleared when dictation ends. */
+  private dictationBuffer = "";
+  /** The most recently appended chunk, for "delete that"/"undo that". */
+  private lastDictationChunk = "";
 
   constructor(
     private getSettings: () => DragonSettings,
@@ -172,7 +192,8 @@ export class DragonPipeline {
   emergencyStop(): void {
     for (const f of this.inFlight) f.controller.abort();
     this.inFlight = [];
-    macos.stopSpeaking();
+    automation.stopSpeaking();
+    this.endDictation();
     this.stopStreaming();
     logger.event("pipeline.emergency_stop", {});
   }
@@ -196,9 +217,154 @@ export class DragonPipeline {
     return transcript.slice(idx + wakePhrase.length).trim();
   }
 
+  // --- Dictation session helpers -----------------------------------------------------------
+
+  private startOrContinueDictation(chunk: string) {
+    this.dictationActive = true;
+    this.dictationBuffer = this.dictationBuffer.length > 0 ? `${this.dictationBuffer} ${chunk}` : chunk;
+    this.lastDictationChunk = chunk;
+  }
+
+  private appendDictationRaw(text: string) {
+    // For control-inserted text (e.g. a newline) that shouldn't get an extra joining space.
+    this.dictationActive = true;
+    this.dictationBuffer += text;
+    this.lastDictationChunk = text;
+  }
+
+  private endDictation() {
+    this.dictationActive = false;
+    this.dictationBuffer = "";
+    this.lastDictationChunk = "";
+  }
+
+  /** Deterministic dictation-editing commands, matched and executed without a Jev round trip
+   * for speed and reliability. Only checked while a dictation session is active. */
+  private matchDictationControl(effectiveText: string): DictationControl | null {
+    const trimmed = effectiveText.trim();
+    const lower = trimmed.toLowerCase().replace(/[.!?]+$/, "");
+
+    if (/^(?:stop|end)\s+(?:dictation|typing|dictating)$/.test(lower) || lower === "that's it" || lower === "stop typing") {
+      return { type: "stop" };
+    }
+    if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
+    if (/^(?:delete|remove|clear)\s+(?:everything|all(?:\s+of\s+(?:that|this))?|the\s+paragraph)$/.test(lower)) {
+      return { type: "delete_all" };
+    }
+    if (/^(?:delete|remove|undo)\s+that$/.test(lower)) return { type: "delete_last_chunk" };
+    if (/^(?:delete|remove)\s+(?:the\s+)?last\s+word$/.test(lower)) return { type: "delete_words", count: 1 };
+    if (/^(?:delete|remove)\b.*\blast\b.*\bwords?\b/.test(lower)) {
+      const n = extractDeleteWordCount(trimmed) ?? DEFAULT_DELETE_WORD_COUNT;
+      return { type: "delete_words", count: n };
+    }
+    if (/^replace\b/i.test(trimmed)) {
+      const pair = extractReplacePair(trimmed);
+      if (pair) return { type: "replace", find: pair[0], replacement: pair[1] };
+    }
+    return null;
+  }
+
+  private async runDictationControl(turn: TranscriptEvent, control: DictationControl, settings: DragonSettings): Promise<void> {
+    const startedAt = Date.now();
+    let actionLabel = "";
+    let execError: string | null = null;
+    try {
+      switch (control.type) {
+        case "stop":
+          actionLabel = "Stop dictation";
+          this.endDictation();
+          break;
+        case "newline":
+          actionLabel = "New line";
+          await automation.typeText("\n");
+          this.appendDictationRaw("\n");
+          break;
+        case "delete_all": {
+          actionLabel = "Delete everything typed";
+          await automation.deleteBackward(this.dictationBuffer.length);
+          this.dictationBuffer = "";
+          this.lastDictationChunk = "";
+          break;
+        }
+        case "delete_last_chunk": {
+          actionLabel = "Delete that";
+          const chunk = this.lastDictationChunk;
+          if (chunk) {
+            const joiner = this.dictationBuffer.length > chunk.length ? 1 : 0;
+            await automation.deleteBackward(chunk.length + joiner);
+            this.dictationBuffer = this.dictationBuffer.slice(0, Math.max(0, this.dictationBuffer.length - chunk.length - joiner));
+          }
+          this.lastDictationChunk = "";
+          break;
+        }
+        case "delete_words": {
+          actionLabel = `Delete last ${control.count} word(s)`;
+          const words = this.dictationBuffer.trim().split(/\s+/).filter(Boolean);
+          const newWords = words.slice(0, Math.max(0, words.length - control.count));
+          const newBuffer = newWords.join(" ");
+          const deleteChars = this.dictationBuffer.length - newBuffer.length;
+          await automation.deleteBackward(Math.max(0, deleteChars));
+          this.dictationBuffer = newBuffer;
+          this.lastDictationChunk = "";
+          break;
+        }
+        case "replace": {
+          actionLabel = `Replace "${control.find}" with "${control.replacement}"`;
+          const idx = this.dictationBuffer.toLowerCase().lastIndexOf(control.find.toLowerCase());
+          if (idx === -1) {
+            throw new Error(`Nothing matching "${control.find}" in what was typed recently`);
+          }
+          const before = this.dictationBuffer.slice(0, idx);
+          const after = this.dictationBuffer.slice(idx + control.find.length);
+          const newBuffer = before + control.replacement + after;
+          let prefixLen = 0;
+          const minLen = Math.min(this.dictationBuffer.length, newBuffer.length);
+          while (prefixLen < minLen && this.dictationBuffer[prefixLen] === newBuffer[prefixLen]) prefixLen++;
+          await automation.deleteBackward(this.dictationBuffer.length - prefixLen);
+          const retype = newBuffer.slice(prefixLen);
+          if (retype) await automation.typeText(retype);
+          this.dictationBuffer = newBuffer;
+          this.lastDictationChunk = "";
+          break;
+        }
+      }
+    } catch (err) {
+      execError = err instanceof Error ? err.message : String(err);
+    }
+    const totalMs = Date.now() - startedAt;
+
+    logger.event("pipeline.dictation_control", {
+      utteranceId: turn.utteranceId,
+      control: control.type,
+      totalMs,
+      error: execError,
+    });
+
+    this.onOverlay({
+      utteranceId: turn.utteranceId,
+      state: execError ? "error" : "done",
+      transcript: turn.transcript,
+      isFinal: true,
+      action: actionLabel,
+      status: execError,
+      latencyMs: totalMs,
+      activationMode: settings.activationMode,
+    });
+
+    this.history.add({
+      utteranceId: turn.utteranceId,
+      timestamp: Date.now(),
+      transcript: turn.transcript,
+      intent: "delete_text",
+      action: actionLabel,
+      status: execError ? "error" : "success",
+      detail: execError ?? "",
+    });
+  }
+
   private async onTurn(turn: TranscriptEvent): Promise<void> {
     const settings = this.getSettings();
-    macos.stopSpeaking(); // barge-in: new speech interrupts any spoken reply.
+    automation.stopSpeaking(); // barge-in: new speech interrupts any spoken reply.
 
     if (turn.event === "TurnResumed") {
       // The previous eager transcript for this turn is stale; drop any in-flight decision for it.
@@ -241,6 +407,18 @@ export class DragonPipeline {
     }
     if (effectiveText.trim().length === 0) return;
 
+    // Fast path: deterministic dictation-editing commands skip Jev entirely for speed and
+    // reliability. Only checked on a final turn, and only while actively dictating.
+    if (this.dictationActive && turn.isFinal) {
+      const control = this.matchDictationControl(effectiveText);
+      if (control) {
+        if (this.executedUtterances.has(turn.utteranceId)) return;
+        this.executedUtterances.add(turn.utteranceId);
+        await this.runDictationControl(turn, control, settings);
+        return;
+      }
+    }
+
     await this.runDecision(turn, effectiveText, settings);
   }
 
@@ -279,6 +457,7 @@ export class DragonPipeline {
 
   private async runDecision(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
     const startedAt = Date.now();
+    const sttToDecisionMs = startedAt - turn.receivedAt;
     const controller = this.registerInFlight(turn.utteranceId);
 
     this.onOverlay({
@@ -293,7 +472,7 @@ export class DragonPipeline {
     });
 
     try {
-      const activeApp = await macos.getActiveAppName();
+      const activeApp = await automation.getActiveAppName();
       const isChromeActive = activeApp === "Google Chrome";
       // Fetch the page snapshot whenever the extension is connected, not only when our
       // own (sometimes-unreliable) frontmost-app detection says "Google Chrome" — the
@@ -327,7 +506,8 @@ export class DragonPipeline {
           turnEvent: turn.event,
           activeApp,
           effectiveText,
-          appCandidates: payload.appCandidates.map((c) => c.appName),
+          sttToDecisionMs,
+          appCandidates: payload.appCandidates.map((c) => c.label),
           elementCandidates: payload.browserElementCandidates.length,
         });
 
@@ -368,7 +548,21 @@ export class DragonPipeline {
         return;
       }
 
-      if (summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || summary.complete < COMPLETE_THRESHOLD) {
+      // "complete" is Jev's judgment of sentence completeness, not speech completeness —
+      // on a final turn (EndOfTurn already told us the speaker is done), a short-but-final
+      // utterance like "Open Slack?" can score low on "complete" while still being a fully
+      // spoken, entirely executable command. Only enforce the completeness gate on turns
+      // that *aren't* final yet, where it protects against acting on a truncated interim.
+      const incomplete = !turn.isFinal && summary.complete < COMPLETE_THRESHOLD;
+      const noCommand = summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete;
+
+      if (noCommand) {
+        if (this.dictationActive && turn.isFinal && effectiveText.trim().length > 0) {
+          // Jev didn't recognize a command; while actively dictating, treat this as more
+          // dictated text so the user doesn't have to say "type" again for every sentence.
+          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs);
+          return;
+        }
         this.logIgnored(turn, "low_confidence_or_incomplete", summary.intent);
         return;
       }
@@ -379,7 +573,7 @@ export class DragonPipeline {
       }
       this.executedUtterances.add(turn.utteranceId);
 
-      const resolved = resolveCommand(summary, payload);
+      const resolved = resolveCommand(summary, payload, effectiveText);
       if (!resolved) {
         this.logIgnored(turn, "resolution_failed", summary.intent);
         return;
@@ -399,17 +593,29 @@ export class DragonPipeline {
       const execStarted = Date.now();
       let execError: string | null = null;
       try {
-        await this.executeCommand(resolved);
+        await this.executeCommand(resolved, isChromeActive);
       } catch (err) {
         execError = err instanceof Error ? err.message : String(err);
       }
       const executionMs = Date.now() - execStarted;
+      const totalMs = sttToDecisionMs + decisionMs + executionMs;
+
+      // Dictation session bookkeeping: typing/newline continue it; any other successfully
+      // recognized command (the confidence/completeness gates above already passed) means
+      // the user deliberately switched to something else, so end the session.
+      if (!execError) {
+        if (resolved.kind === "type_text") this.startOrContinueDictation(resolved.text!);
+        else if (resolved.kind === "insert_newline") this.appendDictationRaw("\n");
+        else if (resolved.kind !== "delete_text" && resolved.kind !== "replace_text") this.endDictation();
+      }
 
       logger.event("pipeline.execution", {
         utteranceId: turn.utteranceId,
         intent: resolved.kind,
+        sttToDecisionMs,
         decisionMs,
         executionMs,
+        totalMs,
         error: execError,
       });
 
@@ -420,7 +626,7 @@ export class DragonPipeline {
         isFinal: true,
         action: describeCommand(resolved),
         status: execError,
-        latencyMs: decisionMs + executionMs,
+        latencyMs: totalMs,
         activationMode: settings.activationMode,
       });
 
@@ -435,9 +641,9 @@ export class DragonPipeline {
       });
 
       if (settings.voiceReplyEnabled && !execError) {
-        macos.say(shortReplyFor(resolved));
+        automation.say(shortReplyFor(resolved));
       } else if (settings.voiceReplyEnabled && execError) {
-        macos.say("Sorry, that did not work.");
+        automation.say("Sorry, that did not work.");
       }
     } catch (err) {
       this.unregisterInFlight(controller);
@@ -460,6 +666,62 @@ export class DragonPipeline {
     }
   }
 
+  /** Jev didn't recognize a command for this utterance while a dictation session is active:
+   * type it verbatim and fold it into the tracked buffer instead of discarding it. */
+  private async continueDictation(
+    turn: TranscriptEvent,
+    effectiveText: string,
+    settings: DragonSettings,
+    decisionMs: number,
+    sttToDecisionMs: number
+  ): Promise<void> {
+    if (this.executedUtterances.has(turn.utteranceId)) return;
+    this.executedUtterances.add(turn.utteranceId);
+
+    const execStarted = Date.now();
+    let execError: string | null = null;
+    try {
+      await automation.typeText(effectiveText);
+      this.startOrContinueDictation(effectiveText);
+    } catch (err) {
+      execError = err instanceof Error ? err.message : String(err);
+    }
+    const executionMs = Date.now() - execStarted;
+    const totalMs = sttToDecisionMs + decisionMs + executionMs;
+
+    logger.event("pipeline.dictation_continue", {
+      utteranceId: turn.utteranceId,
+      sttToDecisionMs,
+      decisionMs,
+      executionMs,
+      totalMs,
+      error: execError,
+    });
+
+    this.onOverlay({
+      utteranceId: turn.utteranceId,
+      state: execError ? "error" : "done",
+      transcript: effectiveText,
+      isFinal: true,
+      action: "Continue typing",
+      status: execError,
+      latencyMs: totalMs,
+      activationMode: settings.activationMode,
+    });
+
+    this.history.add({
+      utteranceId: turn.utteranceId,
+      timestamp: Date.now(),
+      transcript: effectiveText,
+      intent: "type_text",
+      action: `Type "${effectiveText}"`,
+      status: execError ? "error" : "success",
+      detail: execError ?? "",
+    });
+    // Deliberately no voice reply here — a spoken "Done" after every dictated sentence would
+    // be exhausting; only explicit commands get acknowledged out loud.
+  }
+
   private logIgnored(turn: TranscriptEvent, reason: string, intent: string) {
     if (this.ignoredLoggedUtterances.has(turn.utteranceId) && !turn.isFinal) return;
     if (turn.isFinal) this.ignoredLoggedUtterances.add(turn.utteranceId);
@@ -476,55 +738,60 @@ export class DragonPipeline {
     });
   }
 
-  private async executeCommand(cmd: ResolvedCommand): Promise<void> {
+  private async executeCommand(cmd: ResolvedCommand, isChromeActive: boolean): Promise<void> {
     switch (cmd.kind) {
       case "open_app":
-        return macos.openApp(cmd.appName!);
+        return automation.openApp(cmd.appAlias!);
       case "activate_app":
-        return macos.activateApp(cmd.appName!);
+        return automation.activateApp(cmd.appAlias!);
       case "hide_app":
-        return macos.hideApp(cmd.appName!);
+        return automation.hideApp(cmd.appAlias!);
       case "quit_app":
-        return macos.quitApp(cmd.appName!);
+        return automation.quitApp(cmd.appAlias!);
       case "switch_previous_app":
-        return macos.switchToPreviousApp();
+        return automation.switchToPreviousApp();
       case "type_text":
-        return macos.typeText(cmd.text!);
+        return automation.typeText(cmd.text!);
+      case "insert_newline":
+        return automation.typeText("\n");
       case "press_key":
       case "shortcut":
-        return macos.pressNamedKey(cmd.keyName!);
+        return automation.pressNamedKey(cmd.keyName!);
       case "window_minimize":
-        return macos.windowMinimize();
+        return automation.windowMinimize();
       case "window_maximize":
-        return macos.windowMaximize();
+        return automation.windowMaximize();
       case "window_fullscreen":
-        return macos.windowFullscreen();
+        return automation.windowFullscreen();
       case "window_close":
-        return macos.windowClose();
+        return automation.windowClose();
       case "volume_up":
-        return macos.volumeUp();
+        return automation.volumeUp();
       case "volume_down":
-        return macos.volumeDown();
+        return automation.volumeDown();
       case "volume_set":
-        return macos.volumeSet(cmd.amount!);
+        return automation.volumeSet(cmd.amount!);
       case "volume_mute":
-        return macos.volumeMute();
+        return automation.volumeMute();
       case "volume_unmute":
-        return macos.volumeUnmute();
+        return automation.volumeUnmute();
       case "media_play_pause":
-        return macos.mediaPlayPause();
+        return automation.mediaPlayPause();
       case "media_next":
-        return macos.mediaNext();
+        return automation.mediaNext();
       case "media_previous":
-        return macos.mediaPrevious();
+        return automation.mediaPrevious();
       case "open_settings_pane":
-        return macos.openSettingsPane(cmd.pane!);
+        return automation.openSettingsPane(cmd.pane!);
       case "open_finder_location":
-        return macos.openFinderLocation(cmd.location!);
+        return automation.openFinderLocation(cmd.location!);
       case "chrome_open_url":
-        return macos.openUrlInChrome(cmd.url!);
+        return this.openUrlPreferringExistingTab(cmd.url!, isChromeActive);
       case "chrome_search":
-        return macos.openUrlInChrome(`https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`);
+        return this.openUrlPreferringExistingTab(
+          cmd.url ?? `https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`,
+          isChromeActive
+        );
       case "chrome_click":
         return this.requireBrowserAction({ kind: "click", elementId: cmd.elementId! });
       case "chrome_type":
@@ -545,9 +812,48 @@ export class DragonPipeline {
         return this.requireBrowserAction({ kind: "close_tab" });
       case "chrome_switch_tab":
         return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next" });
+      case "search_in_app":
+        return this.executeSearchInApp(cmd.query!);
+      case "replace_text": {
+        if (!this.dictationActive) {
+          throw new Error("Nothing to replace — say \"type ...\" first to dictate something.");
+        }
+        await this.runDictationControl(
+          { utteranceId: "", turnIndex: -1, event: "EndOfTurn", transcript: "", isFinal: true, endOfTurnConfidence: 1, receivedAt: Date.now() },
+          { type: "replace", find: cmd.find!, replacement: cmd.replacement! },
+          this.getSettings()
+        );
+        return;
+      }
       default:
         throw new Error(`Unhandled command kind: ${cmd.kind}`);
     }
+  }
+
+  /**
+   * "Open my existing tabs" / avoiding duplicate tabs: when the extension is connected, ask
+   * it to focus a tab that already matches this URL/hostname instead of always opening a new
+   * one. Falls back to the plain OS-level open (which always creates a new tab/window) when
+   * the extension isn't loaded/connected — no DOM access required either way.
+   */
+  private async openUrlPreferringExistingTab(url: string, _isChromeActive: boolean): Promise<void> {
+    if (this.browserBridge.isConnected()) {
+      const res = await this.browserBridge.sendAction({ kind: "focus_or_open", url });
+      if (res.ok) return;
+      logger.event("pipeline.focus_or_open_failed_fallback", { error: res.error });
+    }
+    await automation.openUrlInChrome(url);
+  }
+
+  /** Generic "search inside the current non-browser app" via its quick-open/jump-to shortcut
+   * (Cmd/Ctrl+K — Slack, Notion, VS Code, Discord, Linear, and many other apps all use this
+   * convention). Not app-specific automation; just the one nearly-universal shortcut. */
+  private async executeSearchInApp(query: string): Promise<void> {
+    await automation.pressNamedKey("quick switcher");
+    await new Promise((r) => setTimeout(r, 300));
+    await automation.typeText(query);
+    await new Promise((r) => setTimeout(r, 200));
+    await automation.pressNamedKey("enter");
   }
 
   private async requireBrowserAction(action: BrowserAction): Promise<void> {
@@ -577,6 +883,10 @@ function describeCommand(cmd: ResolvedCommand): string {
       return `Open ${cmd.url}`;
     case "chrome_search":
       return `Search for "${cmd.query}"`;
+    case "search_in_app":
+      return `Search for "${cmd.query}" in app`;
+    case "replace_text":
+      return `Replace "${cmd.find}" with "${cmd.replacement}"`;
     default:
       return cmd.kind.replace(/_/g, " ");
   }
