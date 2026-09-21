@@ -2,7 +2,7 @@ import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
-import { extractDeleteWordCount, extractPayload, extractReplacePair } from "../decision/extract";
+import { extractDeleteScope, extractPayload, extractReplacePair } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
@@ -32,6 +32,27 @@ type DictationControl =
   | { type: "delete_last_chunk" }
   | { type: "delete_words"; count: number }
   | { type: "replace"; find: string; replacement: string };
+
+/** Used when a dictation edit is executed via the normal Jev-recognized path (e.g. the
+ * deterministic fast-path in `onTurn` didn't match, but Jev independently recognized
+ * `delete_text`/`replace_text`) — `runDictationControl` needs a `TranscriptEvent` shape for
+ * its logging/overlay calls, but there's no real one at that call site. */
+const SYNTHETIC_TURN: TranscriptEvent = {
+  utteranceId: "",
+  turnIndex: -1,
+  event: "EndOfTurn",
+  transcript: "",
+  isFinal: true,
+  endOfTurnConfidence: 1,
+  receivedAt: Date.now(),
+};
+
+function deleteScopeToControl(scope: ReturnType<typeof extractDeleteScope>): DictationControl | null {
+  if (!scope) return null;
+  if (scope.scope === "all") return { type: "delete_all" };
+  if (scope.scope === "words") return { type: "delete_words", count: scope.count ?? DEFAULT_DELETE_WORD_COUNT };
+  return { type: "delete_last_chunk" };
+}
 
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
@@ -248,15 +269,8 @@ export class DragonPipeline {
       return { type: "stop" };
     }
     if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
-    if (/^(?:delete|remove|clear)\s+(?:everything|all(?:\s+of\s+(?:that|this))?|the\s+paragraph)$/.test(lower)) {
-      return { type: "delete_all" };
-    }
-    if (/^(?:delete|remove|undo)\s+that$/.test(lower)) return { type: "delete_last_chunk" };
-    if (/^(?:delete|remove)\s+(?:the\s+)?last\s+word$/.test(lower)) return { type: "delete_words", count: 1 };
-    if (/^(?:delete|remove)\b.*\blast\b.*\bwords?\b/.test(lower)) {
-      const n = extractDeleteWordCount(trimmed) ?? DEFAULT_DELETE_WORD_COUNT;
-      return { type: "delete_words", count: n };
-    }
+    const deleteScope = deleteScopeToControl(extractDeleteScope(trimmed));
+    if (deleteScope) return deleteScope;
     if (/^replace\b/i.test(trimmed)) {
       const pair = extractReplacePair(trimmed);
       if (pair) return { type: "replace", find: pair[0], replacement: pair[1] };
@@ -520,7 +534,11 @@ export class DragonPipeline {
       }
       if (turn.isFinal) this.pruneCacheForUtterance(turn.utteranceId);
 
-      if (settings.activationMode === "always_listening") {
+      // Skip the "addressed" gate entirely while actively dictating: continued natural speech
+      // ("How are you doing?") reads as not-addressed-to-an-assistant almost by definition,
+      // but during an active dictation session it should be typed, not discarded — the user
+      // already explicitly started dictating with a real command. See DECISIONS.md.
+      if (settings.activationMode === "always_listening" && !this.dictationActive) {
         if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
           this.logIgnored(turn, "not_addressed", summary.intent);
           return;
@@ -819,10 +837,23 @@ export class DragonPipeline {
           throw new Error("Nothing to replace — say \"type ...\" first to dictate something.");
         }
         await this.runDictationControl(
-          { utteranceId: "", turnIndex: -1, event: "EndOfTurn", transcript: "", isFinal: true, endOfTurnConfidence: 1, receivedAt: Date.now() },
+          SYNTHETIC_TURN,
           { type: "replace", find: cmd.find!, replacement: cmd.replacement! },
           this.getSettings()
         );
+        return;
+      }
+      case "delete_text": {
+        if (!this.dictationActive) {
+          throw new Error("Nothing to delete — say \"type ...\" first to dictate something.");
+        }
+        const control: DictationControl =
+          cmd.deleteScope === "all"
+            ? { type: "delete_all" }
+            : cmd.deleteScope === "words"
+              ? { type: "delete_words", count: cmd.wordCount ?? DEFAULT_DELETE_WORD_COUNT }
+              : { type: "delete_last_chunk" };
+        await this.runDictationControl(SYNTHETIC_TURN, control, this.getSettings());
         return;
       }
       default:

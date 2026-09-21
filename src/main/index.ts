@@ -12,6 +12,16 @@ import { OverlayUpdate } from "../types/pipeline";
 
 app.setName("Dragon");
 
+// Menu-bar apps are especially easy to accidentally launch twice (double-clicking the
+// packaged app while a dev instance is already running, re-running `npm start`, etc.). A
+// second instance would silently fail to bind the browser bridge's fixed port — which looks
+// exactly like "the Chrome extension is broken" with no obvious cause — so refuse to start a
+// second instance at all and just focus the existing one's Settings window instead.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
 let settingsStore: SettingsStore;
 let browserBridge: BrowserBridge;
 let pipeline: DragonPipeline;
@@ -30,6 +40,7 @@ function currentStatus() {
     streaming: pipeline.isStreaming(),
     activationMode: settings.activationMode,
     browserConnected: browserBridge.isConnected(),
+    browserBindError: browserBridge.getBindError(),
     shortcutStatus,
   };
 }
@@ -103,6 +114,16 @@ async function requestMicPermission() {
     logger.error("permissions.microphone_error", err);
   }
 }
+
+if (gotSingleInstanceLock) {
+app.on("second-instance", () => {
+  // Another launch attempt happened while we're already running — surface this instance's
+  // Settings window instead of doing nothing (which would look like the app didn't launch).
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+  }
+});
 
 app.whenReady().then(async () => {
   logger.event("app.start", { platform: process.platform, arch: process.arch });
@@ -235,3 +256,5 @@ app.on("before-quit", () => {
   pipeline?.emergencyStop();
   browserBridge?.stop();
 });
+
+} // if (gotSingleInstanceLock)

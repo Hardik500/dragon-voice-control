@@ -230,8 +230,17 @@ Summary, oldest to newest:
    gate applied regardless of finality); "open cursor" still occasionally misclassified
    (added a deterministic override); latency logging was thin (added `sttToDecisionMs`/
    `totalMs` throughout); unfriendly Accessibility-permission error message.
-5. This pass: added Windows support end-to-end (Milestones 6-8), voice dictation/editing,
+5. Fifth pass: added Windows support end-to-end (Milestones 6-8), voice dictation/editing,
    site-aware search, tab reuse, generic in-app search.
+6. Sixth pass, from a real macOS run of the fifth pass's build: the Chrome extension could not
+   connect at all (`ERR_CONNECTION_REFUSED`) because a second Dragon process was silently
+   holding the WebSocket port with no user-visible error — added
+   `app.requestSingleInstanceLock()` plus a proper bind-failure surface (Settings warning
+   banner). Also: dictation continuation was completely blocked in always-listening mode (the
+   "addressed" gate ran before the dictation fallback could apply); `delete_text` almost never
+   resolved (narrow fast-path regexes plus an always-`null` Jev-path fallback); "type in X"
+   typed a spurious leading "in"; `search_in_app` couldn't extract a query from "go to X chat"
+   phrasing (only "search for X" worked).
 
 ## Exact next task
 

@@ -94,6 +94,14 @@ window.addEventListener("DOMContentLoaded", () => {
     } else {
       warn.classList.remove("visible");
     }
+
+    const bridgeWarn = byId<HTMLDivElement>("bridgeWarning");
+    if (status?.browserBindError) {
+      bridgeWarn.textContent = `Chrome bridge did not start: ${status.browserBindError}`;
+      bridgeWarn.classList.add("visible");
+    } else {
+      bridgeWarn.classList.remove("visible");
+    }
   };
   window.dragonSettings.getStatus().then(applyStatus);
   window.dragonSettings.onStatus(applyStatus);

@@ -469,3 +469,69 @@ answers matching both observed misclassifications, `"Open Slack?"` with `complet
 through `extractPayload`/`resolveCommand` directly — both now resolve correctly. Latency and
 the friendlier error message were verified by code inspection only (both are straightforward
 enough not to need a harness), consistent with AGENTS.md's verification-honesty rule.
+
+## 2026-09-21 — Fifth pass: the Chrome extension couldn't connect at all, plus dictation gaps
+
+A real macOS run using the Windows-support/dictation build (real logs supplied directly)
+surfaced one severe bug and several real dictation-coverage gaps.
+
+1. **`ws://127.0.0.1:17872/` refused the connection outright.** Root cause: Electron does not
+   enforce single-instance by default, and `BrowserBridge.start()`'s `WebSocketServer` bind
+   failure only ever got logged (`browser.server_error`, now `browser.server_bind_failed`) —
+   never surfaced anywhere a user would see it, and the old code even logged
+   `browser.server_started` unconditionally right after the constructor call, before the
+   `listening`/`error` event told us whether the bind actually succeeded, so the log itself
+   was misleading. A second Dragon process (from re-running `npm start`, or launching the
+   packaged app while a dev instance was still up) would silently fail to bind the fixed port
+   while otherwise running completely normally — voice commands mostly still worked (STT/Jev/
+   macOS automation don't touch this port), which is exactly why the rest of the pipeline
+   looked fine in the logs while the extension flatly couldn't connect. **Fixed:**
+   `app.requestSingleInstanceLock()` in `src/main/index.ts` — a second launch attempt now
+   quits immediately and just focuses the first instance's Settings window instead of
+   silently stealing (or failing to steal) the port. `BrowserBridge` now logs
+   `browser.server_started` only on the actual `listening` event, exposes `getBindError()`
+   (with a specific, actionable message for `EADDRINUSE`), and that surfaces as a Settings
+   warning banner (same pattern as the shortcut-registration warning).
+   **Verification:** reproduced both failure modes directly — launched two real Electron
+   instances back to back (second one's log stops immediately after module-load, before
+   `app.start`, confirming the lock works) and separately pre-bound port 17872 with a plain
+   Node `net.createServer()` before launching Dragon (confirmed `browser.server_bind_failed`
+   fires with the exact `EADDRINUSE` message). Did not reproduce the *original* multi-instance
+   scenario on real macOS (no Mac available) — the fix addresses the mechanism directly
+   (Electron's own single-instance API), so it should hold regardless of exactly how the user
+   ended up with two processes.
+2. **Dictation continuation was silently blocked in always-listening mode.** The
+   `activationMode === "always_listening"` "addressed" gate ran *before* the dictation
+   fallback ever got a chance — ordinary continued speech ("How are you doing?") scores low on
+   "is this addressed to an assistant" almost by definition, so every dictation-continuation
+   utterance was rejected as `not_addressed` before reaching the code that would have typed it.
+   Fixed: the addressed gate is now skipped entirely while `dictationActive` — the user already
+   explicitly started dictating with a real command, so continued unrecognized speech during
+   that session doesn't need to re-pass an "is this addressed to Dragon" check.
+3. **`delete_text` almost never resolved.** Two compounding causes: the fast-path regexes in
+   `matchDictationControl` required specific phrasing ("delete that", "delete everything") and
+   didn't match a bare "Delete.", "Remove content.", or "Clear text."; and `resolve.ts`'s
+   `delete_text` case *always* returned `null` even when Jev correctly recognized the intent,
+   so there was no fallback once the fast path missed. Fixed: added a single shared, generously
+   permissive `extractDeleteScope` in `extract.ts` (matches any `delete`/`remove`/`clear`/`undo`
+   phrasing — safe to be generous since it's only ever consulted while a dictation session is
+   already active) used by *both* the fast path and `resolve.ts`'s `delete_text` case, which
+   now returns a real `ResolvedCommand` instead of `null`. `pipeline.ts`'s `executeCommand`
+   gained a `delete_text` case that requires an active dictation session (clear error
+   otherwise) and delegates to the same delete-execution logic the fast path uses.
+4. **"Type in hello" typed "in hello".** `extractDictatedText`'s regex captured everything
+   after the trigger word verbatim, including filler like "in"/"out" ("type in X", "type out
+   X" are both common phrasings). Fixed: the regex now optionally consumes a single filler word
+   (`in`/`out`/`that`) right after the trigger before capturing the rest.
+5. **`search_in_app` queries phrased as "go to X chat" / "open X's chat" extracted nothing**,
+   only "search for X" worked. Added `go to X (chat|channel|conversation|dm|profile)`, `open/
+   click on X's chat`, a bare `go to X` fallback, and `find X` to `extractSearchQuery` (ordered
+   most-specific first so the trailing "chat"/"'s" gets stripped when present).
+
+**Verification performed:** unit-checked all five extraction fixes directly against the exact
+transcripts from the supplied logs (`extractDictatedText("Type in hello...")` →
+`"hello..."`; `extractDeleteScope` against `"Delete."`, `"Remove content."`, `"Clear text."`,
+`"delete the last 3 words"`, `"undo that"` → all resolve to a sensible scope;
+`extractSearchQuery` against `"Go to Anushi's chat."`, `"Go to Anshul."`, `"go to hardship
+chat"`, `"Open Anshul Gupta chat."` → all now extract a clean name). The single-instance-lock
+and bind-error fixes were verified by direct reproduction (see above), not just inspection.

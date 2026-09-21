@@ -63,20 +63,30 @@ export function findAppCandidates(transcript: string): AppCandidate[] {
 }
 
 export function extractDictatedText(transcript: string): string | null {
-  const m = transcript.match(/\b(?:type|enter|write|dictate)\s+(.+)$/i);
+  // "type in X" / "type out X" are common phrasings where "in"/"out" is filler, not part of
+  // the dictated content — without stripping it, "Type in hello" would type "in hello".
+  const m = transcript.match(/\b(?:type|enter|write|dictate)(?:\s+(?:in|out|that))?\s+(.+)$/i);
   if (m && m[1].trim().length > 0) return m[1].trim();
   return null;
 }
 
 export function extractSearchQuery(transcript: string): string | null {
+  // Order matters: more specific patterns (with a trailing "chat"/"channel" to strip) first,
+  // so e.g. "go to Anushri's chat" yields "Anushri" rather than "Anushri's chat". These extra
+  // "go to X" / "find X" patterns exist for `search_in_app` (Slack/Notion/etc.'s quick-open
+  // convention is naturally phrased as navigation, not "search for"), not just chrome_search.
   const patterns = [
     /\bsearch(?:\s+(?:for|the\s+web\s+for))?\s+(?:for\s+)?(.+)$/i,
     /\bgoogle\s+(.+)$/i,
     /\blook\s+up\s+(.+)$/i,
+    /\bgo\s+to\s+(.+?)(?:'s)?\s+(?:chat|channel|conversation|dm|profile)\b.*$/i,
+    /\b(?:open|click\s+on)\s+(.+?)(?:'s)?\s+(?:chat|channel|conversation|dm)\b.*$/i,
+    /\bgo\s+to\s+(.+)$/i,
+    /\bfind\s+(.+)$/i,
   ];
   for (const p of patterns) {
     const m = transcript.match(p);
-    if (m && m[1].trim().length > 0) return m[1].trim();
+    if (m && m[1].trim().length > 0) return m[1].trim().replace(/[.!?]+$/, "");
   }
   return null;
 }
@@ -179,6 +189,27 @@ export function extractReplacePair(transcript: string): [string, string] | null 
     return [m[1].trim(), m[2].trim()];
   }
   return null;
+}
+
+/**
+ * Deliberately permissive: only ever consulted while a dictation session is active (there's
+ * nothing meaningful to delete otherwise), so a generous match on any delete/remove/clear/undo
+ * phrasing is safe. Order matters — "words" is checked before the generic "all" bucket so
+ * "delete the last 3 words" doesn't get swallowed by a bare "delete".
+ */
+export function extractDeleteScope(transcript: string): { scope: "words" | "last_dictation" | "all"; count?: number } | null {
+  const lowerT = lower(transcript).replace(/[.!?]+$/, "");
+  if (!/^(?:delete|remove|clear|undo)\b/.test(lowerT)) return null;
+
+  if (/\blast\b/.test(lowerT) && /\bwords?\b/.test(lowerT)) {
+    const count = extractDeleteWordCount(transcript) ?? 3;
+    return { scope: "words", count };
+  }
+  if (/\b(everything|all|the\s+paragraph|content|text|note)\b/.test(lowerT)) {
+    return { scope: "all" };
+  }
+  // Bare "delete"/"remove"/"undo"/"clear", optionally with a trailing "that"/"it"/"this".
+  return { scope: "last_dictation" };
 }
 
 /** Simple token-overlap similarity, cheap and adequate for short UI labels. */

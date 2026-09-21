@@ -1,5 +1,6 @@
 import { KEY_PHRASE_NAMES, LOCATION_NAMES, SETTINGS_PANE_NAMES } from "../commands/registry";
 import { AppCandidate, Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
+import { extractDeleteScope } from "./extract";
 import { JevAnswers } from "./jev-client";
 
 /** Intents that may execute from a confident interim transcript (closed, low-risk-of-truncation commands). */
@@ -187,10 +188,14 @@ export function resolveCommand(
       return { kind: intent, query: payload.searchQuery };
     }
     case "delete_text": {
-      // Handled deterministically in the pipeline's dictation fast-path when dictation is
-      // active; if it reaches here (dictation not active), there's nothing safe to delete
-      // without reading the target app's content, which Dragon doesn't do.
-      return null;
+      // Usually handled deterministically in the pipeline's dictation fast-path (skips Jev
+      // entirely); this is the fallback for when Jev recognized delete_text on a phrasing the
+      // fast path's regexes didn't (e.g. an interim turn, or wording outside that closed set).
+      // The pipeline still requires an active dictation session before actually executing —
+      // there's nothing safe to delete otherwise without reading the target app's content.
+      const scope = extractDeleteScope(effectiveText);
+      if (!scope) return null;
+      return { kind: intent, deleteScope: scope.scope, wordCount: scope.count };
     }
     case "replace_text": {
       if (!payload.replacePair) return null;

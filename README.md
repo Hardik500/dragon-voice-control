@@ -228,6 +228,15 @@ find and fix real bugs; see PROGRESS.md's "Exact next task" for the most likely 
   sure the unpacked extension is loaded and Dragon is running; check for
   `browser.extension_connected` in the logs. `chrome_open_url`/`chrome_search` still work
   without it (just won't reuse an existing tab).
+- The extension's console shows `WebSocket connection to 'ws://127.0.0.1:17872/' failed:
+  ERR_CONNECTION_REFUSED` → Dragon's local bridge server never bound to that port at all,
+  most commonly because **another Dragon process is already running** and holding it (e.g.
+  you ran `npm start` twice, or launched the packaged app while a dev instance was still up).
+  Dragon only allows one running instance — launching a second one just focuses Settings on
+  the first and quits, so this shouldn't happen anymore, but if you still see it: quit Dragon
+  fully (check Activity Monitor/Task Manager for a leftover process) and relaunch. Settings
+  also shows a warning banner (and the log has a `browser.server_bind_failed` event with the
+  exact reason) whenever this happens.
 - No transcripts appearing → check `stt.connected` / `stt.socket_error` / `stt.fatal_error`
   events in the logs; usually a bad/missing Deepgram key or no microphone permission.
 - Jev/decision errors → check `pipeline.decision_failed` / `jev.response` events; usually a

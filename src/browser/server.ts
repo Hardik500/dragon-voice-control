@@ -21,9 +21,17 @@ export class BrowserBridge {
   private wss: WebSocketServer | null = null;
   private socket: WebSocket | null = null;
   private pending = new Map<string, Pending>();
+  /** Set if the server failed to bind (most commonly EADDRINUSE — another Dragon process,
+   * or a leftover one, already holding the port). Surfaced in Settings, not just logged,
+   * since a silent bind failure looks exactly like "the extension is broken" otherwise. */
+  private bindError: string | null = null;
 
   start() {
     this.wss = new WebSocketServer({ port: BROWSER_BRIDGE_PORT, host: "127.0.0.1" });
+    this.wss.on("listening", () => {
+      this.bindError = null;
+      logger.event("browser.server_started", { port: BROWSER_BRIDGE_PORT });
+    });
     this.wss.on("connection", (ws) => {
       logger.event("browser.extension_connected", {});
       this.socket = ws;
@@ -34,8 +42,22 @@ export class BrowserBridge {
       });
       ws.on("error", (err) => logger.error("browser.socket_error", err));
     });
-    this.wss.on("error", (err) => logger.error("browser.server_error", err));
-    logger.event("browser.server_started", { port: BROWSER_BRIDGE_PORT });
+    this.wss.on("error", (err: any) => {
+      const reason =
+        err?.code === "EADDRINUSE"
+          ? `Port ${BROWSER_BRIDGE_PORT} is already in use — another Dragon instance (or a leftover one) is likely still running. Quit it, then relaunch.`
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      this.bindError = reason;
+      logger.error("browser.server_bind_failed", err, { port: BROWSER_BRIDGE_PORT });
+    });
+  }
+
+  /** Non-null if the local WebSocket server failed to bind at all — the extension can never
+   * connect until this is resolved, regardless of what the extension itself does. */
+  getBindError(): string | null {
+    return this.bindError;
   }
 
   stop() {
