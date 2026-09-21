@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Dragon Browser Control",
+  "version": "0.1.0",
+  "description": "Lets the local Dragon desktop app read a compact page snapshot and perform click/type/scroll/tab actions for voice commands. Unpacked, local-only, personal alpha extension.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Dragon Browser Control"
+  }
+}

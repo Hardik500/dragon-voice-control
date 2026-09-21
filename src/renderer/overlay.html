@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  #card {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: rgba(20, 20, 24, 0.86);
+    color: #f0f0f0;
+    border-radius: 14px;
+    padding: 14px 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    backdrop-filter: blur(10px);
+  }
+  #state {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    color: #8ab4ff; margin-bottom: 6px;
+  }
+  #transcript { font-size: 14px; line-height: 1.3; min-height: 34px; }
+  #action { font-size: 12px; color: #9fe89f; margin-top: 6px; }
+  #status { font-size: 12px; color: #ff9f9f; margin-top: 4px; }
+  #latency { font-size: 10px; color: #888; margin-top: 8px; text-align: right; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .dot.listening { background:#8ab4ff; }
+  .dot.thinking { background:#ffd166; }
+  .dot.executing { background:#06d6a0; }
+  .dot.done { background:#06d6a0; }
+  .dot.error { background:#ef476f; }
+  .dot.idle { background:#555; }
+</style>
+</head>
+<body>
+  <div id="card">
+    <div id="state"><span class="dot idle" id="dot"></span><span id="stateText">Idle</span></div>
+    <div id="transcript">Say a command…</div>
+    <div id="action"></div>
+    <div id="status"></div>
+    <div id="latency"></div>
+  </div>
+  <script src="../../dist-renderer/overlay.js"></script>
+</body>
+</html>

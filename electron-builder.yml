@@ -1,0 +1,26 @@
+appId: com.dragon.alpha
+productName: Dragon
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-renderer/**/*
+  - src/renderer/**/*.html
+  - assets/**/*
+  - package.json
+extraResources: []
+mac:
+  target:
+    - target: dir
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  icon: assets/app-icon-512.png
+  # Personal, unsigned local alpha build (see DECISIONS.md): no code signing
+  # or notarization. macOS Gatekeeper will require an explicit
+  # right-click/Open the first time this is launched.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  extendInfo:
+    NSMicrophoneUsageDescription: "Dragon needs the microphone to listen for voice commands."

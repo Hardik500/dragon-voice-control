@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Dragon Settings</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: #1b1b1f;
+    color: #eee;
+    padding: 20px;
+  }
+  h1 { font-size: 16px; margin: 0 0 16px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #999; margin: 20px 0 8px; }
+  label { display: block; font-size: 13px; margin-bottom: 4px; color: #ccc; }
+  input[type=text], input[type=password], select {
+    width: 100%; box-sizing: border-box; padding: 6px 8px; margin-bottom: 12px;
+    background: #2a2a30; border: 1px solid #3a3a42; color: #eee; border-radius: 6px; font-size: 13px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .row label { margin-bottom: 0; }
+  button {
+    background: #3d5afe; color: white; border: none; border-radius: 6px; padding: 8px 12px;
+    font-size: 13px; cursor: pointer; margin-right: 8px;
+  }
+  button.secondary { background: #333; }
+  .hint { font-size: 11px; color: #888; margin: -8px 0 12px; }
+  .status { font-size: 11px; color: #7dd07d; margin-top: 4px; min-height: 14px; }
+  table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 8px; }
+  td, th { text-align: left; padding: 3px 4px; border-bottom: 1px solid #2a2a30; }
+  #historyBody { max-height: 160px; overflow: auto; display: block; }
+</style>
+</head>
+<body>
+  <h1>Dragon — Settings</h1>
+
+  <h2>API Keys</h2>
+  <label for="openRouterApiKey">OpenRouter API key (used for Jev decisions)</label>
+  <input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" />
+  <label for="deepgramApiKey">Deepgram API key (used for streaming transcription)</label>
+  <input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" />
+
+  <h2>Activation</h2>
+  <label for="activationMode">Activation mode</label>
+  <select id="activationMode">
+    <option value="push_to_talk">Push to talk</option>
+    <option value="wake_word">Wake word</option>
+    <option value="always_listening">Always listening</option>
+  </select>
+  <label for="pushToTalkShortcut">Push-to-talk / listen toggle shortcut</label>
+  <input id="pushToTalkShortcut" type="text" placeholder="Alt+Space" />
+  <label for="emergencyStopShortcut">Emergency stop shortcut</label>
+  <input id="emergencyStopShortcut" type="text" placeholder="Alt+Escape" />
+  <label for="wakePhrase">Wake phrase</label>
+  <input id="wakePhrase" type="text" placeholder="Dragon" />
+  <div class="hint">Electron cannot detect key-up globally, so push-to-talk is a toggle: press once to start listening, press again (or use the tray menu) to stop.</div>
+
+  <div class="row">
+    <label for="voiceReplyEnabled">Speak short replies (native <code>say</code>)</label>
+    <input id="voiceReplyEnabled" type="checkbox" />
+  </div>
+  <div class="row">
+    <label for="logVerbosity">Debug log verbosity</label>
+    <select id="logVerbosity" style="width:auto;margin-bottom:0;">
+      <option value="normal">Normal</option>
+      <option value="verbose">Verbose</option>
+    </select>
+  </div>
+
+  <div style="margin-top:16px;">
+    <button id="saveBtn">Save</button>
+    <button id="openLogsBtn" class="secondary">Open Logs Folder</button>
+    <button id="clearHistoryBtn" class="secondary">Clear History</button>
+  </div>
+  <div class="status" id="statusLine"></div>
+
+  <h2>Recent Command History</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Transcript</th><th>Action</th><th>Status</th></tr></thead>
+    <tbody id="historyBody"></tbody>
+  </table>
+
+  <script src="../../dist-renderer/settings.js"></script>
+</body>
+</html>

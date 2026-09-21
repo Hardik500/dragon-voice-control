@@ -1,0 +1,33 @@
+{
+  "name": "dragon",
+  "version": "0.1.0",
+  "description": "Dragon: macOS voice-control agent alpha (Electron + Deepgram Flux + Jev/OpenRouter)",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "clean": "rm -rf dist dist-renderer",
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "tsc -p tsconfig.renderer.json",
+    "build": "npm run clean && npm run build:main && npm run build:renderer",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "package:mac": "npm run build && electron-builder --mac --arm64 --dir",
+    "icons": "node scripts/make-icons.js"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/ws": "^8.5.10",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}
