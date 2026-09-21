@@ -139,6 +139,18 @@ What could **not** be verified in this environment, and exactly what to do about
   are unaffected since they don't need the extension.
 - No automated tests, by design (see AGENTS.md / plan non-goals).
 
+## Bug fixes
+
+- **Wake word / always listening didn't actually start listening (2026-09-21).** Picking
+  "Wake word" or "Always listening" in the activation-mode dropdown (Settings window or tray)
+  only updated `settings.activationMode`; the separate `listening` flag stayed `false` until
+  toggled via the tray's "Listening: On/Off" item or the push-to-talk shortcut, so the mic
+  window never got `mic:start` and Deepgram never connected — symptom was `mic.status:
+  "stopped"` repeating with no `stt.*` events at all. Fixed in `src/main/index.ts`:
+  `setActivationMode` and the Settings-window `onSettingsChanged` path now set `listening =
+  true` whenever the new mode isn't `push_to_talk`. Push-to-talk is unaffected; it still
+  requires the explicit hotkey/tray toggle.
+
 ## Exact next task
 
 Hand off to a macOS machine and work through the "Manual alpha check" section of `README.md`

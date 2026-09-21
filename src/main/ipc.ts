@@ -7,7 +7,7 @@ import { logger } from "../logging/logger";
 export interface IpcDeps {
   settingsStore: SettingsStore;
   pipeline: DragonPipeline;
-  onSettingsChanged: (settings: DragonSettings) => void;
+  onSettingsChanged: (settings: DragonSettings, partial: Partial<DragonSettings>) => void;
   getStatus: () => Record<string, unknown>;
 }
 
@@ -17,7 +17,7 @@ export function registerIpc(deps: IpcDeps) {
   ipcMain.handle("settings:update", (_e, partial: Partial<DragonSettings>) => {
     const updated = deps.settingsStore.update(partial);
     logger.event("settings.updated", { fields: Object.keys(partial) });
-    deps.onSettingsChanged(updated);
+    deps.onSettingsChanged(updated, partial);
     return toRendererSafe(updated);
   });
 

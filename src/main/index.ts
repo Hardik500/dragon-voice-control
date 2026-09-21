@@ -62,6 +62,9 @@ function setActivationMode(mode: ActivationMode) {
   logger.event("app.activation_mode_changed", { mode });
   // Switching modes stops any in-progress continuous/ptt session cleanly.
   pipeline.stopStreaming();
+  // Wake word / always listening imply the user wants listening on now;
+  // push-to-talk still requires the explicit hotkey/tray toggle.
+  if (mode !== "push_to_talk") listening = true;
   applyListeningState();
 }
 
@@ -119,10 +122,17 @@ app.whenReady().then(async () => {
   registerIpc({
     settingsStore,
     pipeline,
-    onSettingsChanged: () => {
-      logger.setVerbosity(settingsStore.get().logVerbosity);
+    onSettingsChanged: (settings, partial) => {
+      logger.setVerbosity(settings.logVerbosity);
       registerAppShortcuts();
-      pushStatus();
+      // Settings window can also change activation mode; keep behavior in
+      // sync with the tray's setActivationMode (auto-start wake/always modes).
+      if (partial.activationMode && partial.activationMode !== "push_to_talk") {
+        listening = true;
+        applyListeningState();
+      } else {
+        pushStatus();
+      }
     },
     getStatus: () => currentStatus(),
   });

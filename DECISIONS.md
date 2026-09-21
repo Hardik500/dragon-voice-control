@@ -121,3 +121,20 @@ code inspection / protocol-level testing (WebSocket bridge, extraction, decision
 versus things that need a real macOS machine (`osascript`/`open`/`say` execution, actual
 microphone capture, actual Deepgram/Jev network calls, arm64 packaging, Accessibility/mic
 permission prompts, loading the unpacked Chrome extension).
+
+## 2026-09-21 — Selecting wake_word/always_listening now auto-sets the master `listening` flag
+
+**Decision:** `setActivationMode` (tray) and the Settings-window save path now set the
+module-level `listening` flag to `true` whenever the newly-selected mode isn't `push_to_talk`,
+instead of leaving it untouched until a separate tray/hotkey toggle.
+
+**Reason:** `listening` and `activationMode` were two independent pieces of state. A live test
+showed picking "Always listening"/"Wake word" from the Settings dropdown updated
+`activationMode` and logged `app.activation_mode_changed`, but `applyListeningState()` still
+took its `if (!listening) { stopStreaming(); return; }` branch, so the mic window never got
+`mic:start` and Deepgram never connected — no error, just silence, because the mode picker
+implicitly reads as "start doing this now" for the two continuous modes.
+
+**Consequences:** Push-to-talk keeps requiring its explicit toggle (unaffected). Switching
+away from wake_word/always_listening to push_to_talk does not auto-stop listening beyond the
+existing `pipeline.stopStreaming()` call already made on every mode change.
