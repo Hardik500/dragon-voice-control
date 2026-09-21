@@ -5,6 +5,9 @@ import { TranscriptEvent } from "../types/pipeline";
 const SAMPLE_RATE = 16000;
 
 export type TurnHandler = (turn: TranscriptEvent) => void;
+/** `hadOpened` distinguishes "was connected and then dropped" (worth auto-reconnecting)
+ * from "never connected in the first place" (e.g. a bad API key — retrying won't help). */
+export type CloseHandler = (hadOpened: boolean) => void;
 
 /**
  * Thin wrapper around Deepgram Flux's /v2/listen streaming endpoint.
@@ -19,7 +22,7 @@ export class DeepgramFluxConnection {
     private apiKey: string,
     private onTurn: TurnHandler,
     private onError: (err: Error) => void,
-    private onClose: () => void,
+    private onClose: CloseHandler,
     private newUtteranceId: () => string
   ) {}
 
@@ -88,8 +91,8 @@ export class DeepgramFluxConnection {
       });
 
       this.ws.on("close", (code, reason) => {
-        logger.event("stt.closed", { code, reason: reason?.toString() });
-        this.onClose();
+        logger.event("stt.closed", { code, reason: reason?.toString(), hadOpened: this.opened });
+        this.onClose(this.opened);
       });
     });
   }

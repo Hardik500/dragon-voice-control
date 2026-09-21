@@ -65,16 +65,29 @@ export function extractSearchQuery(transcript: string): string | null {
   return null;
 }
 
+/** Deepgram transcribes spoken "dot" as the literal word "dot", not a period (there's no
+ * numerals/punctuation-formatting option that turns "google dot com" into "google.com").
+ * Normalize that pattern before running URL regexes, but only for URL extraction — dictated
+ * text ("type ... dot ...") must stay verbatim. */
+function normalizeSpokenDomain(transcript: string): string {
+  return transcript.replace(
+    /\b([a-z0-9-]+)\s+dot\s+(com|org|net|io|dev|co|gov|edu|app|ai|uk)\b/gi,
+    "$1.$2"
+  );
+}
+
 export function extractUrl(transcript: string): string | null {
-  const explicit = transcript.match(/\bhttps?:\/\/\S+/i);
+  const normalized = normalizeSpokenDomain(transcript);
+
+  const explicit = normalized.match(/\bhttps?:\/\/\S+/i);
   if (explicit) return explicit[0];
 
-  const domainLike = transcript.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|co|gov|edu))\b/i);
+  const domainLike = normalized.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|co|gov|edu|app|ai|uk))\b/i);
   if (domainLike) return `https://${domainLike[1]}`;
 
-  const lowerT = lower(transcript);
+  const lowerT = lower(normalized);
   for (const [site, url] of Object.entries(KNOWN_WEBSITES)) {
-    if (new RegExp(`\\b${site}\\b`).test(lowerT) && /\b(go to|open|navigate to|visit)\b/.test(lowerT)) {
+    if (new RegExp(`\\b${site}\\b`).test(lowerT) && /\b(go to|open|navigate to|visit|search for)\b/.test(lowerT)) {
       return url;
     }
   }

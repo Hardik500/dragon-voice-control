@@ -165,14 +165,32 @@ What could **not** be verified in this environment, and exactly what to do about
   `pgrep`; and `APP_ALIASES` was missing common apps like Cursor, iTerm, Docker, Discord,
   Notion, Figma, and the Office suite. Also added a `chrome.alarms` keepalive to the extension's
   background worker (MV3 workers can be evicted after ~30s idle).
+- **Relaunching into a continuous mode didn't start listening; spoken "dot com" never became a
+  URL; auto-reconnect retried forever against a bad key (2026-09-21, third pass).** A real run
+  with both fixes above applied showed genuine progress — Chrome open/search/scroll executing
+  correctly — plus three new bugs, all fixed (see `DECISIONS.md` for full detail): `listening`
+  is now seeded from the persisted `activationMode` at startup instead of always defaulting to
+  `false`; `extractUrl` now normalizes spoken "X dot com" to "X.com" before matching (dictated
+  text is untouched); and the auto-reconnect added in the second pass now only fires for a
+  connection that actually opened before dropping (not one that never opened at all, e.g. a bad
+  key), is capped at 5 attempts, and a manual stop during the retry gap now reliably cancels
+  the pending retry. Also reworded the `open_app`/`shortcut` Jev criteria after observing "open
+  cursor" misclassified as `shortcut` once — unverified against live Jev calls in this
+  environment, so treat as a nudge, not a guaranteed fix.
+- **Still open / not yet re-verified:** clicking browser elements requires the unpacked
+  extension to be loaded (confirmed working-as-designed, user hadn't loaded it yet); STT
+  mis-hears (e.g. "reddit" → "retit") are an inherent Deepgram accuracy limit, not a code bug;
+  Jev occasionally misclassifies uncommon app names (see the `open_app` wording nudge above,
+  needs a live re-test to confirm it actually helped).
 
 ## Exact next task
 
 Hand off to a macOS machine and work through the "Manual alpha check" section of `README.md`
-top to bottom. Priorities given the two bug-fix rounds above: (1) confirm push-to-talk actually
-delivers the final utterance after release (the `ForceEndTurn` graceful-stop fix), (2) confirm
-always-listening now accepts plain commands like "open chrome" without saying "Dragon" first,
-(3) confirm the tray checkbox/radio state stays in sync with hotkey/Settings-driven changes,
-(4) otherwise fix anything the AppleScript-by-inspection review got wrong (most likely spot:
+top to bottom. Priorities given the three bug-fix rounds above: (1) confirm the app resumes
+listening on its own after a relaunch into wake-word/always-listening mode, with no manual
+toggle, (2) confirm "search for/open X dot com" now navigates directly instead of failing to
+resolve, (3) load the unpacked Chrome extension and confirm click/type/select/scroll/tab
+commands work, (4) confirm push-to-talk delivers the final utterance after release, (5)
+otherwise fix anything the AppleScript-by-inspection review got wrong (most likely spot:
 window-control keystrokes and volume AppleScript syntax). Then remove this paragraph and mark
 milestone 5 as fully verified in this file.

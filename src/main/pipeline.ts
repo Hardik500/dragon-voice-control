@@ -38,6 +38,11 @@ export class DragonPipeline {
    * a graceful push-to-talk stop) can't trigger a reconnect after a newer one has already
    * taken over. */
   private streamGeneration = 0;
+  /** Consecutive auto-reconnect attempts since the last successful connection; capped so a
+   * persistently failing connection (bad key, network down) doesn't retry forever. */
+  private reconnectAttempts = 0;
+  private static readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private history = new HistoryStore();
   /** Avoids asking Jev the exact same question twice for one utterance (e.g. EagerEndOfTurn
    * then EndOfTurn arriving with identical transcript text). Keyed by `${utteranceId}::${text}`. */
@@ -81,7 +86,7 @@ export class DragonPipeline {
         logger.error("pipeline.stt_error", err);
         this.onOverlay(this.baseOverlay("error", err.message));
       },
-      () => {
+      (hadOpened) => {
         const wasIntentional = this.intentionalClose;
         const isStaleGeneration = myGeneration !== this.streamGeneration;
         this.micStreaming = false;
@@ -89,11 +94,21 @@ export class DragonPipeline {
         // Reconnect automatically after an unexpected drop (network blip, idle
         // timeout, etc.) so the mic (still capturing in the hidden renderer)
         // doesn't end up silently talking to a dead socket while the tray/UI
-        // still reads as "listening". Skip if a newer connection has already
-        // taken over (e.g. a rapid push-to-talk toggle raced this close).
-        if (!wasIntentional && !isStaleGeneration) {
-          logger.event("stt.unexpected_close_reconnecting", {});
-          setTimeout(() => {
+        // still reads as "listening". Requires the connection to have actually
+        // opened at least once — a connection that never opened (bad key, DNS
+        // failure, etc.) will just fail again immediately, so retrying would
+        // spin forever hammering the API. Also skip if a newer connection has
+        // already taken over (e.g. a rapid push-to-talk toggle raced this close).
+        if (!wasIntentional && !isStaleGeneration && hadOpened) {
+          if (this.reconnectAttempts >= DragonPipeline.MAX_RECONNECT_ATTEMPTS) {
+            logger.event("stt.reconnect_giving_up", { attempts: this.reconnectAttempts });
+            this.onOverlay(this.baseOverlay("error", "Lost connection to Deepgram repeatedly; stopped retrying"));
+            return;
+          }
+          this.reconnectAttempts += 1;
+          logger.event("stt.unexpected_close_reconnecting", { attempt: this.reconnectAttempts });
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
             if (!this.micStreaming) this.startStreaming();
           }, 1000);
         }
@@ -103,6 +118,7 @@ export class DragonPipeline {
     try {
       await this.deepgram.connect();
       this.micStreaming = true;
+      this.reconnectAttempts = 0;
       this.onOverlay(this.baseOverlay("listening", ""));
     } catch (err) {
       logger.error("pipeline.stt_connect_failed", err);
@@ -117,6 +133,14 @@ export class DragonPipeline {
    * closing the socket, instead of yanking the connection and dropping the last utterance.
    */
   stopStreaming(opts: { graceful?: boolean } = {}): void {
+    // Cancel any pending auto-reconnect (e.g. the user stopped listening in the brief gap
+    // between an unexpected drop and the scheduled retry) even if we're not "streaming"
+    // right now by this method's own bookkeeping.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
     if (!this.micStreaming) {
       this.onOverlay(this.baseOverlay("idle", ""));
       return;

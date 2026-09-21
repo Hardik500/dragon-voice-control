@@ -197,3 +197,43 @@ full re-read of `src/main/*.ts` turned up several distinct issues, all fixed in 
 are within the existing modules. Item 6 changed the `IpcDeps.onSettingsChanged` signature from
 `(settings, partial)` to `(settings, changedMode?)`; anything calling `registerIpc` needs the
 updated shape.
+
+## 2026-09-21 — Third pass: startup state, spoken "dot com", and an auto-reconnect retry storm
+
+A real macOS run with the two prior fixes applied showed genuine progress (Chrome open/search/
+scroll executing correctly) plus three new findings:
+
+1. **Relaunching into a continuous mode didn't actually start listening.** `listening` is a
+   plain in-memory `let`, always `false` on a fresh launch, regardless of the persisted
+   `activationMode`. The tray correctly showed "Always Listening" selected, but the mic never
+   started until manually toggled off and back on. Fixed in `src/main/index.ts`: `listening` is
+   now seeded from `settingsStore.get().activationMode !== "push_to_talk"` right after settings
+   load, and `applyListeningState()` is called once at the end of startup (after mic-permission
+   and mic-window wiring are in place) to actually act on it.
+2. **Spoken "dot com" never became a URL.** Deepgram transcribes "google dot com" as the literal
+   words "google dot com", not "google.com" — there's no punctuation-formatting option that
+   converts this. Our domain regex required a literal period, so `chrome_open_url` correctly
+   inferred by Jev always failed to resolve (`resolution_failed`) for any spoken domain. Added
+   `normalizeSpokenDomain` in `src/decision/extract.ts`, applied only inside `extractUrl` (never
+   for dictated text, so "type dot com is popular" stays verbatim).
+3. **The previous pass's auto-reconnect-on-unexpected-close retried forever against a bad/
+   expired key.** A connection that fails its handshake (401, DNS failure, etc.) closes shortly
+   after, which the old code treated the same as "was working, then dropped" and rescheduled a
+   reconnect — which fails identically, forever, hammering the API roughly once a second.
+   Fixed: `DeepgramFluxConnection`'s close handler now reports whether the connection ever
+   actually opened (`hadOpened`), and `DragonPipeline` only auto-reconnects when it did,
+   capped at 5 consecutive attempts, and gives up with a visible overlay error past that.
+   Also fixed a narrow race where manually stopping listening during the ~1s gap between an
+   unexpected drop and the scheduled retry wouldn't cancel that pending retry (`stopStreaming`'s
+   early-return when already not "streaming" skipped clearing it) by tracking the timer handle
+   explicitly and always clearing it in `stopStreaming`.
+
+Also slightly reworded the `open_app`/`shortcut` Jev question criteria after observing "open
+cursor" misclassified as `shortcut` at low confidence in one run — `open_app` now explicitly
+notes it applies even to unusual/unfamiliar-sounding app names, and `shortcut` now explicitly
+excludes opening/launching an application. This is a wording nudge, not a guaranteed fix,
+since it depends on the model's behavior and wasn't independently re-verified against live
+Jev calls in this environment.
+
+**Consequences:** `DeepgramFluxConnection`'s constructor's 3rd callback parameter type changed
+from `() => void` to `(hadOpened: boolean) => void` (exported as `CloseHandler`).

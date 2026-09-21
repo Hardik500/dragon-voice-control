@@ -114,6 +114,10 @@ app.whenReady().then(async () => {
 
   settingsStore = new SettingsStore();
   logger.setVerbosity(settingsStore.get().logVerbosity);
+  // Reflect the persisted activation mode immediately: if the user quit while in a
+  // continuous mode, relaunching should resume listening, not silently sit idle until
+  // they notice and manually toggle it (see PROGRESS.md/DECISIONS.md).
+  listening = settingsStore.get().activationMode !== "push_to_talk";
 
   browserBridge = new BrowserBridge();
   browserBridge.start();
@@ -204,6 +208,11 @@ app.whenReady().then(async () => {
   if (settingsStore.get().overlayVisible) overlayWindow.showInactive();
 
   await requestMicPermission();
+
+  // Actually start streaming now if the persisted mode implies it (see the `listening`
+  // seed above) — permission has been requested/granted by this point.
+  applyListeningState();
+  refreshTray();
 
   logger.event("app.ready", {});
 

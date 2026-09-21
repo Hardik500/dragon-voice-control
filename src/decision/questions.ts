@@ -2,14 +2,16 @@ import { AppCandidate, BrowserElementCandidate, BrowserPageState, ExtractedPaylo
 
 /** Descriptions shown to Jev for the `intent` Choice question. Keep atomic and mutually exclusive. */
 export const INTENT_CRITERIA: Record<Intent, string> = {
-  open_app: "Launch or open a named application that may not be running yet.",
+  open_app:
+    'Launch or open a named application that may not be running yet, e.g. "open X" or "launch X" where X is an app name — even if X is an unusual or unfamiliar-sounding app name (like a code editor, terminal, or utility) rather than a common word.',
   activate_app: "Bring an already-relevant named application to the foreground.",
   hide_app: "Hide the named or current application from view without quitting it.",
   quit_app: "Quit/close the named or current application entirely.",
   switch_previous_app: "Switch focus back to the previously used application (command+tab style).",
   type_text: "Type or enter specific dictated text into the currently focused text field.",
   press_key: "Press a single named key such as enter, escape, tab, an arrow, or a function key.",
-  shortcut: "Perform a known keyboard shortcut such as copy, cut, paste, select all, undo, redo, save, or find.",
+  shortcut:
+    "Perform a known keyboard shortcut such as copy, cut, paste, select all, undo, redo, save, or find. Not for opening/launching an application — that is open_app even if the app name is unusual.",
   window_minimize: "Minimize the active window.",
   window_maximize: "Maximize/zoom the active window.",
   window_fullscreen: "Toggle fullscreen for the active window.",
