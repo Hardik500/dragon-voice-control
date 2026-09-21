@@ -70,6 +70,10 @@ const OPEN_APP_PATTERN = /^\s*(?:please\s+)?(?:open|launch|start|switch to|go to
 
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (payload.appCandidates.length === 0) return null;
+  // A URL is a more specific, more certain signal than an app-name substring match — without
+  // this, "Open right.com on Chrome" matched "chrome" as an app candidate and the override
+  // hijacked it into just re-activating Chrome, silently dropping the actual navigation.
+  if (payload.url) return null;
   if (!OPEN_APP_PATTERN.test(effectiveText)) return null;
   const cand = payload.appCandidates[0];
   return { kind: "activate_app", appName: cand.label, appAlias: cand.appAlias };
@@ -97,7 +101,17 @@ export function resolveCommand(
 
   switch (intent) {
     case "open_app":
-    case "activate_app":
+    case "activate_app": {
+      // "open X" with a concrete navigable target (a real URL/site was extracted) should
+      // navigate there, not focus an app whose alias merely appears in the sentence as a
+      // locative ("open right.com *on chrome*"). When there's no URL it's genuinely an app.
+      if (payload.url) {
+        return { kind: "chrome_open_url", url: payload.url };
+      }
+      const cand = findAppCandidateForTarget(target, payload);
+      if (!cand) return null;
+      return { kind: intent, appName: cand.label, appAlias: cand.appAlias };
+    }
     case "hide_app":
     case "quit_app": {
       const cand = findAppCandidateForTarget(target, payload);

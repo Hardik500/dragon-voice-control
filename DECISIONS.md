@@ -535,3 +535,62 @@ transcripts from the supplied logs (`extractDictatedText("Type in hello...")` �
 `extractSearchQuery` against `"Go to Anushi's chat."`, `"Go to Anshul."`, `"go to hardship
 chat"`, `"Open Anshul Gupta chat."` → all now extract a clean name). The single-instance-lock
 and bind-error fixes were verified by direct reproduction (see above), not just inspection.
+
+## 2026-09-21 — First pass on real Windows 11: five real bugs, all in the shared decision layer
+
+The first real `win32` run produced the expected rough edges, and — importantly — *none* of
+the suspected Windows-specific risk spots (see PROGRESS.md's risk list: `Add-Type` in a
+`-Command` invocation, `keybd_event` injection, `FileVersionInfo.FileDescription`, Alt+Tab
+timing, third-party launch tokens) actually failed. The Windows automation adapter ran the
+app-activation, fullscreen, key-press, select-all, and search commands cleanly with no
+exceptions and double-digit millisecond execution. Every real bug was in exactly two shared
+files: `extract.ts` and `resolve.ts`.
+
+1. **`findAppCandidates` used plain substring matching, so "Open Gmail" opened the Mail app.**
+   "gmail" contains "mail" → the Mail alias matched, Jev was handed `app:Mail` as the only
+   candidate, picked `open_app`, and the user got the Windows Mail app instead of gmail.com.
+   Fixed: word-boundary regex matching (`\bkey\b`) with regex-metachar escaping instead of
+   `lowerT.includes(aliasKey)`. (Same class of false positive would have hit any site whose
+   name contains an alias key, e.g. "warp" inside a longer word.) Labels are still compared by
+   exact equality, so the `zoom.us` label is unaffected.
+2. **`openAppOverride` hijacked "Open right dot com **on Chrome**" into a bare app re-focus.**
+   "chrome" appears as a *locative* in the sentence, matched the app candidate, the override
+   blindly returned `activate_app`, and right.com was never navigated to. The URL-extraction
+   signal lost. Fixed: the override now returns `null` whenever `payload.url` is present — a
+   concrete extracted URL (from the closed website vocabulary or a dot-com pattern) is always
+   a stronger navigational signal than an app-name substring match. "open cursor" /
+   "open chrome" (no URL) still override exactly as before.
+3. **"Open YouTube Music." was `resolution_failed` even though it's a known website.**
+   `extractUrl` knew it (music.youtube.com), Jev picked `open_app` (fine — the phrase *is*
+   "open X"), but there was no app alias "youtube music" and no fallback, so resolution died.
+   Fixed: `open_app`/`activate_app` in `resolve.ts` now route to `chrome_open_url` whenever a
+   URL was extracted (URL wins over app-focus); only URL-less utterances fall through to the
+   app candidate path. This subsumes the fix for #2's Jev-side path too.
+4. **"Press control c" / "Press control z" were unrecognized.** Only semantic names
+   ("copy", "undo") existed in `KEY_PHRASE_NAMES`; the literal key-combo phrasing resolved to
+   nothing (`shortcut` + no `keyName` → `resolution_failed`). Fixed: `extractKeyName` gained a
+   `control/ctrl/command/cmd <letter>` → semantic-action table (c→copy, v→paste, x→cut,
+   a→select all, z→undo, y→redo, s→save, f→find, t→new tab, w→close tab, q→quit, r→refresh),
+   consulted only when no known phrase already matched. The platform layer still resolves the
+   *semantic* name to its OS-specific combo, so "command c" on macOS and "control c" on
+   Windows both land on the right key via the existing `KEY_SPECS` table.
+5. **Browser DOM actions on non-scriptable pages threw a raw error.** "Scroll down" /
+   "Scroll page" while a `chrome://`/blank/PDF tab was active failed with the terse Chrome
+   message "Could not establish connection. Receiving end does not exist." (no content script
+   can run there — Chrome limitation, not a Dragon bug). Fixed: `background.js` now catches
+   that specific error and returns an actionable explanation
+   ("This page doesn't support Dragon's browser control — try a regular web page.").
+
+**Not fixed, deliberately:** the first "Open new tab" before the extension connected
+(no extension yet — correctly reported); the scroll failure on tab 0 if that tab is
+`chrome://new-tab-page` (content scripts can't run there by Chrome design); "Open antigravity"
+(a genuinely unknown target — correctly ignored); "Detailed entire paragraph" (STT mishears
+of "delete the entire paragraph" — no dictation session was active, correctly ignored);
+"Delete." / "delete text" with nothing typed (correct "Nothing to delete" guard).
+
+**Verification performed:** 20-assertion harness (`/tmp/opencode/verify-windows-fixes.js`)
+against the compiled `dist/decision/*` modules with `electron` stubbed (the DECISIONS.md
+documented harness pattern), covering every bug case above plus unchanged-behavior guards
+("Open Chrome." still activates, "open cursor" override still fires, "Press enter." /
+"Select all." still resolve, all alias keys in both platform registries verified word-char
+only). Full `npm run build` + `npm run typecheck` + `node --check` on background.js all clean.

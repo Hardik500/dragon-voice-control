@@ -168,8 +168,22 @@ async function performAction(action) {
       case "scroll": {
         const tab = await getActiveTab();
         if (!tab || !tab.id) return { ok: false, error: "No active tab" };
-        const response = await chrome.tabs.sendMessage(tab.id, { type: "action", action });
-        return response ?? { ok: false, error: "No response from page" };
+        try {
+          const response = await chrome.tabs.sendMessage(tab.id, { type: "action", action });
+          return response ?? { ok: false, error: "No response from page" };
+        } catch (err) {
+          // "Receiving end does not exist" means no content script is running in this tab —
+          // normal on chrome:// pages, the PDF viewer, the Chrome Web Store, or a tab that
+          // hasn't finished loading yet (content scripts can't run on any of those).
+          const message = err && err.message ? err.message : String(err);
+          if (/receiving end does not exist/i.test(message)) {
+            return {
+              ok: false,
+              error: "This page doesn't support Dragon's browser control (chrome:// page, PDF viewer, or still loading) — try a regular web page.",
+            };
+          }
+          throw err;
+        }
       }
       default:
         return { ok: false, error: `Unknown action kind: ${action.kind}` };

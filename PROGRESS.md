@@ -241,24 +241,46 @@ Summary, oldest to newest:
    resolved (narrow fast-path regexes plus an always-`null` Jev-path fallback); "type in X"
    typed a spurious leading "in"; `search_in_app` couldn't extract a query from "go to X chat"
    phrasing (only "search for X" worked).
+7. Seventh pass, the first real Windows 11 run (win32/x64, logs supplied): the Windows smoke
+   test itself passed cleanly — app activation, fullscreen, restore, key presses, select-all,
+   open-new-tab (after the extension connected), Chrome search, and Gmail's app-launch all
+   executed with no exceptions and normal latencies, and none of the anticipated
+   Windows-specific risks (Add-Type script compilation, `keybd_event` injection, Alt+Tab
+   timing, launch tokens) surfaced. All five actual bugs were in the shared decision layer
+   and are fixed in this commit: (1) `findAppCandidates` substring matching made "Open
+   Gmail" launch the *Mail app* — now word-boundary matched; (2) the "open cursor" override
+   hijacked "Open right dot com **on Chrome**" into a bare app re-focus because "chrome" was
+   locative — the override now backs off whenever a URL was extracted; (3) "Open YouTube
+   Music." failed to resolve even though it's a known website — `open_app`/`activate_app`
+   now fall back to `chrome_open_url` whenever a URL exists; (4) "Press control c" /
+   "Press control z" were unrecognized — `extractKeyName` now maps
+   `control/ctrl/command/cmd <letter>` to the semantic action; (5) DOM actions on
+   `chrome://`/still-loading tabs threw the raw Chrome "Receiving end does not exist" error —
+   the extension now returns an actionable message instead.
 
 ## Exact next task
 
-Two independent hardware verification tracks, either can go first:
+Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
+the extension-connected tab state:
 
-- **macOS**: work through the "macOS check" in `README.md` top to bottom on a real Mac,
-  paying particular attention to the newly-added dictation/editing commands ("delete the last
-  3 words", "replace X with Y", "new line", "stop dictation") and the site-aware search
-  ("open youtube music" then "search for a song").
-- **Windows**: work through the "Windows 11 check" in `README.md` top to bottom on a real
-  Windows 11 x64 machine. Given zero real-hardware verification exists yet, expect to find and
-  fix real bugs here — the most likely trouble spots, in rough order of risk, are: (1) the
-  inline C# `Add-Type` compiling correctly in a plain `-Command` invocation (vs. a `.ps1`
-  script file — untested difference), (2) `keybd_event`'s actual effect on modern Windows
-  11 (it's legacy; some apps/contexts may ignore synthetic events without `SendInput`'s
-  "injected" flag being visible in the expected way), (3) whether `FileVersionInfo.
-  FileDescription` is reliably non-null for the apps in the manual check, (4) Alt+Tab's
-  hold/tap/wait/release timing (150ms may need tuning), (5) third-party app launch tokens for
-  Slack/Discord/Cursor/Docker Desktop actually resolving.
+- DOM-level commands (click/type/select/scroll) now return an explicit
+  "This page doesn't support Dragon's browser control" error instead of the raw
+  "Receiving end does not exist" when the active tab is a `chrome://` page, PDF, or still
+  loading — navigate to a normal web page and retry. Make sure the extension is loaded and a
+  regular page is active before testing "open new tab" / "scroll down" / clicking.
+- Re-exercise the previously-broken phrases: "Open Gmail." (must navigate to gmail.com, not
+  launch the Mail app), "Open right dot com on Chrome." (must actually open right.com),
+  "Open YouTube Music." (must open music.youtube.com), "Press control c" / "Press control z"
+  (copy / undo).
+- The brief `browser.extension_disconnected` → `extension_connected` blip ~2s after boot in
+  the supplied log looked harmless (single reconnect), but keep an eye on it — if repeated
+  disconnect/reconnects appear during a session, that's worth its own look.
+
+Still unverified on real hardware (documented, not bugs): the dictation/editing flow on
+Windows, Windows-specific automation against third-party apps (Slack/Discord/Cursor/Docker),
+and the Alt+Tab switch timing.
+
+macOS track is unchanged: work through the "macOS check" in `README.md` on a real Mac,
+particularly the dictation/editing commands and site-aware search.
 
 Then remove this paragraph and mark milestone 8 as fully verified in this file.

@@ -46,7 +46,11 @@ export function findAppCandidates(transcript: string): AppCandidate[] {
   const seen = new Set<string>();
   const candidates: AppCandidate[] = [];
   for (const aliasKey of appAliasKeys()) {
-    if (lowerT.includes(aliasKey)) {
+    // Word-boundary match, not a plain substring — a bare `.includes()` check let "mail"
+    // spuriously match inside "Gmail", sending "open Gmail" to the Mail app instead of
+    // gmail.com. Aliases can be multi-word ("google chrome"), so escape regex metacharacters.
+    const escaped = aliasKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${escaped}\\b`).test(lowerT)) {
       const label = appAliasLabel(aliasKey);
       if (seen.has(label)) continue;
       seen.add(label);
@@ -139,6 +143,14 @@ export function computeSiteSearchUrl(query: string | null, page: BrowserPageStat
   return null;
 }
 
+/** Raw "control c" / "ctrl v" / "command z" phrasing -> the matching semantic action name.
+ * Users say the literal key combo as often as the semantic name ("press control z" as often
+ * as "undo"), but only semantic names are in KEY_PHRASE_NAMES. */
+const MODIFIER_LETTER_TO_ACTION: Record<string, string> = {
+  c: "copy", v: "paste", x: "cut", a: "select all", z: "undo", y: "redo",
+  s: "save", f: "find", t: "new tab", w: "close tab", q: "quit", r: "refresh",
+};
+
 export function extractKeyName(transcript: string): string | null {
   const lowerT = lower(transcript);
   let best: string | null = null;
@@ -147,7 +159,13 @@ export function extractKeyName(transcript: string): string | null {
       if (!best || phrase.length > best.length) best = phrase;
     }
   }
-  return best;
+  if (best) return best;
+  const modifierMatch = lowerT.match(/\b(?:control|ctrl|command|cmd)\s+([a-z])\b/);
+  if (modifierMatch) {
+    const action = MODIFIER_LETTER_TO_ACTION[modifierMatch[1]];
+    if (action) return action;
+  }
+  return null;
 }
 
 export function extractSettingsPane(transcript: string): string | null {
