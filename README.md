@@ -21,9 +21,10 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
   app's screen); say "stop typing" or "exit insert mode" to end the session explicitly, or just
   say a different command. `Control+Alt+I` toggles Insert Mode without changing microphone
   state.
-- **Workflow Mode**: use `Control+Alt+Shift+W` to toggle a sequential session. Each spoken
-  command is one workflow step, progress is shown in the overlay, and a failed step ends the
-  workflow. This is intentionally a step-by-step mode, not an unrestricted multi-step planner.
+- **Workflow Mode**: use `Control+Alt+Shift+W` to toggle a sequential session. A single spoken
+  utterance can contain a constrained sequence such as "open Notepad, then open Chrome, then open
+  Cursor"; each recognized segment becomes a step. Progress is shown in the overlay, and a failed
+  step ends the workflow. This is not an unrestricted natural-language planner.
 - Open Chrome and navigate/search (works without the extension, and reuses an already-open
   tab for the same site instead of always opening a new one); click a visible element, type
   into a field, select a dropdown option, scroll, go back/forward/reload, and open/close/switch

@@ -2,7 +2,7 @@ import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
-import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, isStandaloneKeyboardCommand } from "../decision/extract";
+import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
@@ -178,7 +178,7 @@ export class DragonPipeline {
 
   toggleWorkflowMode(): boolean {
     if (this.workflowActive) {
-      this.workflowActive = false;
+      this.stopWorkflow();
     } else {
       this.endDictation();
       this.workflowActive = true;
@@ -329,8 +329,7 @@ export class DragonPipeline {
     this.inFlight = [];
     automation.stopSpeaking();
     this.endDictation();
-    this.workflowActive = false;
-    this.workflowStepCount = 0;
+    this.stopWorkflow();
     this.stopStreaming();
     logger.event("pipeline.emergency_stop", {});
   }
@@ -370,6 +369,11 @@ export class DragonPipeline {
     this.lastDictationChunk = text;
   }
 
+  private stopWorkflow() {
+    this.workflowActive = false;
+    this.workflowStepCount = 0;
+  }
+
   private endDictation() {
     this.dictationActive = false;
     this.dictationBuffer = "";
@@ -383,17 +387,17 @@ export class DragonPipeline {
     const lower = trimmed.toLowerCase().replace(/[.!?]+$/, "");
 
     if (
-      /^(?:start|begin|enter)\s+workflow$/.test(lower)
+      /^(?:start|begin|enter|switch\s+to|go\s+to)\s+workflow(?:\s+mode)?$/.test(lower)
     ) {
       return { type: "workflow_start" };
     }
     if (
-      /^(?:stop|end|finish|exit)\s+workflow$/.test(lower)
+      /^(?:stop|end|finish|exit)\s+workflow(?:\s+mode)?$/.test(lower)
     ) {
       return { type: "workflow_stop" };
     }
     if (
-      /^(?:start|begin|enter)\s+(?:typing|dictation|insert\s+mode|type\s+mode)$/.test(lower) ||
+      /^(?:start|begin|enter|switch\s+to|go\s+to)\s+(?:typing|dictation|insert\s+mode|type\s+mode)$/.test(lower) ||
       lower === "insert mode" ||
       lower === "type mode"
     ) {
@@ -433,8 +437,7 @@ export class DragonPipeline {
           break;
         case "workflow_stop":
           actionLabel = "Stop workflow";
-          this.workflowActive = false;
-          this.workflowStepCount = 0;
+          this.stopWorkflow();
           break;
         case "start":
           actionLabel = this.dictationActive ? "Insert mode already active" : "Start typing";
@@ -603,6 +606,14 @@ export class DragonPipeline {
       }
     }
 
+    if (this.workflowActive && turn.isFinal) {
+      const workflowSteps = extractWorkflowSteps(effectiveText);
+      if (workflowSteps) {
+        await this.runWorkflowPlan(turn, workflowSteps, settings);
+        return;
+      }
+    }
+
     await this.runDecision(turn, effectiveText, settings);
   }
 
@@ -639,6 +650,66 @@ export class DragonPipeline {
     this.inFlight = this.inFlight.filter((f) => f.controller !== controller);
   }
 
+  private async runWorkflowPlan(turn: TranscriptEvent, steps: string[], settings: DragonSettings): Promise<void> {
+    logger.event("workflow.plan_detected", {
+      utteranceId: turn.utteranceId,
+      stepCount: steps.length,
+      steps,
+    });
+
+    for (let index = 0; index < steps.length; index++) {
+      if (!this.workflowActive) break;
+      const text = steps[index];
+      const now = Date.now();
+      const stepTurn: TranscriptEvent = {
+        ...turn,
+        utteranceId: `${turn.utteranceId}_workflow_${index + 1}`,
+        turnIndex: index + 1,
+        event: "EndOfTurn",
+        transcript: text,
+        isFinal: true,
+        turnStartedAt: now,
+        receivedAt: now,
+      };
+      logger.event("workflow.step_started", {
+        utteranceId: stepTurn.utteranceId,
+        step: index + 1,
+        stepCount: steps.length,
+        text,
+      });
+      this.onOverlay({
+        utteranceId: stepTurn.utteranceId,
+        state: "thinking",
+        transcript: text,
+        isFinal: true,
+        action: `Workflow step ${index + 1} of ${steps.length}`,
+        status: null,
+        latencyMs: null,
+        activationMode: settings.activationMode,
+      });
+      await this.runDecision(stepTurn, text, settings);
+      logger.event(this.workflowActive ? "workflow.step_completed" : "workflow.step_failed", {
+        utteranceId: stepTurn.utteranceId,
+        step: index + 1,
+        stepCount: steps.length,
+        text,
+      });
+    }
+
+    if (this.workflowActive) {
+      this.onOverlay({
+        utteranceId: turn.utteranceId,
+        state: "done",
+        transcript: turn.transcript,
+        isFinal: true,
+        action: `Workflow complete · ${steps.length} steps`,
+        status: null,
+        latencyMs: null,
+        activationMode: settings.activationMode,
+      });
+    }
+  }
+
   private async runDecision(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
     const previous = this.decisionInFlightByUtterance.get(turn.utteranceId);
     if (previous) await previous;
@@ -670,6 +741,33 @@ export class DragonPipeline {
       latencyMs: null,
       activationMode: settings.activationMode,
     });
+
+    if (
+      this.dictationActive &&
+      shouldTypeDirectlyInInsertMode(effectiveText, extractKeyName(effectiveText))
+    ) {
+      this.unregisterInFlight(controller);
+      if (!turn.isFinal) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "listening",
+          transcript: effectiveText,
+          isFinal: false,
+          action: null,
+          status: "waiting for more speech",
+          latencyMs: null,
+          activationMode: settings.activationMode,
+        });
+        return;
+      }
+      logger.event("pipeline.dictation_direct_text", {
+        utteranceId: turn.utteranceId,
+        reason: "text_first",
+        sttTurnMs,
+      });
+      await this.continueDictation(turn, effectiveText, settings, Date.now() - startedAt, sttToDecisionMs);
+      return;
+    }
 
     try {
       const activeApp = await automation.getActiveAppName();
@@ -833,6 +931,7 @@ export class DragonPipeline {
 
       if (noCommand) {
         if (this.workflowActive) {
+          this.stopWorkflow();
           this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Workflow step was not recognized");
           this.logIgnored(turn, "low_confidence_or_incomplete", summary.intent);
           return;
@@ -856,6 +955,7 @@ export class DragonPipeline {
 
       const resolved = resolveCommand(summary, payload, effectiveText);
       if (!resolved) {
+        if (this.workflowActive) this.stopWorkflow();
         this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Jev decision could not be resolved");
         this.logIgnored(turn, "resolution_failed", summary.intent);
         return;
@@ -900,8 +1000,7 @@ export class DragonPipeline {
       // the user deliberately switched to something else, so end the session. Workflow mode
       // instead keeps the sequence open and advances one step per successful command.
       if (execError && this.workflowActive) {
-        this.workflowActive = false;
-        this.workflowStepCount = 0;
+        this.stopWorkflow();
       } else if (!execError) {
         if (this.workflowActive) {
           this.workflowStepCount += 1;
@@ -959,6 +1058,7 @@ export class DragonPipeline {
         return;
       }
       const message = err instanceof JevRequestError ? err.message : err instanceof Error ? err.message : String(err);
+      if (this.workflowActive) this.stopWorkflow();
       this.updateJevDecisionOutcome(turn.utteranceId, "error", message);
       logger.error("pipeline.decision_failed", err, { utteranceId: turn.utteranceId });
       this.onOverlay({

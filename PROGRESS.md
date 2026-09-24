@@ -304,6 +304,12 @@ Summary, oldest to newest:
       Mode currently accepts sequential one-utterance browser/app commands and stops on a failed
       step; it is not yet a free-form multi-step planner.
 
+  12. Twelfth pass, from the latest Windows run: constrained comma/`then` workflow utterances now
+      split into sequential Jev-backed steps, and each step has explicit started/completed/failed
+      logging. Voice aliases now accept natural mode transitions such as "switch to insert mode"
+      and "stop workflow mode". The generic embedded-keyboard boundary was confirmed by the live
+      log: a long sentence containing "Press enter" is typed instead of executed.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

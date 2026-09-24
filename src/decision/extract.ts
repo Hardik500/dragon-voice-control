@@ -116,6 +116,16 @@ function normalizeSpokenDomain(transcript: string): string {
   );
 }
 
+export function extractWorkflowSteps(transcript: string): string[] | null {
+  const steps = transcript
+    .split(/\s*(?:,|;|\bthen\b)\s*/i)
+    .map((step) => step.replace(/^and\s+/i, "").trim())
+    .filter(Boolean);
+  const commandStart = /^(?:please\s+)?(?:open|launch|start|close|minimize|maximize|fullscreen|press|hit|tap|type|search|click|go\s+to|new\s+tab|switch\s+to|scroll|back|forward|reload|refresh|volume|play|pause|next|previous|undo|redo|copy|paste|save|find)\b/i;
+  if (steps.length < 2 || !steps.every((step) => commandStart.test(step))) return null;
+  return steps;
+}
+
 export function extractUrl(transcript: string): string | null {
   const normalized = normalizeSpokenDomain(transcript);
 
@@ -170,6 +180,13 @@ export function isStandaloneKeyboardCommand(transcript: string, keyName: string 
   if (new RegExp(`^(?:please\\s+)?(?:press|hit|tap|key)\\s+${escapedKey}$`).test(normalized)) return true;
   // The semantic key name is "copy"/"undo"/etc., but the user may say the literal combo.
   return /^(?:please\s+)?(?:(?:press|hit|tap|key)\s+)?(?:control|ctrl|command|cmd)(?:\s+|\+)\s*([a-z])$/.test(normalized);
+}
+
+export function shouldTypeDirectlyInInsertMode(transcript: string, keyName: string | null): boolean {
+  const normalized = lower(transcript).replace(/[.!?]+$/, "").trim();
+  if (keyName && !isStandaloneKeyboardCommand(transcript, keyName)) return true;
+  const commandStart = /^(?:please\s+)?(?:open|launch|start|close|minimize|maximize|fullscreen|press|hit|tap|type|search|click|go\s+to|new\s+tab|switch\s+to|scroll|back|forward|reload|refresh|volume|play|pause|next|previous|undo|redo|copy|paste|save|find|delete|replace)\b/i;
+  return !commandStart.test(normalized);
 }
 
 export function extractKeyName(transcript: string): string | null {

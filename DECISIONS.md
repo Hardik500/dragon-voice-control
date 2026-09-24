@@ -715,3 +715,20 @@ behavior visible to someone evaluating the product.
 **Consequences:** Execution outcomes are session-only and available for Jev-backed decisions;
 deterministic dictation fast paths do not appear in the Jev dashboard. The dashboard remains
 read-only and local.
+
+## 2026-09-25 — Constrained multi-step Workflow Mode
+
+**Decision:** In Workflow Mode, split a final utterance only when every comma/`then` segment begins
+with a known command form, then run those segments sequentially through the existing decision and
+execution path. Add explicit workflow step logs and stop on the first failed step. This supports
+bounded plans such as "open Notepad, then open Chrome, then open Cursor" without introducing a
+free-form planner or allowing Jev to invent additional steps.
+
+**Reason:** The latest Windows run showed Workflow Mode activating correctly but treating a
+multi-command utterance as one Jev decision; only the first target executed. Constrained parsing
+fixes the common comma/`then` case while keeping ordinary prose and unresolved targets safe.
+
+**Consequences:** Unsupported multi-command grammar is still treated as one normal command and
+must not be silently expanded. Site-specific recipes such as "like this video" remain a future
+browser-workflow layer. Voice mode aliases now cover "switch to insert mode" and "stop workflow
+mode" without involving Jev.
