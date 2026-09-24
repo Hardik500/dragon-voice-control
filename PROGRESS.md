@@ -339,6 +339,11 @@ Summary, oldest to newest:
       alarms, and stale service-worker events cannot create overlapping sockets. TypeScript build
       and extension syntax checks pass; real Windows behavior still needs verification.
 
+  17. Seventeenth pass: lowered Flux's final EOT threshold from `0.8` to `0.7` after analyzing 108
+      recorded utterances. At `0.7`, 65 utterances had a usable Eager transcript versus 33 at
+      `0.8`, with a median Eager-to-final gap of about 46 ms. The active STT thresholds are now
+      logged at connection time; real Windows accuracy and latency comparison remains pending.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

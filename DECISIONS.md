@@ -662,6 +662,22 @@ utterance, but cross-utterance requests remain capped. The new Deepgram settings
 were checked by a stubbed WebSocket harness, not against live audio. Accuracy improvements must
 be confirmed with a real Windows run and compared using the new dashboard timings.
 
+## 2026-09-25 — Lower Flux final-turn threshold to reduce latency
+
+**Decision:** Lower the Flux final end-of-turn threshold from `0.8` to `0.7`, while keeping the
+Eager threshold at `0.5`, the final-turn timeout at 8 seconds, and the existing Jev confidence and
+completeness gates unchanged. Log the active STT thresholds at connection time.
+
+**Reason:** Across 108 recorded utterances, 65 had a last Eager transcript at or above `0.7`,
+compared with 33 at or above `0.8`; the median Eager-to-final gap for the `0.7` group was about
+46 ms. The latest Windows run still showed 2–3.3 second final-turn waits, so the higher threshold
+was adding latency without reliably improving the ambiguous short browser commands that motivated
+the earlier conservative setting.
+
+**Consequences:** Some commands may finalize earlier than before, so premature or incorrect
+execution must be checked on real Windows hardware. The dashboard's STT timing and the new
+`stt.connected` configuration log are the comparison points for the next run.
+
 ## 2026-09-24 — Explicit insert mode for voice dictation
 
 **Decision:** Reuse the existing `dictationActive`/`dictationBuffer` session as an explicit

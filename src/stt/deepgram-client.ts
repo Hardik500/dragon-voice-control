@@ -5,7 +5,7 @@ import { TranscriptEvent } from "../types/pipeline";
 const SAMPLE_RATE = 16000;
 const STT_MODEL = "flux-general-en";
 const EAGER_EOT_THRESHOLD = "0.5";
-const FINAL_EOT_THRESHOLD = "0.8";
+const FINAL_EOT_THRESHOLD = "0.7";
 const EOT_TIMEOUT_MS = "8000";
 const STT_KEYTERMS = [
   "Antigravity",
@@ -70,7 +70,13 @@ export class DeepgramFluxConnection {
 
       this.ws.on("open", () => {
         this.opened = true;
-        logger.event("stt.connected", {});
+        logger.event("stt.connected", {
+          model: STT_MODEL,
+          eagerEotThreshold: EAGER_EOT_THRESHOLD,
+          finalEotThreshold: FINAL_EOT_THRESHOLD,
+          eotTimeoutMs: EOT_TIMEOUT_MS,
+          keytermCount: STT_KEYTERMS.length,
+        });
         resolve();
       });
 
