@@ -2,6 +2,7 @@ import { app, session, shell, systemPreferences, BrowserWindow, Tray } from "ele
 import { logger } from "../logging/logger";
 import { SettingsStore } from "./settings-store";
 import { BrowserBridge } from "../browser/server";
+import { DashboardServer } from "./dashboard-server";
 import { DragonPipeline } from "./pipeline";
 import { createMicWindow, createOverlayWindow, createSettingsWindow } from "./windows";
 import { createTray } from "./tray";
@@ -24,6 +25,7 @@ if (!gotSingleInstanceLock) {
 
 let settingsStore: SettingsStore;
 let browserBridge: BrowserBridge;
+let dashboardServer: DashboardServer;
 let pipeline: DragonPipeline;
 let settingsWindow: BrowserWindow;
 let overlayWindow: BrowserWindow;
@@ -158,6 +160,12 @@ app.whenReady().then(async () => {
     }
   );
 
+  dashboardServer = new DashboardServer(
+    () => pipeline.getJevDecisionTraces(),
+    () => currentStatus()
+  );
+  dashboardServer.start();
+
   registerIpc({
     settingsStore,
     pipeline,
@@ -170,6 +178,9 @@ app.whenReady().then(async () => {
         pushStatus();
         refreshTray(); // e.g. wake phrase changed, which the tray label shows.
       }
+    },
+    openDashboard: () => {
+      void shell.openExternal(dashboardServer.url());
     },
     getStatus: () => currentStatus(),
   });
@@ -197,6 +208,9 @@ app.whenReady().then(async () => {
     openSettings: () => {
       settingsWindow.show();
       settingsWindow.focus();
+    },
+    openDashboard: () => {
+      void shell.openExternal(dashboardServer.url());
     },
     openLogsFolder: () => {
       shell.openPath(logger.logDir);
@@ -255,6 +269,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   pipeline?.emergencyStop();
   browserBridge?.stop();
+  dashboardServer?.stop();
 });
 
 } // if (gotSingleInstanceLock)

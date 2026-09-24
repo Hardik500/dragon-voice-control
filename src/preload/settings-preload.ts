@@ -5,10 +5,9 @@ contextBridge.exposeInMainWorld("dragonSettings", {
   get: () => ipcRenderer.invoke("settings:get"),
   update: (partial: Partial<DragonSettings>) => ipcRenderer.invoke("settings:update", partial),
   openLogs: () => ipcRenderer.invoke("settings:openLogs"),
+  openDashboard: () => ipcRenderer.invoke("settings:openDashboard"),
   getHistory: () => ipcRenderer.invoke("history:get"),
   clearHistory: () => ipcRenderer.invoke("history:clear"),
-  getJevDecisions: () => ipcRenderer.invoke("jev:decisions"),
-  clearJevDecisions: () => ipcRenderer.invoke("jev:decisions:clear"),
   getStatus: () => ipcRenderer.invoke("status:get"),
   onStatus: (cb: (status: any) => void) => ipcRenderer.on("status:update", (_e, data) => cb(data)),
 });

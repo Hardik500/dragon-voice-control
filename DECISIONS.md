@@ -618,3 +618,19 @@ Settings window is already the natural place for this diagnostic view.
 **Consequences:** The dashboard survives only until the app process exits; use the JSONL logs
 for longer-term inspection. The renderer and main-process IPC were typechecked on Linux, but
 the live Electron UI and Windows Explorer/Antigravity behavior still require target hardware.
+
+## 2026-09-24 — Move the Jev dashboard to a standalone local URL
+
+**Decision:** Serve the Jev dashboard as a read-only local web app at
+`http://127.0.0.1:17873/dashboard`, backed by `/api/decisions`, rather than embedding it in the
+Settings renderer. The tray and Settings expose an **Open Dashboard** action that opens the
+canonical URL in the default browser.
+
+**Reason:** A real URL makes the decision surface easier to present to other people, inspect
+from another browser tab, bookmark, and use as a lightweight demo surface. The separate port
+keeps it independent from the Chrome extension WebSocket bridge on `17872`.
+
+**Consequences:** The dashboard remains session-only and read-only, with no credentials or
+persisted telemetry. Users must keep Dragon running to access the URL. The local server and
+page/API were verified with a stubbed Electron process; live browser rendering and Windows
+integration still require target hardware.

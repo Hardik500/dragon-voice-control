@@ -30,6 +30,8 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
   acknowledgements, and a persisted command history viewable from Settings.
 - Structured JSONL debug logs with latency breakdowns (never containing API keys,
   Authorization headers, or raw audio).
+- A standalone, read-only Jev dashboard at `http://127.0.0.1:17873/dashboard`, showing the
+  selected intent/target/direction, confidence, probability bars, and closest alternatives.
 
 ## What it is not
 
@@ -139,11 +141,26 @@ and is not a bug.
 - **Debug log verbosity** — `normal` skips noisy interim (`Update`) STT events; `verbose`
   includes them.
 
+## Jev decision dashboard
+
+With Dragon running, open:
+
+```text
+http://127.0.0.1:17873/dashboard
+```
+
+The URL is also available from the tray menu or the **Open Dashboard** button in Settings. The
+page is a clean, read-only view of the current Dragon session: it shows the transcript, active
+application, selected Jev intent/target/direction, confidence, probability bars, and the closest
+alternative choices. The bounded session data is exposed read-only at
+`http://127.0.0.1:17873/api/decisions`; restart Dragon to begin a new session. No API keys or
+audio are sent to the dashboard.
+
 ## Running and stopping
 
 - Dragon lives in the **menu bar** (macOS) / **system tray** (Windows) — no Dock/taskbar
   window. Click the tray icon for: listening on/off, activation-mode picker, show/hide
-  overlay, open settings, open logs folder, clear history, quit.
+  overlay, open settings, open the Jev dashboard, open logs folder, clear history, quit.
 - Use **Quit Dragon** from the tray menu to exit (no main window to close).
 
 ## Packaging an unsigned local build
@@ -256,10 +273,10 @@ find and fix real bugs; see PROGRESS.md's "Exact next task" for the most likely 
 ```
 src/
   main/        Electron main process: tray, windows, settings/history stores, shortcuts,
-               IPC, the pipeline orchestrator (activation modes, cancellation, dedup,
-               dictation session state)
+               IPC, the local Jev dashboard server, and the pipeline orchestrator
+               (activation modes, cancellation, dedup, dictation session state)
   preload/     contextBridge preload scripts for the three renderer windows
-  renderer/    settings/overlay/mic-capture windows — plain TS→JS, no bundler
+  renderer/    settings/overlay/mic-capture/dashboard windows — plain TS→JS, no bundler
   stt/         Deepgram Flux WebSocket client
   decision/    Jev question-building, OpenRouter client, deterministic payload extraction,
                and Jev-answer → executable-command resolution

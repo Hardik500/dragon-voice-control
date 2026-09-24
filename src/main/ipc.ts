@@ -10,6 +10,7 @@ export interface IpcDeps {
   /** `changedMode` is only set when the activation mode actually changed, not merely
    * present in the update payload (the Settings window always submits every field). */
   onSettingsChanged: (settings: DragonSettings, changedMode?: ActivationMode) => void;
+  openDashboard: () => void;
   getStatus: () => Record<string, unknown>;
 }
 
@@ -28,15 +29,11 @@ export function registerIpc(deps: IpcDeps) {
   ipcMain.handle("settings:openLogs", () => {
     shell.openPath(logger.logDir);
   });
+  ipcMain.handle("settings:openDashboard", () => deps.openDashboard());
 
   ipcMain.handle("history:get", () => deps.pipeline.getHistory());
   ipcMain.handle("history:clear", () => {
     deps.pipeline.clearHistory();
-    return [];
-  });
-  ipcMain.handle("jev:decisions", () => deps.pipeline.getJevDecisionTraces());
-  ipcMain.handle("jev:decisions:clear", () => {
-    deps.pipeline.clearJevDecisionTraces();
     return [];
   });
 

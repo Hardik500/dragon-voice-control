@@ -103,10 +103,12 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   `pipeline.execution`/`pipeline.decision_request`/`pipeline.dictation_*` event. Action
   confirmations now remain visible for five seconds across immediate idle/listening updates so
   the result can be read before it is replaced by the next turn.
-- **Jev decision dashboard**: Settings now shows a bounded, session-only view of the latest
-  Jev calls, including the selected `intent`/`target`/`direction`, confidence, selected-choice
+- **Jev decision dashboard**: a standalone, read-only local web app is available at
+  `http://127.0.0.1:17873/dashboard`. It shows a bounded, session-only view of the latest Jev
+  calls, including the selected `intent`/`target`/`direction`, confidence, selected-choice
   probability bars, top alternatives, transcript, model, and timing context. The same choice
-  probability distributions are included in the structured `jev.response` JSONL event.
+  probability distributions are included in the structured `jev.response` JSONL event. The tray
+  menu and Settings both provide an **Open Dashboard** action.
 - **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, shortcuts, wake phrase,
   voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a new
   shortcut-registration-failure warning banner.
@@ -121,8 +123,9 @@ What was actually run and observed, this round:
 
 - `npm run typecheck` / `npm run build` succeed cleanly after the full Windows-boundary
   refactor, the latest log-driven fixes, and the Jev dashboard UI additions.
-- The Jev dashboard is renderer-only over an in-memory IPC snapshot; it was typechecked but not
-  exercised in a live Electron window in this Linux sandbox.
+- The standalone Jev dashboard server/page/API were exercised with a stubbed Electron process;
+  the page and `/api/decisions` endpoint responded correctly. Live browser rendering and Windows
+  shell integration remain unverified in this Linux sandbox.
 - `npx electron . --dev` boots cleanly end-to-end (tray/windows/IPC/logging all initialize,
   clean shutdown) — `automation/index.ts`'s Linux dev-only fallback (uses the macOS module,
   logs `automation.unsupported_platform_dev_fallback`) makes this possible; real end users on
@@ -291,8 +294,9 @@ the extension-connected tab state:
   the supplied log looked harmless (single reconnect), but keep an eye on it — if repeated
   disconnect/reconnects appear during a session, that's worth its own look.
 - Re-test "Open Antigravity." (now has a closed-vocabulary alias), "Go to desktop." (now uses
-  the shell-start handoff), and bare "Pause." in always-listening mode. Open Settings after a
-  few commands to inspect the Jev dashboard's selected choices and probability alternatives.
+  the shell-start handoff), and bare "Pause." in always-listening mode. Open
+  `http://127.0.0.1:17873/dashboard` after a few commands to inspect the Jev dashboard's selected
+  choices and probability alternatives.
 
 Still unverified on real hardware (documented, not bugs): the dictation/editing flow on
 Windows, Windows-specific automation against third-party apps (Slack/Discord/Cursor/Docker),

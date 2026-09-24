@@ -125,10 +125,6 @@ export class DragonPipeline {
     return this.jevDecisionTraces;
   }
 
-  clearJevDecisionTraces() {
-    this.jevDecisionTraces = [];
-  }
-
   private recordJevDecision(trace: JevDecisionTrace) {
     this.jevDecisionTraces.unshift(trace);
     if (this.jevDecisionTraces.length > DragonPipeline.MAX_JEV_DECISION_TRACES) {
