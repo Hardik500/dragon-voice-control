@@ -27,7 +27,9 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   Deepgram. Media permission auto-granted for the app's own windows.
 - **Deepgram Flux streaming STT**: connects to `wss://api.deepgram.com/v2/listen`, parses
   `Connected`/`TurnInfo`/`Error` messages, tracks turn index → utterance ID, surfaces
-  `Update`/`StartOfTurn`/`EagerEndOfTurn`/`TurnResumed`/`EndOfTurn` events.
+  `Update`/`StartOfTurn`/`EagerEndOfTurn`/`TurnResumed`/`EndOfTurn` events, and records STT
+  turn latency. Accuracy-oriented Flux settings use a higher final end-of-turn threshold
+  (`0.8`), an `8s` final-turn timeout, and a small Dragon app/command keyterm list.
 - **Jev via OpenRouter**: single combined request per utterance with `complete` + `intent` +
   `target` + `direction` (+ `addressed` in always-listening mode) questions; typed answers
   resolved against deterministically-extracted payload into a concrete `ResolvedCommand`. A
@@ -99,8 +101,8 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
 - **Overlay, voice replies, history, logs**: floating always-on-top overlay; short native
   spoken acknowledgements with barge-in; command history persisted and viewable/clearable from
   Settings; JSONL debug logs rotated per day with key/audio redaction, now including explicit
-  latency breakdowns (`sttToDecisionMs`, `decisionMs`, `executionMs`, `totalMs`) on every
-  `pipeline.execution`/`pipeline.decision_request`/`pipeline.dictation_*` event. Action
+  latency breakdowns (`sttTurnMs`, `sttToDecisionMs`, `decisionMs`, `jevMs`, `executionMs`,
+  `totalMs`) on decision and execution events. Action
   confirmations now remain visible for five seconds across immediate idle/listening updates so
   the result can be read before it is replaced by the next turn.
 - **Jev decision dashboard**: a standalone, read-only local web app is available at
@@ -276,6 +278,15 @@ Summary, oldest to newest:
     Jev decision dashboard with choice probabilities and alternatives. The dashboard and Windows
     Explorer/Antigravity behavior still require live Windows verification.
 
+  9. Ninth pass, from the additional Windows log: added STT-turn and Jev timing to the dashboard;
+     raised Flux's final-turn threshold to `0.8`, added an `8s` final-turn timeout, and added
+     Dragon keyterms for higher-accuracy recognition. Fixed spoken `dot two` → `dev.to` URL
+     normalization, stripped trailing `on Google`/`on Google dot com` from search queries, and
+     serialized EagerEndOfTurn/EndOfTurn Jev requests per utterance to stop repeated calls from
+     cancelling each other. Added a narrow browser-element fallback for explicit `click on X`
+     phrases when Jev mislabels them as an app command. The new live accuracy and timing
+     settings still require a real Windows run.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -294,9 +305,11 @@ the extension-connected tab state:
   the supplied log looked harmless (single reconnect), but keep an eye on it — if repeated
   disconnect/reconnects appear during a session, that's worth its own look.
 - Re-test "Open Antigravity." (now has a closed-vocabulary alias), "Go to desktop." (now uses
-  the shell-start handoff), and bare "Pause." in always-listening mode. Open
-  `http://127.0.0.1:17873/dashboard` after a few commands to inspect the Jev dashboard's selected
-  choices and probability alternatives.
+  the shell-start handoff), and bare "Pause." in always-listening mode. Re-test
+  "Search for learn Japanese on Google dot com." (the query should be only "learn Japanese") and
+  "Open dev dot two on Google." (should resolve to dev.to). Open
+  `http://127.0.0.1:17873/dashboard` after a few commands to inspect Jev probabilities and
+  STT/Jev timing; compare the accuracy change against the observed STT-turn latency.
 
 Still unverified on real hardware (documented, not bugs): the dictation/editing flow on
 Windows, Windows-specific automation against third-party apps (Slack/Discord/Cursor/Docker),

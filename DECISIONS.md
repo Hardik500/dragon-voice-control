@@ -634,3 +634,30 @@ keeps it independent from the Chrome extension WebSocket bridge on `17872`.
 persisted telemetry. Users must keep Dragon running to access the URL. The local server and
 page/API were verified with a stubbed Electron process; live browser rendering and Windows
 integration still require target hardware.
+
+## 2026-09-24 — Measure STT/Jev latency and tune Flux for command accuracy
+
+The additional Windows log showed two classes of issue: several commands were lost or delayed
+when EagerEndOfTurn and EndOfTurn launched competing Jev requests, and the supplied log had no
+way to separate STT turn time from Jev request time. It also exposed three deterministic speech
+edge cases: a trailing `on Google`/`on Google dot com` was being included in the search query,
+spoken `dev dot two` was not normalized to `dev.to`, and Jev sometimes labeled explicit
+`click on X` phrases as `open_app` even when browser elements were available.
+
+**Decision:** Record `sttTurnMs`, `sttToDecisionMs`, `jevMs`, and total decision-preparation time
+in the dashboard trace. Serialize decision processing per utterance so a final turn waits for and
+reuses the prior result instead of racing it. Keep the existing `TurnResumed` cancellation and
+cross-utterance concurrency cap. For Flux, use `eot_threshold=0.8`, `eot_timeout_ms=8000`, and a
+small Dragon keyterm list. This intentionally trades some final-turn latency for fewer premature
+turn cuts and better command-name recognition.
+
+**Reason:** The log shows Jev calls averaging several hundred milliseconds, so parallel Eager and
+final calls can consume the concurrency budget and be cancelled before execution. Serializing
+per utterance removes that race without disabling interim execution. Deepgram documents a higher
+final end-of-turn threshold as an accuracy/reliability tradeoff; the dashboard makes the added
+latency visible.
+
+**Consequences:** A final decision can wait for an earlier in-flight decision for the same
+utterance, but cross-utterance requests remain capped. The new Deepgram settings and keyterms
+were checked by a stubbed WebSocket harness, not against live audio. Accuracy improvements must
+be confirmed with a real Windows run and compared using the new dashboard timings.

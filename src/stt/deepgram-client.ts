@@ -3,6 +3,27 @@ import { logger } from "../logging/logger";
 import { TranscriptEvent } from "../types/pipeline";
 
 const SAMPLE_RATE = 16000;
+const STT_MODEL = "flux-general-en";
+const EAGER_EOT_THRESHOLD = "0.5";
+const FINAL_EOT_THRESHOLD = "0.8";
+const EOT_TIMEOUT_MS = "8000";
+const STT_KEYTERMS = [
+  "Antigravity",
+  "Cursor",
+  "Docker Desktop",
+  "Warp",
+  "Slack",
+  "Discord",
+  "Notion",
+  "Figma",
+  "YouTube Music",
+  "Google Chrome",
+  "Visual Studio Code",
+  "File Explorer",
+  "play",
+  "pause",
+  "dictation",
+];
 
 export type TurnHandler = (turn: TranscriptEvent) => void;
 /** `hadOpened` distinguishes "was connected and then dropped" (worth auto-reconnecting)
@@ -16,6 +37,7 @@ export type CloseHandler = (hadOpened: boolean) => void;
 export class DeepgramFluxConnection {
   private ws: WebSocket | null = null;
   private turnIndexToUtterance = new Map<number, string>();
+  private turnStartedAt = new Map<number, number>();
   private opened = false;
 
   constructor(
@@ -28,7 +50,16 @@ export class DeepgramFluxConnection {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const url = `wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=${SAMPLE_RATE}&eager_eot_threshold=0.5`;
+      const params = new URLSearchParams({
+        model: STT_MODEL,
+        encoding: "linear16",
+        sample_rate: String(SAMPLE_RATE),
+        eager_eot_threshold: EAGER_EOT_THRESHOLD,
+        eot_threshold: FINAL_EOT_THRESHOLD,
+        eot_timeout_ms: EOT_TIMEOUT_MS,
+      });
+      for (const keyterm of STT_KEYTERMS) params.append("keyterm", keyterm);
+      const url = `wss://api.deepgram.com/v2/listen?${params.toString()}`;
       this.ws = new WebSocket(url, { headers: { Authorization: `Token ${this.apiKey}` } });
 
       this.ws.on("open", () => {
@@ -54,10 +85,13 @@ export class DeepgramFluxConnection {
           return;
         }
         if (msg.type === "TurnInfo") {
+          const receivedAt = Date.now();
           if (msg.event === "StartOfTurn" || !this.turnIndexToUtterance.has(msg.turn_index)) {
             this.turnIndexToUtterance.set(msg.turn_index, this.newUtteranceId());
+            this.turnStartedAt.set(msg.turn_index, receivedAt);
           }
           const utteranceId = this.turnIndexToUtterance.get(msg.turn_index)!;
+          const turnStartedAt = this.turnStartedAt.get(msg.turn_index) ?? receivedAt;
           const isFinal = msg.event === "EndOfTurn";
           const turn: TranscriptEvent = {
             utteranceId,
@@ -66,7 +100,8 @@ export class DeepgramFluxConnection {
             transcript: msg.transcript ?? "",
             isFinal,
             endOfTurnConfidence: msg.end_of_turn_confidence ?? 0,
-            receivedAt: Date.now(),
+            turnStartedAt,
+            receivedAt,
           };
           logger.event(
             "stt.turn",
@@ -76,11 +111,15 @@ export class DeepgramFluxConnection {
               event: msg.event,
               transcript: turn.transcript,
               endOfTurnConfidence: turn.endOfTurnConfidence,
+              sttTurnMs: receivedAt - turnStartedAt,
             },
             { verboseOnly: msg.event === "Update" }
           );
           this.onTurn(turn);
-          if (isFinal) this.turnIndexToUtterance.delete(msg.turn_index);
+          if (isFinal) {
+            this.turnIndexToUtterance.delete(msg.turn_index);
+            this.turnStartedAt.delete(msg.turn_index);
+          }
         }
       });
 

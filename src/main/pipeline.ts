@@ -59,6 +59,7 @@ const SYNTHETIC_TURN: TranscriptEvent = {
   transcript: "",
   isFinal: true,
   endOfTurnConfidence: 1,
+  turnStartedAt: Date.now(),
   receivedAt: Date.now(),
 };
 
@@ -72,6 +73,8 @@ function deleteScopeToControl(scope: ReturnType<typeof extractDeleteScope>): Dic
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
   private inFlight: InFlight[] = [];
+  /** Serializes Jev work per utterance so EagerEndOfTurn cannot race the final EndOfTurn. */
+  private decisionInFlightByUtterance = new Map<string, Promise<void>>();
   private executedUtterances = new Set<string>();
   private ignoredLoggedUtterances = new Set<string>();
   private utteranceCounter = 0;
@@ -499,7 +502,23 @@ export class DragonPipeline {
   }
 
   private async runDecision(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
+    const previous = this.decisionInFlightByUtterance.get(turn.utteranceId);
+    if (previous) await previous;
+
+    const current = this.runDecisionInternal(turn, effectiveText, settings);
+    this.decisionInFlightByUtterance.set(turn.utteranceId, current);
+    try {
+      await current;
+    } finally {
+      if (this.decisionInFlightByUtterance.get(turn.utteranceId) === current) {
+        this.decisionInFlightByUtterance.delete(turn.utteranceId);
+      }
+    }
+  }
+
+  private async runDecisionInternal(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
     const startedAt = Date.now();
+    const sttTurnMs = Math.max(0, turn.receivedAt - turn.turnStartedAt);
     const sttToDecisionMs = startedAt - turn.receivedAt;
     const controller = this.registerInFlight(turn.utteranceId);
 
@@ -534,6 +553,7 @@ export class DragonPipeline {
       const cached = this.jevAnswerCache.get(cacheKey);
       let summary: JevAnswerSummary;
       let decisionMs: number;
+      let jevMs: number | null = null;
 
       if (cached) {
         // Same utterance, same text, same mode as an already-answered request (typically
@@ -549,6 +569,7 @@ export class DragonPipeline {
           turnEvent: turn.event,
           activeApp,
           effectiveText,
+          sttTurnMs,
           sttToDecisionMs,
           appCandidates: payload.appCandidates.map((c) => c.label),
           elementCandidates: payload.browserElementCandidates.length,
@@ -556,6 +577,7 @@ export class DragonPipeline {
 
         const result = await callJev(settings.openRouterApiKey, state, questions, controller.signal);
         this.unregisterInFlight(controller);
+        jevMs = result.timingMs;
 
         this.recordJevDecision({
           timestamp: Date.now(),
@@ -564,6 +586,10 @@ export class DragonPipeline {
           activationMode: settings.activationMode,
           turnEvent: turn.event,
           model: result.model,
+          sttTurnMs,
+          sttToDecisionMs,
+          jevMs: result.timingMs,
+          decisionMs: Date.now() - startedAt,
           complete: result.answers.complete.noul,
           addressed: result.answers.addressed?.noul ?? null,
           choices: {
@@ -691,8 +717,10 @@ export class DragonPipeline {
       logger.event("pipeline.execution", {
         utteranceId: turn.utteranceId,
         intent: resolved.kind,
+        sttTurnMs,
         sttToDecisionMs,
         decisionMs,
+        jevMs,
         executionMs,
         totalMs,
         error: execError,
@@ -758,6 +786,7 @@ export class DragonPipeline {
     this.executedUtterances.add(turn.utteranceId);
 
     const execStarted = Date.now();
+    const sttTurnMs = Math.max(0, turn.receivedAt - turn.turnStartedAt);
     let execError: string | null = null;
     try {
       await automation.typeText(effectiveText);
@@ -770,6 +799,7 @@ export class DragonPipeline {
 
     logger.event("pipeline.dictation_continue", {
       utteranceId: turn.utteranceId,
+      sttTurnMs,
       sttToDecisionMs,
       decisionMs,
       executionMs,

@@ -74,6 +74,13 @@ export function extractDictatedText(transcript: string): string | null {
   return null;
 }
 
+function cleanSearchQuery(query: string): string {
+  return query
+    .replace(/\s+on\s+(?:google(?:\s+dot\s+com)?|chrome)\s*[.!?]*$/i, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
+}
+
 export function extractSearchQuery(transcript: string): string | null {
   // Order matters: more specific patterns (with a trailing "chat"/"channel" to strip) first,
   // so e.g. "go to Anushri's chat" yields "Anushri" rather than "Anushri's chat". These extra
@@ -90,7 +97,10 @@ export function extractSearchQuery(transcript: string): string | null {
   ];
   for (const p of patterns) {
     const m = transcript.match(p);
-    if (m && m[1].trim().length > 0) return m[1].trim().replace(/[.!?]+$/, "");
+    if (m && m[1].trim().length > 0) {
+      const query = cleanSearchQuery(m[1]);
+      if (query.length > 0) return query;
+    }
   }
   return null;
 }
@@ -101,8 +111,8 @@ export function extractSearchQuery(transcript: string): string | null {
  * text ("type ... dot ...") must stay verbatim. */
 function normalizeSpokenDomain(transcript: string): string {
   return transcript.replace(
-    /\b([a-z0-9-]+)\s+dot\s+(com|org|net|io|dev|co|gov|edu|app|ai|uk)\b/gi,
-    "$1.$2"
+    /\b([a-z0-9-]+)\s+dot\s+(com|org|net|io|dev|co|gov|edu|app|ai|uk|two|to)\b/gi,
+    (_match, base: string, tld: string) => `${base}.${tld.toLowerCase() === "two" ? "to" : tld.toLowerCase()}`
   );
 }
 
@@ -112,7 +122,7 @@ export function extractUrl(transcript: string): string | null {
   const explicit = normalized.match(/\bhttps?:\/\/\S+/i);
   if (explicit) return explicit[0];
 
-  const domainLike = normalized.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|co|gov|edu|app|ai|uk))\b/i);
+  const domainLike = normalized.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|to|co|gov|edu|app|ai|uk))\b/i);
   if (domainLike) return `https://${domainLike[1]}`;
 
   const lowerT = lower(normalized);

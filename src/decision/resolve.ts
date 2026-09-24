@@ -68,6 +68,12 @@ function findElementIdForTarget(target: string, payload: ExtractedPayload): stri
  * code override for one specific closed pattern, not a guardrail or a planner. */
 const OPEN_APP_PATTERN = /^\s*(?:please\s+)?(?:open|launch|start|switch to|go to)\b/i;
 
+function clickElementOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
+  if (payload.browserElementCandidates.length === 0) return null;
+  if (!/^\s*(?:please\s+)?click\s+on\b/i.test(effectiveText)) return null;
+  return { kind: "chrome_click", elementId: payload.browserElementCandidates[0].id };
+}
+
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (payload.appCandidates.length === 0) return null;
   // A URL is a more specific, more certain signal than an app-name substring match — without
@@ -97,6 +103,13 @@ export function resolveCommand(
   if (intent !== "quit_app" && intent !== "hide_app") {
     const override = openAppOverride(effectiveText, payload);
     if (override) return override;
+  }
+
+  // Jev occasionally labels an explicit "click on X" phrase as open_app when the page
+  // element list is noisy. A page-element candidate makes the browser-click meaning concrete.
+  if (intent !== "chrome_click") {
+    const clickOverride = clickElementOverride(effectiveText, payload);
+    if (clickOverride) return clickOverride;
   }
 
   switch (intent) {

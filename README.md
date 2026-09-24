@@ -31,7 +31,8 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
 - Structured JSONL debug logs with latency breakdowns (never containing API keys,
   Authorization headers, or raw audio).
 - A standalone, read-only Jev dashboard at `http://127.0.0.1:17873/dashboard`, showing the
-  selected intent/target/direction, confidence, probability bars, and closest alternatives.
+  selected intent/target/direction, confidence, probability bars, closest alternatives, and
+  STT-turn/Jev-request latency.
 
 ## What it is not
 
@@ -151,8 +152,9 @@ http://127.0.0.1:17873/dashboard
 
 The URL is also available from the tray menu or the **Open Dashboard** button in Settings. The
 page is a clean, read-only view of the current Dragon session: it shows the transcript, active
-application, selected Jev intent/target/direction, confidence, probability bars, and the closest
-alternative choices. The bounded session data is exposed read-only at
+application, selected Jev intent/target/direction, confidence, probability bars, closest
+alternative choices, and latency from STT turn start through Jev response. The bounded session
+data is exposed read-only at
 `http://127.0.0.1:17873/api/decisions`; restart Dragon to begin a new session. No API keys or
 audio are sent to the dashboard.
 

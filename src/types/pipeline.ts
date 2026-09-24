@@ -7,6 +7,8 @@ export interface TranscriptEvent {
   transcript: string;
   isFinal: boolean;
   endOfTurnConfidence: number;
+  /** Timestamp of the first TurnInfo event for this turn. Used for STT turn elapsed timing. */
+  turnStartedAt: number;
   receivedAt: number;
 }
 
@@ -135,6 +137,14 @@ export interface JevDecisionTrace {
   activationMode: string;
   turnEvent: TranscriptEvent["event"];
   model: string;
+  /** Milliseconds from the first STT turn event to this decision request. */
+  sttTurnMs: number;
+  /** Milliseconds from the STT event receipt to the start of decision processing. */
+  sttToDecisionMs: number;
+  /** Time spent inside the Jev HTTP request. */
+  jevMs: number;
+  /** Total time spent preparing and obtaining the decision, including Jev. */
+  decisionMs: number;
   complete: number;
   addressed: number | null;
   choices: {

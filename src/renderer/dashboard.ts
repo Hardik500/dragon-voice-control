@@ -11,6 +11,10 @@ interface JevDecision {
   activationMode: string;
   turnEvent: string;
   model: string;
+  sttTurnMs: number;
+  sttToDecisionMs: number;
+  jevMs: number;
+  decisionMs: number;
   complete: number;
   addressed: number | null;
   choices: {
@@ -32,6 +36,10 @@ function byId<T extends HTMLElement>(id: string): T {
 
 function formatProbability(value: number): string {
   return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "—";
+}
+
+function formatMs(value: number | undefined): string {
+  return Number.isFinite(value) ? `${Math.round(value!)} ms` : "—";
 }
 
 function setText(id: string, value: string) {
@@ -76,7 +84,7 @@ function renderHistory(decisions: JevDecision[]) {
     intent.textContent = decision.choices.intent.choice;
     const target = document.createElement("span");
     target.className = "history-target";
-    target.textContent = decision.choices.target.choice;
+    target.textContent = `${decision.choices.target.choice} · ${formatMs(decision.jevMs)}`;
     item.append(time, transcript, intent, target);
     history.appendChild(item);
   }
@@ -89,6 +97,11 @@ function renderDashboard(data: DashboardResponse) {
 
   if (!latest) {
     setText("latestConfidence", "—");
+    setText("sttLatency", "—");
+    setText("jevLatency", "—");
+    setText("decisionLatency", "—");
+    setText("decisionPreparation", "—");
+    setText("jevInsideDecision", "—");
     setText("dragonState", data.status?.listening ? "Listening" : "Idle");
     setText("latestTime", "Waiting for a command");
     setText("latestContext", "No transcript yet");
@@ -99,6 +112,11 @@ function renderDashboard(data: DashboardResponse) {
   }
 
   setText("latestConfidence", formatProbability(latest.choices.intent.confidence));
+  setText("sttLatency", formatMs(latest.sttTurnMs));
+  setText("jevLatency", formatMs(latest.jevMs));
+  setText("decisionLatency", formatMs(latest.sttToDecisionMs));
+  setText("decisionPreparation", formatMs(latest.decisionMs));
+  setText("jevInsideDecision", formatMs(latest.jevMs));
   setText("dragonState", data.status?.listening ? "Listening" : "Idle");
   setText("latestTime", new Date(latest.timestamp).toLocaleTimeString());
   setText("latestContext", `${latest.activeApp || "Unknown app"} · ${latest.activationMode.replace(/_/g, " ")} · ${latest.turnEvent}`);
