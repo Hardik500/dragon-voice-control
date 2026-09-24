@@ -7,7 +7,7 @@ import { buildQuestions, buildState, buildTargetCandidates } from "../decision/q
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
-import { HistoryEntry, JevAnswerSummary, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
+import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
 import { HistoryStore } from "./history-store";
 
@@ -41,6 +41,7 @@ interface InFlight {
 }
 
 type DictationControl =
+  | { type: "start" }
   | { type: "stop" }
   | { type: "newline" }
   | { type: "delete_all" }
@@ -68,6 +69,17 @@ function deleteScopeToControl(scope: ReturnType<typeof extractDeleteScope>): Dic
   if (scope.scope === "all") return { type: "delete_all" };
   if (scope.scope === "words") return { type: "delete_words", count: scope.count ?? DEFAULT_DELETE_WORD_COUNT };
   return { type: "delete_last_chunk" };
+}
+
+function keepsDictationOpen(kind: ResolvedCommand["kind"]): boolean {
+  return (
+    kind === "type_text" ||
+    kind === "insert_newline" ||
+    kind === "press_key" ||
+    kind === "shortcut" ||
+    kind === "delete_text" ||
+    kind === "replace_text"
+  );
 }
 
 export class DragonPipeline {
@@ -132,6 +144,22 @@ export class DragonPipeline {
     this.jevDecisionTraces.unshift(trace);
     if (this.jevDecisionTraces.length > DragonPipeline.MAX_JEV_DECISION_TRACES) {
       this.jevDecisionTraces.length = DragonPipeline.MAX_JEV_DECISION_TRACES;
+    }
+  }
+
+  private updateJevDecisionOutcome(
+    utteranceId: string,
+    outcome: JevDecisionOutcome,
+    detail: string | null,
+    resolvedAction: string | null = null,
+    executionMs: number | null = null
+  ) {
+    for (const trace of this.jevDecisionTraces) {
+      if (trace.utteranceId !== utteranceId) continue;
+      trace.outcome = outcome;
+      trace.outcomeDetail = detail;
+      if (resolvedAction !== null) trace.resolvedAction = resolvedAction;
+      trace.executionMs = executionMs;
     }
   }
 
@@ -297,7 +325,19 @@ export class DragonPipeline {
     const trimmed = effectiveText.trim();
     const lower = trimmed.toLowerCase().replace(/[.!?]+$/, "");
 
-    if (/^(?:stop|end)\s+(?:dictation|typing|dictating)$/.test(lower) || lower === "that's it" || lower === "stop typing") {
+    if (
+      /^(?:start|begin|enter)\s+(?:typing|dictation|insert\s+mode|type\s+mode)$/.test(lower) ||
+      lower === "insert mode" ||
+      lower === "type mode"
+    ) {
+      return { type: "start" };
+    }
+    if (
+      /^(?:stop|end|exit)\s+(?:dictation|typing|dictating|insert\s+mode|type\s+mode)$/.test(lower) ||
+      lower === "done" ||
+      lower === "that's it" ||
+      lower === "stop typing"
+    ) {
       return { type: "stop" };
     }
     if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
@@ -316,6 +356,14 @@ export class DragonPipeline {
     let execError: string | null = null;
     try {
       switch (control.type) {
+        case "start":
+          actionLabel = this.dictationActive ? "Insert mode already active" : "Start typing";
+          if (!this.dictationActive) {
+            this.dictationActive = true;
+            this.dictationBuffer = "";
+            this.lastDictationChunk = "";
+          }
+          break;
         case "stop":
           actionLabel = "Stop dictation";
           this.endDictation();
@@ -401,7 +449,7 @@ export class DragonPipeline {
       utteranceId: turn.utteranceId,
       timestamp: Date.now(),
       transcript: turn.transcript,
-      intent: "delete_text",
+      intent: control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
       action: actionLabel,
       status: execError ? "error" : "success",
       detail: execError ?? "",
@@ -453,11 +501,11 @@ export class DragonPipeline {
     }
     if (effectiveText.trim().length === 0) return;
 
-    // Fast path: deterministic dictation-editing commands skip Jev entirely for speed and
-    // reliability. Only checked on a final turn, and only while actively dictating.
-    if (this.dictationActive && turn.isFinal) {
+    // Fast path: deterministic insert-mode/editing commands skip Jev entirely for speed and
+    // reliability. Mode entry is allowed outside an active session; edit controls require one.
+    if (turn.isFinal) {
       const control = this.matchDictationControl(effectiveText);
-      if (control) {
+      if (control && (this.dictationActive || control.type === "start")) {
         if (this.executedUtterances.has(turn.utteranceId)) return;
         this.executedUtterances.add(turn.utteranceId);
         await this.runDictationControl(turn, control, settings);
@@ -580,6 +628,7 @@ export class DragonPipeline {
         jevMs = result.timingMs;
 
         this.recordJevDecision({
+          utteranceId: turn.utteranceId,
           timestamp: Date.now(),
           transcript: effectiveText,
           activeApp,
@@ -590,6 +639,10 @@ export class DragonPipeline {
           sttToDecisionMs,
           jevMs: result.timingMs,
           decisionMs: Date.now() - startedAt,
+          outcome: "pending",
+          outcomeDetail: null,
+          resolvedAction: null,
+          executionMs: null,
           complete: result.answers.complete.noul,
           addressed: result.answers.addressed?.noul ?? null,
           choices: {
@@ -627,6 +680,7 @@ export class DragonPipeline {
         !isExplicitMediaControl(turn, summary)
       ) {
         if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
+          this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Not addressed to Dragon");
           this.logIgnored(turn, "not_addressed", summary.intent);
           return;
         }
@@ -668,6 +722,7 @@ export class DragonPipeline {
           await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs);
           return;
         }
+        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "No confident command recognized");
         this.logIgnored(turn, "low_confidence_or_incomplete", summary.intent);
         return;
       }
@@ -680,10 +735,17 @@ export class DragonPipeline {
 
       const resolved = resolveCommand(summary, payload, effectiveText);
       if (!resolved) {
+        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Jev decision could not be resolved");
         this.logIgnored(turn, "resolution_failed", summary.intent);
         return;
       }
 
+      this.updateJevDecisionOutcome(
+        turn.utteranceId,
+        "pending",
+        null,
+        describeCommand(resolved)
+      );
       this.onOverlay({
         utteranceId: turn.utteranceId,
         state: "executing",
@@ -703,6 +765,13 @@ export class DragonPipeline {
         execError = err instanceof Error ? err.message : String(err);
       }
       const executionMs = Date.now() - execStarted;
+      this.updateJevDecisionOutcome(
+        turn.utteranceId,
+        execError ? "error" : "success",
+        execError,
+        describeCommand(resolved),
+        executionMs
+      );
       const totalMs = sttToDecisionMs + decisionMs + executionMs;
 
       // Dictation session bookkeeping: typing/newline continue it; any other successfully
@@ -711,7 +780,7 @@ export class DragonPipeline {
       if (!execError) {
         if (resolved.kind === "type_text") this.startOrContinueDictation(resolved.text!);
         else if (resolved.kind === "insert_newline") this.appendDictationRaw("\n");
-        else if (resolved.kind !== "delete_text" && resolved.kind !== "replace_text") this.endDictation();
+        else if (!keepsDictationOpen(resolved.kind)) this.endDictation();
       }
 
       logger.event("pipeline.execution", {
@@ -759,6 +828,7 @@ export class DragonPipeline {
         return;
       }
       const message = err instanceof JevRequestError ? err.message : err instanceof Error ? err.message : String(err);
+      this.updateJevDecisionOutcome(turn.utteranceId, "error", message);
       logger.error("pipeline.decision_failed", err, { utteranceId: turn.utteranceId });
       this.onOverlay({
         utteranceId: turn.utteranceId,
@@ -795,6 +865,13 @@ export class DragonPipeline {
       execError = err instanceof Error ? err.message : String(err);
     }
     const executionMs = Date.now() - execStarted;
+    this.updateJevDecisionOutcome(
+      turn.utteranceId,
+      execError ? "error" : "success",
+      execError,
+      "Continue typing",
+      executionMs
+    );
     const totalMs = sttToDecisionMs + decisionMs + executionMs;
 
     logger.event("pipeline.dictation_continue", {

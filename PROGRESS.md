@@ -73,14 +73,16 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   surfaces "say the wake phrase first" in the overlay when absent instead of going silent),
   always-listening (the `addressed` question is worded to not require literally naming the
   assistant — a plain "open chrome" counts).
-- **Voice dictation and in-session editing** (new): after any "type X" command, subsequent
-  utterances Jev doesn't recognize as another command are typed verbatim and folded into a
-  tracked `dictationBuffer`, so the user doesn't have to repeat "type" every sentence. A small
-  deterministic (no-Jev-round-trip) set of editing phrases works on that tracked buffer with
-  exact character counts: "new line", "delete the last N words"/"delete the last word",
-  "delete/undo that" (last chunk only), "delete everything"/"clear all of that", and
-  "replace X with Y" (backspaces only the changed tail, retypes only the changed suffix). Any
-  other successfully-executed command ends the dictation session.
+- **Voice dictation and in-session editing** (new): after any "type X" command, or explicitly
+  saying "start typing"/"insert mode", subsequent utterances Jev doesn't recognize as another
+  command are typed verbatim and folded into a tracked `dictationBuffer`, so the user doesn't
+  have to repeat "type" every sentence. Recognized key presses and shortcuts execute and keep
+  insert mode active; a normal app/browser/media command still ends it. Say "stop typing" or
+  "exit insert mode" to leave explicitly. A small deterministic (no-Jev-round-trip) set of
+  editing phrases works on that tracked buffer with exact character counts: "new line", "delete
+  the last N words"/"delete the last word", "delete/undo that" (last chunk only), "delete
+  everything"/"clear all of that", and "replace X with Y" (backspaces only the changed tail,
+  retypes only the changed suffix).
 - **Site-aware search & generic in-app search** (new): `chrome_search` uses a URL-template
   table (`SITE_SEARCH_TEMPLATES`) keyed by the *current* page's hostname when Chrome is on a
   known site (YouTube, YouTube Music, GitHub, Reddit, Amazon, Wikipedia, Netflix, X/Twitter),
@@ -108,9 +110,10 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
 - **Jev decision dashboard**: a standalone, read-only local web app is available at
   `http://127.0.0.1:17873/dashboard`. It shows a bounded, session-only view of the latest Jev
   calls, including the selected `intent`/`target`/`direction`, confidence, selected-choice
-  probability bars, top alternatives, transcript, model, and timing context. The same choice
-  probability distributions are included in the structured `jev.response` JSONL event. The tray
-  menu and Settings both provide an **Open Dashboard** action.
+  probability bars, top alternatives, transcript, model, timing, resolved action, execution
+  outcome, and a compact recent-exceptions list. The same choice probability distributions are
+  included in the structured `jev.response` JSONL event. The tray menu and Settings both provide
+  an **Open Dashboard** action.
 - **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, shortcuts, wake phrase,
   voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a new
   shortcut-registration-failure warning banner.
@@ -287,6 +290,12 @@ Summary, oldest to newest:
      phrases when Jev mislabels them as an app command. The new live accuracy and timing
      settings still require a real Windows run.
 
+  10. Tenth pass: dashboard traces now carry the resolved action, execution latency, and
+      pending/success/ignored/error/cancelled outcome. The page shows session counters, a compact
+      STT → Jev → action latency strip, recent outcomes, and a small meaningful-exceptions list.
+      Outcome updates are attached by utterance ID so EagerEndOfTurn and EndOfTurn traces do not
+      produce false duplicate outcomes.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -307,7 +316,10 @@ the extension-connected tab state:
 - Re-test "Open Antigravity." (now has a closed-vocabulary alias), "Go to desktop." (now uses
   the shell-start handoff), and bare "Pause." in always-listening mode. Re-test
   "Search for learn Japanese on Google dot com." (the query should be only "learn Japanese") and
-  "Open dev dot two on Google." (should resolve to dev.to). Open
+  "Open dev dot two on Google." (should resolve to dev.to). For insert mode, say
+  "Start typing", dictate two sentences, say "Press enter", dictate another sentence, then
+  "Stop typing"; verify the keyboard action executes and ordinary speech continues typing.
+  Open
   `http://127.0.0.1:17873/dashboard` after a few commands to inspect Jev probabilities and
   STT/Jev timing; compare the accuracy change against the observed STT-turn latency.
 

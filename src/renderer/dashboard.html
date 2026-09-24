@@ -45,10 +45,19 @@
   .stat { min-width: 118px; padding: 16px 17px; background: rgba(17, 26, 37, .86); }
   .stat-label { display: block; color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
   .stat-value { display: block; margin-top: 5px; font-size: 25px; letter-spacing: -.04em; }
-  .timing-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 18px; border-top: 1px solid var(--line); background: var(--line); }
+  .timing-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 18px; border-top: 1px solid var(--line); background: var(--line); }
   .timing { padding: 12px 10px 0 0; background: rgba(17, 26, 37, .78); }
   .timing-label { display: block; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
   .timing-value { display: block; margin-top: 3px; color: var(--lime); font-size: 16px; font-variant-numeric: tabular-nums; }
+  .outcome { display: grid; grid-template-columns: 84px 1fr auto auto; gap: 10px; align-items: center; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--line); }
+  .outcome-label { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .outcome-action { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+  .outcome-status { font-size: 11px; font-weight: 650; }
+  .outcome-success { color: var(--lime); }
+  .outcome-ignored { color: var(--amber); }
+  .outcome-error { color: #ff8585; }
+  .outcome-cancelled, .outcome-pending { color: var(--muted); }
+  .execution-latency { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 30px 0 12px; }
   h2 { margin: 0; font-size: 13px; letter-spacing: .02em; }
   .section-note { color: var(--muted); font-size: 11px; }
@@ -66,11 +75,19 @@
   .meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), var(--lime)); transition: width .35s ease; }
   .alternatives { min-height: 30px; margin-top: 9px; color: var(--muted); font-size: 11px; }
   .history { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
-  .history li { display: grid; grid-template-columns: 72px minmax(180px, 1fr) 150px 150px; gap: 18px; align-items: center; padding: 14px 3px; border-bottom: 1px solid rgba(38, 56, 74, .72); }
+  .history li { display: grid; grid-template-columns: 72px minmax(180px, 1fr) 125px 125px 78px; gap: 18px; align-items: center; padding: 14px 3px; border-bottom: 1px solid rgba(38, 56, 74, .72); }
   .history time { color: var(--muted); font-variant-numeric: tabular-nums; }
   .history-transcript { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .history-intent { color: var(--lime); }
   .history-target { color: var(--muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-outcome { color: var(--lime); font-size: 10px; text-align: right; }
+  .history-ignored { color: var(--amber); }
+  .history-error { color: #ff8585; }
+  .history-cancelled, .history-pending { color: var(--muted); }
+  .exceptions { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+  .exceptions li { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr); gap: 18px; padding: 12px 3px; border-bottom: 1px solid rgba(38, 56, 74, .72); font-size: 11px; }
+  .exception-transcript { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exception-reason { color: var(--amber); }
   .empty { padding: 30px 0; color: var(--muted); }
   footer { margin-top: 30px; color: var(--muted); font-size: 11px; }
   footer code { color: var(--cyan); }
@@ -81,9 +98,11 @@
     .stats { grid-template-columns: repeat(2, 1fr); }
     .timing-strip { grid-template-columns: 1fr; }
     .choices { grid-template-columns: 1fr; }
-    .history li { grid-template-columns: 62px 1fr; gap: 5px 12px; }
-    .history-intent, .history-target { text-align: left; }
-    .history-target { grid-column: 2; }
+    .history li { grid-template-columns: 62px 1fr auto; gap: 5px 12px; }
+    .history-intent { grid-column: 3; grid-row: 1; text-align: right; }
+    .history-target { grid-column: 2; grid-row: 2; text-align: left; }
+    .history-outcome { grid-column: 3; grid-row: 2; }
+    .exceptions li { grid-template-columns: 1fr; gap: 4px; }
   }
   @media (prefers-reduced-motion: reduce) { .meter span { transition: none; } }
 </style>
@@ -107,9 +126,9 @@
 
     <section class="stats" aria-label="Decision summary">
       <div class="stat"><span class="stat-label">Calls this session</span><strong id="decisionCount" class="stat-value">—</strong></div>
-      <div class="stat"><span class="stat-label">Latest confidence</span><strong id="latestConfidence" class="stat-value">—</strong></div>
-      <div class="stat"><span class="stat-label">STT turn</span><strong id="sttLatency" class="stat-value">—</strong></div>
-      <div class="stat"><span class="stat-label">Jev response</span><strong id="jevLatency" class="stat-value">—</strong></div>
+      <div class="stat"><span class="stat-label">Executed</span><strong id="executedCount" class="stat-value">—</strong></div>
+      <div class="stat"><span class="stat-label">Ignored</span><strong id="ignoredCount" class="stat-value">—</strong></div>
+      <div class="stat"><span class="stat-label">Errors</span><strong id="errorCount" class="stat-value">—</strong></div>
       <div class="stat"><span class="stat-label">Dragon state</span><strong id="dragonState" class="stat-value">—</strong></div>
     </section>
 
@@ -124,9 +143,16 @@
           <div class="choice"><div class="choice-title">Direction</div><div class="choice-main"><span id="directionValue">—</span><span id="directionConfidence" class="choice-confidence">—</span></div><div class="meter"><span id="directionBar"></span></div><div id="directionAlternatives" class="alternatives">No alternatives yet</div></div>
         </div>
         <div class="timing-strip" aria-label="Decision timing">
+          <div class="timing"><span class="timing-label">STT turn</span><strong id="sttLatency" class="timing-value">—</strong></div>
           <div class="timing"><span class="timing-label">STT → decision</span><strong id="decisionLatency" class="timing-value">—</strong></div>
+          <div class="timing"><span class="timing-label">Jev response</span><strong id="jevLatency" class="timing-value">—</strong></div>
           <div class="timing"><span class="timing-label">Decision preparation</span><strong id="decisionPreparation" class="timing-value">—</strong></div>
-          <div class="timing"><span class="timing-label">Jev inside decision</span><strong id="jevInsideDecision" class="timing-value">—</strong></div>
+        </div>
+        <div class="outcome">
+          <span class="outcome-label">Outcome</span>
+          <span id="resolvedAction" class="outcome-action">Waiting for a resolved action</span>
+          <span id="outcomeStatus" class="outcome-status outcome-pending">Awaiting action</span>
+          <span id="executionLatency" class="execution-latency">—</span>
         </div>
       </article>
     </section>
@@ -134,6 +160,11 @@
     <section>
       <div class="section-heading"><h2>Recent decisions</h2><span class="section-note">Newest first</span></div>
       <ol id="history" class="history"><li class="empty">No Jev calls recorded in this session.</li></ol>
+    </section>
+
+    <section>
+      <div class="section-heading"><h2>Recent exceptions</h2><span class="section-note">Only meaningful misses</span></div>
+      <ol id="exceptions" class="exceptions"><li class="empty">No ignored or failed decisions in this session.</li></ol>
     </section>
 
     <footer>Read-only local view · <code id="apiUrl">/api/decisions</code> · restart Dragon to start a new session</footer>

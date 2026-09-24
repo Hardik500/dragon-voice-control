@@ -12,12 +12,13 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
 - Open/activate/hide/quit apps, switch to the previous app, press keys and shortcuts, control
   the active window, adjust/mute system volume, control media playback, open Settings panes
   and Finder/File Explorer locations.
-- **Voice dictation**: say "type ..." once, then just keep talking — Dragon keeps typing
-  everything it doesn't recognize as another command. Say "new line", "delete the last 3
+- **Voice dictation**: say "type ..." once, or say "start typing"/"insert mode", then just keep
+  talking — Dragon keeps typing everything it doesn't recognize as another command. Key presses
+  and shortcuts execute and keep insert mode active. Say "new line", "delete the last 3
   words", "delete that", "delete everything", or "replace X with Y" to edit what was just
   dictated (computed from an exact tracked copy of what Dragon typed, not by reading the
-  app's screen); say "stop dictation" to end the session explicitly, or just say a different
-  command.
+  app's screen); say "stop typing" or "exit insert mode" to end the session explicitly, or just
+  say a different command.
 - Open Chrome and navigate/search (works without the extension, and reuses an already-open
   tab for the same site instead of always opening a new one); click a visible element, type
   into a field, select a dropdown option, scroll, go back/forward/reload, and open/close/switch
@@ -153,8 +154,9 @@ http://127.0.0.1:17873/dashboard
 The URL is also available from the tray menu or the **Open Dashboard** button in Settings. The
 page is a clean, read-only view of the current Dragon session: it shows the transcript, active
 application, selected Jev intent/target/direction, confidence, probability bars, closest
-alternative choices, and latency from STT turn start through Jev response. The bounded session
-data is exposed read-only at
+alternative choices, latency from STT turn start through Jev response, the resolved action,
+execution outcome, and a compact recent-exceptions list. The bounded session data is exposed
+read-only at
 `http://127.0.0.1:17873/api/decisions`; restart Dragon to begin a new session. No API keys or
 audio are sent to the dashboard.
 

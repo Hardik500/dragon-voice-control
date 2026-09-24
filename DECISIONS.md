@@ -661,3 +661,38 @@ latency visible.
 utterance, but cross-utterance requests remain capped. The new Deepgram settings and keyterms
 were checked by a stubbed WebSocket harness, not against live audio. Accuracy improvements must
 be confirmed with a real Windows run and compared using the new dashboard timings.
+
+## 2026-09-24 — Explicit insert mode for voice dictation
+
+**Decision:** Reuse the existing `dictationActive`/`dictationBuffer` session as an explicit
+Insert Mode. Standalone deterministic phrases such as "start typing", "insert mode", and "keep
+typing" enter it; "stop typing", "exit insert mode", "done", and "that's it" leave it. While
+active, ordinary unrecognized speech is still typed, while recognized `press_key`/`shortcut`
+commands execute and keep the mode open. Existing dictation edit controls continue to work.
+Normal app, browser, media, and other commands still execute and end the session.
+
+**Reason:** This removes the repetitive "type" prefix without asking Jev to infer whether every
+sentence is text or an action. The explicit-command-wins rule is predictable, reuses the
+existing exact dictation buffer, and avoids adding a planner or another mode abstraction.
+
+**Consequences:** A phrase containing words such as "press enter" will be treated as text unless
+it is an exact recognized command; this is intentional to avoid surprising edits. The mode still
+ends when a normal non-keyboard command runs, and the existing accepted buffer-drift limitation
+remains.
+
+## 2026-09-24 — Add action outcomes to the Jev dashboard
+
+**Decision:** Extend each in-memory Jev trace with the resolved action, execution latency, and
+an outcome state (`pending`, `success`, `ignored`, `error`, or `cancelled`). Update all traces for
+an utterance when its terminal result is known, so EagerEndOfTurn and EndOfTurn observations do
+not create inconsistent duplicate outcomes. Present this as one compact outcome row, session
+counters, recent outcomes, and a short exceptions list on the existing dashboard page.
+
+**Reason:** The dashboard should demonstrate the complete loop—Jev selected a structured decision,
+Dragon resolved it, and the OS/browser action succeeded or failed—without adding a new route,
+charting library, or persisted analytics system. The small exceptions list makes reliability
+behavior visible to someone evaluating the product.
+
+**Consequences:** Execution outcomes are session-only and available for Jev-backed decisions;
+deterministic dictation fast paths do not appear in the Jev dashboard. The dashboard remains
+read-only and local.

@@ -124,6 +124,8 @@ export interface JevAnswerSummary {
   direction: Direction;
 }
 
+export type JevDecisionOutcome = "pending" | "success" | "ignored" | "error" | "cancelled";
+
 export interface JevChoiceTrace {
   choice: string;
   confidence: number;
@@ -131,6 +133,7 @@ export interface JevChoiceTrace {
 }
 
 export interface JevDecisionTrace {
+  utteranceId: string;
   timestamp: number;
   transcript: string;
   activeApp: string | null;
@@ -145,6 +148,10 @@ export interface JevDecisionTrace {
   jevMs: number;
   /** Total time spent preparing and obtaining the decision, including Jev. */
   decisionMs: number;
+  outcome: JevDecisionOutcome;
+  outcomeDetail: string | null;
+  resolvedAction: string | null;
+  executionMs: number | null;
   complete: number;
   addressed: number | null;
   choices: {
