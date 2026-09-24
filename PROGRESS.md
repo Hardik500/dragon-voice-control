@@ -77,9 +77,10 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   saying "start typing"/"insert mode", subsequent utterances Jev doesn't recognize as another
   command are typed verbatim and folded into a tracked `dictationBuffer`, so the user doesn't
   have to repeat "type" every sentence. Recognized key presses and shortcuts execute and keep
-  insert mode active; a normal app/browser/media command still ends it. Keyboard phrases embedded
-  inside a longer dictated sentence remain text; only standalone final keyboard commands execute,
-  and interim keyboard decisions wait for the final transcript. Say "stop typing" or
+  insert mode active; app/browser/media commands are deliberately typed as text while Insert
+  Mode is active. Keyboard phrases embedded inside a longer dictated sentence remain text; only
+  standalone final keyboard commands execute, and interim keyboard decisions wait for the final
+  transcript. Say "stop typing" or
   "exit insert mode" to leave explicitly. A small deterministic (no-Jev-round-trip) set of
   editing phrases works on that tracked buffer with exact character counts: "new line", "delete
   the last N words"/"delete the last word", "delete/undo that" (last chunk only), "delete
@@ -310,6 +311,11 @@ Summary, oldest to newest:
       and "stop workflow mode". The generic embedded-keyboard boundary was confirmed by the live
       log: a long sentence containing "Press enter" is typed instead of executed.
 
+  13. Thirteenth pass, from the latest Windows run: Insert Mode is now text-only for non-keyboard
+      input. `Open Chrome.` and `Maximize window.` are now dictated while Insert Mode is active;
+      normal app/browser commands require leaving Insert Mode. Keyboard/editing controls remain
+      executable, and the text-first path bypasses Jev entirely.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -332,7 +338,9 @@ the extension-connected tab state:
   "Search for learn Japanese on Google dot com." (the query should be only "learn Japanese") and
   "Open dev dot two on Google." (should resolve to dev.to). For insert mode, say
   "Start typing", dictate two sentences, say "Press enter", dictate another sentence, then
-  "Stop typing"; verify the keyboard action executes and ordinary speech continues typing.
+  "Stop typing"; verify the keyboard action executes and ordinary speech continues typing. While
+  Insert Mode is active, say "Open Chrome" and verify it is typed as text; leave Insert Mode before
+  testing normal app commands.
   Open
   `http://127.0.0.1:17873/dashboard` after a few commands to inspect Jev probabilities and
   STT/Jev timing; compare the accuracy change against the observed STT-turn latency.

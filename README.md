@@ -13,9 +13,11 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
   the active window, adjust/mute system volume, control media playback, open Settings panes
   and Finder/File Explorer locations.
 - **Voice dictation**: say "type ..." once, or say "start typing"/"insert mode", then just keep
-  talking — Dragon keeps typing everything it doesn't recognize as another command. Standalone
-  key presses and shortcuts execute and keep insert mode active; a keyboard phrase embedded in
-  a longer sentence remains text. Say "new line", "delete the last 3
+  talking — Dragon keeps typing everything it doesn't recognize as another command. Insert Mode
+  is text-first: app/browser/media commands are typed as text until you say "stop typing" or use
+  `Control+Alt+I` to leave. Standalone key presses and shortcuts execute and keep Insert Mode
+  active; a keyboard phrase embedded in a longer sentence remains text. Say "new line", "delete
+  the last 3
   words", "delete that", "delete everything", or "replace X with Y" to edit what was just
   dictated (computed from an exact tracked copy of what Dragon typed, not by reading the
   app's screen); say "stop typing" or "exit insert mode" to end the session explicitly, or just

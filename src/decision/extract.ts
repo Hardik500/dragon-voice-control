@@ -183,10 +183,9 @@ export function isStandaloneKeyboardCommand(transcript: string, keyName: string 
 }
 
 export function shouldTypeDirectlyInInsertMode(transcript: string, keyName: string | null): boolean {
-  const normalized = lower(transcript).replace(/[.!?]+$/, "").trim();
-  if (keyName && !isStandaloneKeyboardCommand(transcript, keyName)) return true;
-  const commandStart = /^(?:please\s+)?(?:open|launch|start|close|minimize|maximize|fullscreen|press|hit|tap|type|search|click|go\s+to|new\s+tab|switch\s+to|scroll|back|forward|reload|refresh|volume|play|pause|next|previous|undo|redo|copy|paste|save|find|delete|replace)\b/i;
-  return !commandStart.test(normalized);
+  // Insert Mode is deliberately text-first. Only a standalone keyboard command is allowed to
+  // leave the text path; app/browser commands belong to Normal or Workflow Mode.
+  return !keyName || !isStandaloneKeyboardCommand(transcript, keyName);
 }
 
 export function extractKeyName(transcript: string): string | null {

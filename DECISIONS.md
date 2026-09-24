@@ -732,3 +732,19 @@ fixes the common comma/`then` case while keeping ordinary prose and unresolved t
 must not be silently expanded. Site-specific recipes such as "like this video" remain a future
 browser-workflow layer. Voice mode aliases now cover "switch to insert mode" and "stop workflow
 mode" without involving Jev.
+
+## 2026-09-25 — Make Insert Mode text-only for non-keyboard input
+
+**Decision:** Remove app/browser/media command handling from Insert Mode. While Insert Mode is
+active, all non-keyboard speech is dictated as text; only deterministic keyboard/editing controls
+and mode controls remain executable. App and browser commands belong to Normal Mode or Workflow
+Mode, which the user enters explicitly.
+
+**Reason:** The latest Windows log showed `Open Chrome.` and `Maximize window.` being sent to Jev
+and executed even while the user expected a continuous text-first flow. This is a product-mode
+ambiguity, not an STT or Jev classification bug. Text-only Insert Mode is easier to understand and
+prevents a spoken sentence from unexpectedly leaving the text session.
+
+**Consequences:** `Control+Alt+I`, "stop typing", or "exit insert mode" is required before normal
+app commands work again. Keyboard controls such as Enter, Escape, arrows, shortcuts, newline,
+delete, and replace remain executable while Insert Mode is active.
