@@ -199,6 +199,7 @@ export interface OverlayUpdate {
   status: string | null;
   latencyMs: number | null;
   activationMode: string;
+  interactionMode?: "normal" | "insert" | "workflow";
 }
 
 export interface HistoryEntry {

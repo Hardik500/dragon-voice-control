@@ -2,7 +2,7 @@ import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
-import { extractDeleteScope, extractPayload, extractReplacePair } from "../decision/extract";
+import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, isStandaloneKeyboardCommand } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
@@ -43,6 +43,9 @@ interface InFlight {
 type DictationControl =
   | { type: "start" }
   | { type: "stop" }
+  | { type: "workflow_start" }
+  | { type: "workflow_stop" }
+  | { type: "key"; keyName: string }
   | { type: "newline" }
   | { type: "delete_all" }
   | { type: "delete_last_chunk" }
@@ -121,6 +124,9 @@ export class DragonPipeline {
   private dictationBuffer = "";
   /** The most recently appended chunk, for "delete that"/"undo that". */
   private lastDictationChunk = "";
+  /** Browser workflow mode accepts sequential commands until toggled off or a step fails. */
+  private workflowActive = false;
+  private workflowStepCount = 0;
 
   constructor(
     private getSettings: () => DragonSettings,
@@ -134,6 +140,54 @@ export class DragonPipeline {
 
   clearHistory() {
     this.history.clear();
+  }
+
+  isInsertModeActive(): boolean {
+    return this.dictationActive;
+  }
+
+  isWorkflowModeActive(): boolean {
+    return this.workflowActive;
+  }
+
+  getWorkflowStepCount(): number {
+    return this.workflowStepCount;
+  }
+
+  getInteractionMode(): "normal" | "insert" | "workflow" {
+    if (this.workflowActive) return "workflow";
+    if (this.dictationActive) return "insert";
+    return "normal";
+  }
+
+  toggleInsertMode(): boolean {
+    if (this.dictationActive) {
+      this.endDictation();
+    } else {
+      this.workflowActive = false;
+      this.workflowStepCount = 0;
+      this.dictationActive = true;
+      this.dictationBuffer = "";
+      this.lastDictationChunk = "";
+    }
+    const active = this.dictationActive;
+    logger.event("insert_mode.toggled", { active });
+    this.onOverlay(this.baseOverlay(this.isStreaming() ? "listening" : "idle", active ? "Insert Mode enabled" : "Insert Mode disabled"));
+    return active;
+  }
+
+  toggleWorkflowMode(): boolean {
+    if (this.workflowActive) {
+      this.workflowActive = false;
+    } else {
+      this.endDictation();
+      this.workflowActive = true;
+      this.workflowStepCount = 0;
+    }
+    const active = this.workflowActive;
+    logger.event("workflow_mode.toggled", { active });
+    this.onOverlay(this.baseOverlay(this.isStreaming() ? "listening" : "idle", active ? "Workflow Mode enabled" : "Workflow Mode disabled"));
+    return active;
   }
 
   getJevDecisionTraces(): JevDecisionTrace[] {
@@ -275,6 +329,8 @@ export class DragonPipeline {
     this.inFlight = [];
     automation.stopSpeaking();
     this.endDictation();
+    this.workflowActive = false;
+    this.workflowStepCount = 0;
     this.stopStreaming();
     logger.event("pipeline.emergency_stop", {});
   }
@@ -286,9 +342,10 @@ export class DragonPipeline {
       transcript: "",
       isFinal: false,
       action: null,
-      status: status || null,
+      status: status || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
       latencyMs: null,
       activationMode: this.getSettings().activationMode,
+      interactionMode: this.getInteractionMode(),
     };
   }
 
@@ -326,6 +383,16 @@ export class DragonPipeline {
     const lower = trimmed.toLowerCase().replace(/[.!?]+$/, "");
 
     if (
+      /^(?:start|begin|enter)\s+workflow$/.test(lower)
+    ) {
+      return { type: "workflow_start" };
+    }
+    if (
+      /^(?:stop|end|finish|exit)\s+workflow$/.test(lower)
+    ) {
+      return { type: "workflow_stop" };
+    }
+    if (
       /^(?:start|begin|enter)\s+(?:typing|dictation|insert\s+mode|type\s+mode)$/.test(lower) ||
       lower === "insert mode" ||
       lower === "type mode"
@@ -341,6 +408,8 @@ export class DragonPipeline {
       return { type: "stop" };
     }
     if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
+    const keyName = extractKeyName(trimmed);
+    if (keyName && isStandaloneKeyboardCommand(trimmed, keyName)) return { type: "key", keyName };
     const deleteScope = deleteScopeToControl(extractDeleteScope(trimmed));
     if (deleteScope) return deleteScope;
     if (/^replace\b/i.test(trimmed)) {
@@ -356,13 +425,30 @@ export class DragonPipeline {
     let execError: string | null = null;
     try {
       switch (control.type) {
+        case "workflow_start":
+          actionLabel = this.workflowActive ? "Workflow Mode already active" : "Start workflow";
+          this.endDictation();
+          this.workflowActive = true;
+          this.workflowStepCount = 0;
+          break;
+        case "workflow_stop":
+          actionLabel = "Stop workflow";
+          this.workflowActive = false;
+          this.workflowStepCount = 0;
+          break;
         case "start":
           actionLabel = this.dictationActive ? "Insert mode already active" : "Start typing";
+          this.workflowActive = false;
+          this.workflowStepCount = 0;
           if (!this.dictationActive) {
             this.dictationActive = true;
             this.dictationBuffer = "";
             this.lastDictationChunk = "";
           }
+          break;
+        case "key":
+          actionLabel = `Press ${control.keyName}`;
+          await automation.pressNamedKey(control.keyName);
           break;
         case "stop":
           actionLabel = "Stop dictation";
@@ -449,7 +535,7 @@ export class DragonPipeline {
       utteranceId: turn.utteranceId,
       timestamp: Date.now(),
       transcript: turn.transcript,
-      intent: control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
+      intent: control.type === "key" ? "press_key" : control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
       action: actionLabel,
       status: execError ? "error" : "success",
       detail: execError ?? "",
@@ -505,7 +591,11 @@ export class DragonPipeline {
     // reliability. Mode entry is allowed outside an active session; edit controls require one.
     if (turn.isFinal) {
       const control = this.matchDictationControl(effectiveText);
-      if (control && (this.dictationActive || control.type === "start")) {
+      if (
+        control &&
+        (this.dictationActive || control.type === "start" || control.type === "workflow_start" || control.type === "workflow_stop")
+      ) {
+        this.abortUtterance(turn.utteranceId);
         if (this.executedUtterances.has(turn.utteranceId)) return;
         this.executedUtterances.add(turn.utteranceId);
         await this.runDictationControl(turn, control, settings);
@@ -677,6 +767,7 @@ export class DragonPipeline {
       if (
         settings.activationMode === "always_listening" &&
         !this.dictationActive &&
+        !this.workflowActive &&
         !isExplicitMediaControl(turn, summary)
       ) {
         if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
@@ -684,6 +775,31 @@ export class DragonPipeline {
           this.logIgnored(turn, "not_addressed", summary.intent);
           return;
         }
+      }
+
+      const keyboardIntent = summary.intent === "press_key" || summary.intent === "shortcut";
+      const standaloneKeyboardCommand = isStandaloneKeyboardCommand(effectiveText, payload.keyName);
+      if (this.dictationActive && keyboardIntent && (!turn.isFinal || !standaloneKeyboardCommand)) {
+        if (turn.isFinal) {
+          logger.event("pipeline.dictation_text_override", {
+            utteranceId: turn.utteranceId,
+            reason: "embedded_keyboard_phrase",
+            jevIntent: summary.intent,
+          });
+          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs);
+          return;
+        }
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "listening",
+          transcript: effectiveText,
+          isFinal: false,
+          action: null,
+          status: "waiting for more speech",
+          latencyMs: decisionMs,
+          activationMode: settings.activationMode,
+        });
+        return;
       }
 
       const isReady =
@@ -716,6 +832,11 @@ export class DragonPipeline {
       const noCommand = summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete;
 
       if (noCommand) {
+        if (this.workflowActive) {
+          this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Workflow step was not recognized");
+          this.logIgnored(turn, "low_confidence_or_incomplete", summary.intent);
+          return;
+        }
         if (this.dictationActive && turn.isFinal && effectiveText.trim().length > 0) {
           // Jev didn't recognize a command; while actively dictating, treat this as more
           // dictated text so the user doesn't have to say "type" again for every sentence.
@@ -776,11 +897,21 @@ export class DragonPipeline {
 
       // Dictation session bookkeeping: typing/newline continue it; any other successfully
       // recognized command (the confidence/completeness gates above already passed) means
-      // the user deliberately switched to something else, so end the session.
-      if (!execError) {
-        if (resolved.kind === "type_text") this.startOrContinueDictation(resolved.text!);
-        else if (resolved.kind === "insert_newline") this.appendDictationRaw("\n");
-        else if (!keepsDictationOpen(resolved.kind)) this.endDictation();
+      // the user deliberately switched to something else, so end the session. Workflow mode
+      // instead keeps the sequence open and advances one step per successful command.
+      if (execError && this.workflowActive) {
+        this.workflowActive = false;
+        this.workflowStepCount = 0;
+      } else if (!execError) {
+        if (this.workflowActive) {
+          this.workflowStepCount += 1;
+        } else if (resolved.kind === "type_text") {
+          this.startOrContinueDictation(resolved.text!);
+        } else if (resolved.kind === "insert_newline") {
+          this.appendDictationRaw("\n");
+        } else if (!keepsDictationOpen(resolved.kind)) {
+          this.endDictation();
+        }
       }
 
       logger.event("pipeline.execution", {
@@ -801,7 +932,7 @@ export class DragonPipeline {
         transcript: effectiveText,
         isFinal: true,
         action: describeCommand(resolved),
-        status: execError,
+        status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
         latencyMs: totalMs,
         activationMode: settings.activationMode,
       });

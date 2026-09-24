@@ -17,11 +17,11 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
 
 - **Electron/TypeScript skeleton**: tray/menu-bar app, settings window, floating overlay
   window, hidden mic-capture window, JSON settings persisted to `userData/settings.json`,
-  JSONL logging from process start, global shortcuts for push-to-talk-toggle and emergency
-  stop (platform-specific defaults: `Alt+Space`/`Alt+Escape` on macOS, `Control+Alt+D`/
-  `Control+Alt+Escape` on Windows — the macOS defaults conflict with a Windows system
-  shortcut). Shortcut registration failure is surfaced in both the log and a Settings-window
-  warning banner, not just logged.
+  JSONL logging from process start, global shortcuts for push-to-talk-toggle, emergency stop,
+  Insert Mode, and Workflow Mode (platform-specific defaults: `Alt+Space`/`Alt+Escape` on macOS,
+  `Control+Alt+D`/`Control+Alt+Escape` on Windows, plus `Control+Alt+I` and
+  `Control+Alt+Shift+W` for modes). Shortcut registration failure is surfaced in both the log
+  and a Settings-window warning banner, not just logged.
 - **Microphone capture**: hidden renderer requests `getUserMedia`, downsamples to 16 kHz mono
   Int16 PCM in-browser, streams frames to the main process over IPC, which forwards them to
   Deepgram. Media permission auto-granted for the app's own windows.
@@ -77,7 +77,9 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   saying "start typing"/"insert mode", subsequent utterances Jev doesn't recognize as another
   command are typed verbatim and folded into a tracked `dictationBuffer`, so the user doesn't
   have to repeat "type" every sentence. Recognized key presses and shortcuts execute and keep
-  insert mode active; a normal app/browser/media command still ends it. Say "stop typing" or
+  insert mode active; a normal app/browser/media command still ends it. Keyboard phrases embedded
+  inside a longer dictated sentence remain text; only standalone final keyboard commands execute,
+  and interim keyboard decisions wait for the final transcript. Say "stop typing" or
   "exit insert mode" to leave explicitly. A small deterministic (no-Jev-round-trip) set of
   editing phrases works on that tracked buffer with exact character counts: "new line", "delete
   the last N words"/"delete the last word", "delete/undo that" (last chunk only), "delete
@@ -114,9 +116,10 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   outcome, and a compact recent-exceptions list. The same choice probability distributions are
   included in the structured `jev.response` JSONL event. The tray menu and Settings both provide
   an **Open Dashboard** action.
-- **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, shortcuts, wake phrase,
-  voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a new
-  shortcut-registration-failure warning banner.
+- **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, all four global shortcuts,
+  wake phrase, voice-reply toggle, log verbosity, open-logs button, history table + clear button,
+  and a shortcut-registration-failure warning banner. Mode toggles are independent from the
+  microphone/listening state; the tray and overlay show the active interaction mode.
 - **Unsigned packaging for both platforms**: `electron-builder.yml` has both a macOS `dir`
   target and a Windows `portable` target (`npm run package:mac` / `npm run package:win`), with
   a real `.ico` (hand-built, `file`-verified as a valid multi-size PNG-compressed icon
@@ -296,6 +299,11 @@ Summary, oldest to newest:
       Outcome updates are attached by utterance ID so EagerEndOfTurn and EndOfTurn traces do not
       produce false duplicate outcomes.
 
+  11. Eleventh pass: added persisted Insert Mode and Workflow Mode shortcuts, independent mode
+      toggles, tray/overlay state, workflow step progress, and Emergency Stop cleanup. Workflow
+      Mode currently accepts sequential one-utterance browser/app commands and stops on a failed
+      step; it is not yet a free-form multi-step planner.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -322,6 +330,10 @@ the extension-connected tab state:
   Open
   `http://127.0.0.1:17873/dashboard` after a few commands to inspect Jev probabilities and
   STT/Jev timing; compare the accuracy change against the observed STT-turn latency.
+- Press `Control+Alt+I` to toggle Insert Mode without changing microphone state, then press it
+  again to leave. Press `Control+Alt+Shift+W` to start a sequential Workflow Mode session,
+  execute two browser steps, and press it again to finish. Confirm Emergency Stop clears both
+  modes and the dictation buffer.
 
 Still unverified on real hardware (documented, not bugs): the dictation/editing flow on
 Windows, Windows-specific automation against third-party apps (Slack/Discord/Cursor/Docker),

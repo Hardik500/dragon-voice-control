@@ -680,6 +680,25 @@ it is an exact recognized command; this is intentional to avoid surprising edits
 ends when a normal non-keyboard command runs, and the existing accepted buffer-drift limitation
 remains.
 
+## 2026-09-25 — Independent mode shortcuts and sequential Workflow Mode
+
+**Decision:** Add persisted global shortcuts for Insert Mode (`Control+Alt+I`) and Workflow Mode
+(`Control+Alt+Shift+W`). Mode shortcuts toggle interaction state without changing the microphone
+or listening state. Insert Mode reuses the existing dictation buffer. Workflow Mode accepts one
+spoken command per utterance as one sequential step, shows progress, and turns off after a failed
+step; it is intentionally not a free-form multi-step planner. The tray and overlay expose both
+modes, and Emergency Stop clears both.
+
+**Reason:** Users need a fast, discoverable way to change interaction mode without repeating voice
+mode-entry phrases or interrupting the microphone. A sequential Workflow Mode is a safe first
+step toward later browser recipes while preserving the existing one-command-per-utterance
+architecture.
+
+**Consequences:** Workflow Mode currently handles the existing command vocabulary rather than
+site-specific plans or tab-list actions. Insert/Workflow shortcut registration failures are
+surfaced alongside the existing shortcut warnings. The new live Windows shortcut and workflow
+behavior still require real hardware verification.
+
 ## 2026-09-24 — Add action outcomes to the Jev dashboard
 
 **Decision:** Extend each in-memory Jev trace with the resolved action, execution latency, and

@@ -13,12 +13,17 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
   the active window, adjust/mute system volume, control media playback, open Settings panes
   and Finder/File Explorer locations.
 - **Voice dictation**: say "type ..." once, or say "start typing"/"insert mode", then just keep
-  talking — Dragon keeps typing everything it doesn't recognize as another command. Key presses
-  and shortcuts execute and keep insert mode active. Say "new line", "delete the last 3
+  talking — Dragon keeps typing everything it doesn't recognize as another command. Standalone
+  key presses and shortcuts execute and keep insert mode active; a keyboard phrase embedded in
+  a longer sentence remains text. Say "new line", "delete the last 3
   words", "delete that", "delete everything", or "replace X with Y" to edit what was just
   dictated (computed from an exact tracked copy of what Dragon typed, not by reading the
   app's screen); say "stop typing" or "exit insert mode" to end the session explicitly, or just
-  say a different command.
+  say a different command. `Control+Alt+I` toggles Insert Mode without changing microphone
+  state.
+- **Workflow Mode**: use `Control+Alt+Shift+W` to toggle a sequential session. Each spoken
+  command is one workflow step, progress is shown in the overlay, and a failed step ends the
+  workflow. This is intentionally a step-by-step mode, not an unrestricted multi-step planner.
 - Open Chrome and navigate/search (works without the extension, and reuses an already-open
   tab for the same site instead of always opening a new one); click a visible element, type
   into a field, select a dropdown option, scroll, go back/forward/reload, and open/close/switch
@@ -135,7 +140,12 @@ and is not a bug.
   default conflicts with a Windows system shortcut). If registration fails (already claimed
   by another app), Settings shows a warning banner — pick a different combination.
 - **Emergency stop shortcut** — always active; aborts in-flight decisions, stops any spoken
-  reply, and stops streaming. Default `Alt+Escape` on macOS, `Control+Alt+Escape` on Windows.
+  reply, stops streaming, and clears Insert/Workflow modes. Default `Alt+Escape` on macOS,
+  `Control+Alt+Escape` on Windows.
+- **Toggle Insert Mode shortcut** — default `Control+Alt+I`; toggles text-first dictation without
+  starting or stopping the microphone.
+- **Toggle Workflow Mode shortcut** — default `Control+Alt+Shift+W`; toggles a sequential
+  one-step-per-utterance workflow session. A failed step ends the workflow.
 - **Wake phrase** — default `Dragon`; case-insensitive; everything before and including the
   phrase is stripped before the remainder is treated as the command.
 - **Speak short replies** — toggles native spoken acknowledgements (`say` on macOS,

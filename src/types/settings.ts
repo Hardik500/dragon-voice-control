@@ -8,6 +8,8 @@ export interface DragonSettings {
   activationMode: ActivationMode;
   pushToTalkShortcut: string;
   emergencyStopShortcut: string;
+  insertModeShortcut: string;
+  workflowModeShortcut: string;
   wakePhrase: string;
   voiceReplyEnabled: boolean;
   logVerbosity: LogVerbosity;
@@ -20,6 +22,8 @@ export interface DragonSettings {
 // fresh install's first-run values.
 const DEFAULT_PUSH_TO_TALK_SHORTCUT = process.platform === "win32" ? "Control+Alt+D" : "Alt+Space";
 const DEFAULT_EMERGENCY_STOP_SHORTCUT = process.platform === "win32" ? "Control+Alt+Escape" : "Alt+Escape";
+const DEFAULT_INSERT_MODE_SHORTCUT = "Control+Alt+I";
+const DEFAULT_WORKFLOW_MODE_SHORTCUT = "Control+Alt+Shift+W";
 
 export const DEFAULT_SETTINGS: DragonSettings = {
   openRouterApiKey: "",
@@ -27,6 +31,8 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   activationMode: "push_to_talk",
   pushToTalkShortcut: DEFAULT_PUSH_TO_TALK_SHORTCUT,
   emergencyStopShortcut: DEFAULT_EMERGENCY_STOP_SHORTCUT,
+  insertModeShortcut: DEFAULT_INSERT_MODE_SHORTCUT,
+  workflowModeShortcut: DEFAULT_WORKFLOW_MODE_SHORTCUT,
   wakePhrase: "Dragon",
   voiceReplyEnabled: true,
   logVerbosity: "normal",

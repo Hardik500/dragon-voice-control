@@ -43,7 +43,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function render(update: any) {
     dot.className = `dot ${update.state}`;
-    stateText.textContent = `${STATE_LABELS[update.state] ?? update.state} · ${update.activationMode.replace(/_/g, " ")}`;
+    const modeLabel = update.interactionMode === "insert"
+      ? "Insert Mode"
+      : update.interactionMode === "workflow"
+        ? "Workflow Mode"
+        : null;
+    stateText.textContent = `${STATE_LABELS[update.state] ?? update.state} · ${update.activationMode.replace(/_/g, " ")}${modeLabel ? ` · ${modeLabel}` : ""}`;
     transcript.textContent = update.transcript || "Say a command…";
 
     const isCompletion = update.state === "done" || update.state === "error";

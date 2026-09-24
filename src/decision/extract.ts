@@ -161,6 +161,17 @@ const MODIFIER_LETTER_TO_ACTION: Record<string, string> = {
   s: "save", f: "find", t: "new tab", w: "close tab", q: "quit", r: "refresh",
 };
 
+export function isStandaloneKeyboardCommand(transcript: string, keyName: string | null): boolean {
+  if (!keyName) return false;
+  const normalized = lower(transcript).replace(/[.!?]+$/, "").replace(/\s+/g, " ");
+  const key = keyName.toLowerCase();
+  if (normalized === key) return true;
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`^(?:please\\s+)?(?:press|hit|tap|key)\\s+${escapedKey}$`).test(normalized)) return true;
+  // The semantic key name is "copy"/"undo"/etc., but the user may say the literal combo.
+  return /^(?:please\s+)?(?:(?:press|hit|tap|key)\s+)?(?:control|ctrl|command|cmd)(?:\s+|\+)\s*([a-z])$/.test(normalized);
+}
+
 export function extractKeyName(transcript: string): string | null {
   const lowerT = lower(transcript);
   let best: string | null = null;

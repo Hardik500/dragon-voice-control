@@ -33,7 +33,7 @@ let micWindow: BrowserWindow;
 let tray: Tray;
 let refreshTray: () => void = () => {};
 let listening = false;
-let shortcutStatus: ShortcutRegistrationStatus = { pushToTalkOk: true, emergencyStopOk: true };
+let shortcutStatus: ShortcutRegistrationStatus = { pushToTalkOk: true, emergencyStopOk: true, insertModeOk: true, workflowModeOk: true };
 
 function currentStatus() {
   const settings = settingsStore.get();
@@ -41,6 +41,9 @@ function currentStatus() {
     listening,
     streaming: pipeline.isStreaming(),
     activationMode: settings.activationMode,
+    insertMode: pipeline.isInsertModeActive(),
+    workflowMode: pipeline.isWorkflowModeActive(),
+    workflowStep: pipeline.getWorkflowStepCount(),
     browserConnected: browserBridge.isConnected(),
     browserBindError: browserBridge.getBindError(),
     shortcutStatus,
@@ -155,7 +158,11 @@ app.whenReady().then(async () => {
     () => settingsStore.get(),
     browserBridge,
     (update: OverlayUpdate) => {
-      if (!overlayWindow.isDestroyed()) overlayWindow.webContents.send("overlay:update", update);
+      if (!overlayWindow.isDestroyed()) {
+        const interactionMode = pipeline.getInteractionMode();
+        const status = update.status ?? (interactionMode === "workflow" ? `Workflow · Step ${pipeline.getWorkflowStepCount()}` : null);
+        overlayWindow.webContents.send("overlay:update", { ...update, interactionMode, status });
+      }
       pushStatus();
     }
   );
@@ -200,8 +207,20 @@ app.whenReady().then(async () => {
   const trayHandle = createTray({
     getSettings: () => settingsStore.get(),
     isListening: () => listening,
+    isInsertModeActive: () => pipeline.isInsertModeActive(),
+    isWorkflowModeActive: () => pipeline.isWorkflowModeActive(),
     toggleListening: () => {
       toggleListening();
+    },
+    toggleInsertMode: () => {
+      pipeline.toggleInsertMode();
+      pushStatus();
+      refreshTray();
+    },
+    toggleWorkflowMode: () => {
+      pipeline.toggleWorkflowMode();
+      pushStatus();
+      refreshTray();
     },
     setActivationMode,
     toggleOverlay,
@@ -228,6 +247,8 @@ app.whenReady().then(async () => {
     shortcutStatus = registerShortcuts({
       pushToTalkAccelerator: settings.pushToTalkShortcut,
       emergencyStopAccelerator: settings.emergencyStopShortcut,
+      insertModeAccelerator: settings.insertModeShortcut,
+      workflowModeAccelerator: settings.workflowModeShortcut,
       onPushToTalk: () => {
         if (settingsStore.get().activationMode !== "push_to_talk") return;
         toggleListening();
@@ -238,8 +259,18 @@ app.whenReady().then(async () => {
         pushStatus();
         refreshTray();
       },
+      onToggleInsertMode: () => {
+        pipeline.toggleInsertMode();
+        pushStatus();
+        refreshTray();
+      },
+      onToggleWorkflowMode: () => {
+        pipeline.toggleWorkflowMode();
+        pushStatus();
+        refreshTray();
+      },
     });
-    if (!shortcutStatus.pushToTalkOk || !shortcutStatus.emergencyStopOk) {
+    if (!shortcutStatus.pushToTalkOk || !shortcutStatus.emergencyStopOk || !shortcutStatus.insertModeOk || !shortcutStatus.workflowModeOk) {
       logger.event("shortcuts.registration_failed", { ...shortcutStatus });
     }
     pushStatus();

@@ -5,7 +5,11 @@ import { ActivationMode, DragonSettings } from "../types/settings";
 export interface TrayCallbacks {
   getSettings: () => DragonSettings;
   isListening: () => boolean;
+  isInsertModeActive: () => boolean;
+  isWorkflowModeActive: () => boolean;
   toggleListening: () => void;
+  toggleInsertMode: () => void;
+  toggleWorkflowMode: () => void;
   setActivationMode: (mode: ActivationMode) => void;
   toggleOverlay: () => void;
   openSettings: () => void;
@@ -49,6 +53,18 @@ export function createTray(cb: TrayCallbacks): TrayHandle {
         type: "checkbox",
         checked: cb.isListening(),
         click: () => cb.toggleListening(),
+      },
+      {
+        label: cb.isInsertModeActive() ? "Insert Mode: On" : "Insert Mode: Off",
+        type: "checkbox",
+        checked: cb.isInsertModeActive(),
+        click: () => cb.toggleInsertMode(),
+      },
+      {
+        label: cb.isWorkflowModeActive() ? "Workflow Mode: On" : "Workflow Mode: Off",
+        type: "checkbox",
+        checked: cb.isWorkflowModeActive(),
+        click: () => cb.toggleWorkflowMode(),
       },
       { type: "separator" },
       { label: "Activation Mode", enabled: false },

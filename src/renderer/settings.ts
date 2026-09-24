@@ -45,6 +45,8 @@ async function load() {
   byId<HTMLSelectElement>("activationMode").value = settings.activationMode;
   byId<HTMLInputElement>("pushToTalkShortcut").value = settings.pushToTalkShortcut;
   byId<HTMLInputElement>("emergencyStopShortcut").value = settings.emergencyStopShortcut;
+  byId<HTMLInputElement>("insertModeShortcut").value = settings.insertModeShortcut;
+  byId<HTMLInputElement>("workflowModeShortcut").value = settings.workflowModeShortcut;
   byId<HTMLInputElement>("wakePhrase").value = settings.wakePhrase;
   byId<HTMLInputElement>("voiceReplyEnabled").checked = settings.voiceReplyEnabled;
   byId<HTMLSelectElement>("logVerbosity").value = settings.logVerbosity;
@@ -56,6 +58,8 @@ async function save() {
     activationMode: byId<HTMLSelectElement>("activationMode").value,
     pushToTalkShortcut: byId<HTMLInputElement>("pushToTalkShortcut").value,
     emergencyStopShortcut: byId<HTMLInputElement>("emergencyStopShortcut").value,
+    insertModeShortcut: byId<HTMLInputElement>("insertModeShortcut").value,
+    workflowModeShortcut: byId<HTMLInputElement>("workflowModeShortcut").value,
     wakePhrase: byId<HTMLInputElement>("wakePhrase").value,
     voiceReplyEnabled: byId<HTMLInputElement>("voiceReplyEnabled").checked,
     logVerbosity: byId<HTMLSelectElement>("logVerbosity").value,
@@ -90,6 +94,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const problems: string[] = [];
     if (status?.shortcutStatus?.pushToTalkOk === false) problems.push("push-to-talk/listen-toggle");
     if (status?.shortcutStatus?.emergencyStopOk === false) problems.push("emergency stop");
+    if (status?.shortcutStatus?.insertModeOk === false) problems.push("Insert Mode");
+    if (status?.shortcutStatus?.workflowModeOk === false) problems.push("Workflow Mode");
     if (problems.length > 0) {
       warn.textContent = `Could not register the ${problems.join(" and ")} shortcut — it may already be in use by another app. Pick a different combination above and save.`;
       warn.classList.add("visible");
