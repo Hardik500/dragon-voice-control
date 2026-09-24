@@ -969,8 +969,15 @@ export class DragonPipeline {
       const resolved = resolveCommand(summary, payload, effectiveText);
       if (!resolved) {
         if (this.workflowActive) this.stopWorkflow();
-        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Jev decision could not be resolved");
-        this.logIgnored(turn, "resolution_failed", summary.intent);
+        const browserTargetFailure =
+          (summary.intent === "chrome_click" || summary.intent === "chrome_type" || summary.intent === "chrome_select") &&
+          payload.browserElementCandidates.length === 0;
+        const detail = browserTargetFailure
+          ? "No matching clickable element was found on the current page."
+          : "Jev decision could not be resolved.";
+        const reason = browserTargetFailure ? "browser_target_missing" : "resolution_failed";
+        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", detail);
+        this.logIgnored(turn, reason, summary.intent, detail);
         return;
       }
 
@@ -1152,7 +1159,7 @@ export class DragonPipeline {
     // be exhausting; only explicit commands get acknowledged out loud.
   }
 
-  private logIgnored(turn: TranscriptEvent, reason: string, intent: string) {
+  private logIgnored(turn: TranscriptEvent, reason: string, intent: string, status = "No command recognized") {
     if (this.ignoredLoggedUtterances.has(turn.utteranceId) && !turn.isFinal) return;
     if (turn.isFinal) this.ignoredLoggedUtterances.add(turn.utteranceId);
     logger.event("pipeline.ignored", { utteranceId: turn.utteranceId, reason, intent });
@@ -1162,7 +1169,7 @@ export class DragonPipeline {
       transcript: turn.transcript,
       isFinal: turn.isFinal,
       action: null,
-      status: reason === "not_addressed" ? null : "No command recognized",
+      status: reason === "not_addressed" ? null : status,
       latencyMs: null,
       activationMode: this.getSettings().activationMode,
     });

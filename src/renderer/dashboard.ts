@@ -142,7 +142,13 @@ function renderHistory(decisions: JevDecision[]) {
     intent.textContent = decision.choices.intent.choice;
     const target = document.createElement("span");
     target.className = "history-target";
-    target.textContent = `${decision.choices.target.choice} · ${formatMs(decision.jevMs)}`;
+    const jevTarget = document.createElement("span");
+    jevTarget.className = "history-jev-target";
+    jevTarget.textContent = `Jev ${decision.choices.target.choice} · ${formatMs(decision.jevMs)}`;
+    const resolvedAction = document.createElement("span");
+    resolvedAction.className = "history-resolved-action";
+    resolvedAction.textContent = decision.resolvedAction ? `Resolved ${decision.resolvedAction}` : "No resolved action";
+    target.append(jevTarget, resolvedAction);
     const outcome = document.createElement("span");
     outcome.className = `history-outcome history-${decision.outcome}`;
     outcome.textContent = outcomeLabel(decision.outcome);

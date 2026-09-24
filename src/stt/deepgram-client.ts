@@ -23,6 +23,12 @@ const STT_KEYTERMS = [
   "play",
   "pause",
   "dictation",
+  "start typing",
+  "stop typing",
+  "insert mode",
+  "exit insert mode",
+  "stop insert mode",
+  "workflow mode",
 ];
 
 export type TurnHandler = (turn: TranscriptEvent) => void;

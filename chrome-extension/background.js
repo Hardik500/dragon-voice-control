@@ -9,21 +9,33 @@ const BRIDGE_URL = "ws://127.0.0.1:17872";
 const RECONNECT_DELAY_MS = 2000;
 
 let socket = null;
+let reconnectTimer = null;
 
 function connect() {
+  if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  let nextSocket;
+  socket = null;
   try {
-    socket = new WebSocket(BRIDGE_URL);
+    nextSocket = new WebSocket(BRIDGE_URL);
+    socket = nextSocket;
   } catch (err) {
     scheduleReconnect();
     return;
   }
 
-  socket.addEventListener("open", () => {
+  nextSocket.addEventListener("open", () => {
+    if (socket !== nextSocket) return;
     console.log("[dragon] connected to desktop app");
     send({ type: "hello" });
   });
 
-  socket.addEventListener("message", async (event) => {
+  nextSocket.addEventListener("message", async (event) => {
+    if (socket !== nextSocket) return;
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -47,15 +59,22 @@ function connect() {
     }
   });
 
-  socket.addEventListener("close", scheduleReconnect);
-  socket.addEventListener("error", () => {
+  nextSocket.addEventListener("close", () => {
+    if (socket !== nextSocket) return;
+    socket = null;
+    scheduleReconnect();
+  });
+  nextSocket.addEventListener("error", () => {
     /* close handler will schedule reconnect */
   });
 }
 
 function scheduleReconnect() {
-  socket = null;
-  setTimeout(connect, RECONNECT_DELAY_MS);
+  if (socket || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, RECONNECT_DELAY_MS);
 }
 
 function send(message) {

@@ -325,6 +325,20 @@ Summary, oldest to newest:
       Duplicate suppression still prevents repeated execution; the dashboard now presents the
       terminal decision per utterance.
 
+  15. Fifteenth pass, from the latest Windows log review: the cache normalization is visible in
+      practice (`Minimize notepad.` and `Open Gmail dot com` reuse the Eager decision), while
+      materially revised transcripts still make new requests as expected. The remaining concrete
+      gaps are browser-element coverage (`Click on reply.` returned zero candidates), Chrome
+      extension connection churn (five connections during one startup), and end-to-end latency
+      outliers dominated by STT final-turn latency (up to 3.3 seconds in this session).
+
+  16. Sixteenth pass: browser-target resolution failures now report that no matching clickable
+      element was found, the dashboard history shows Jev's target separately from Dragon's resolved
+      action, and Deepgram keyterms now include the Insert/Workflow mode phrases. The Chrome
+      extension now uses a single-flight connection guard with one reconnect timer so startup,
+      alarms, and stale service-worker events cannot create overlapping sockets. TypeScript build
+      and extension syntax checks pass; real Windows behavior still needs verification.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
