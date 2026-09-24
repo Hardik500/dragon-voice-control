@@ -19,6 +19,10 @@ const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
 const DEFAULT_DELETE_WORD_COUNT = 3;
 
+function normalizeDecisionText(text: string): string {
+  return text.toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ").trim();
+}
+
 /** Exact media-control commands that are unambiguous enough to bypass the addressed gate in
  * always-listening mode. Without this, Jev can correctly recognize "Pause." as media control
  * while still scoring it as incidental speech because "pause" is also an ordinary English word. */
@@ -127,6 +131,7 @@ export class DragonPipeline {
   /** Browser workflow mode accepts sequential commands until toggled off or a step fails. */
   private workflowActive = false;
   private workflowStepCount = 0;
+  private deterministicUtterances = new Set<string>();
 
   constructor(
     private getSettings: () => DragonSettings,
@@ -424,6 +429,13 @@ export class DragonPipeline {
   }
 
   private async runDictationControl(turn: TranscriptEvent, control: DictationControl, settings: DragonSettings): Promise<void> {
+    this.deterministicUtterances.add(turn.utteranceId);
+    this.updateJevDecisionOutcome(
+      turn.utteranceId,
+      "cancelled",
+      "Handled by deterministic local control"
+    );
+
     const startedAt = Date.now();
     let actionLabel = "";
     let execError: string | null = null;
@@ -785,7 +797,7 @@ export class DragonPipeline {
       });
       const state = buildState({ transcript: effectiveText, activeApp, browserPage });
 
-      const cacheKey = `${turn.utteranceId}::${effectiveText}::${settings.activationMode}`;
+      const cacheKey = `${turn.utteranceId}::${normalizeDecisionText(effectiveText)}::${settings.activationMode}`;
       const cached = this.jevAnswerCache.get(cacheKey);
       let summary: JevAnswerSummary;
       let decisionMs: number;
@@ -815,6 +827,7 @@ export class DragonPipeline {
         this.unregisterInFlight(controller);
         jevMs = result.timingMs;
 
+        const deterministicControl = this.deterministicUtterances.has(turn.utteranceId);
         this.recordJevDecision({
           utteranceId: turn.utteranceId,
           timestamp: Date.now(),
@@ -827,8 +840,8 @@ export class DragonPipeline {
           sttToDecisionMs,
           jevMs: result.timingMs,
           decisionMs: Date.now() - startedAt,
-          outcome: "pending",
-          outcomeDetail: null,
+          outcome: deterministicControl ? "cancelled" : "pending",
+          outcomeDetail: deterministicControl ? "Handled by deterministic local control" : null,
           resolvedAction: null,
           executionMs: null,
           complete: result.answers.complete.noul,

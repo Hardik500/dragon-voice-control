@@ -7,6 +7,7 @@ interface JevChoice {
 type JevDecisionOutcome = "pending" | "success" | "ignored" | "error" | "cancelled";
 
 interface JevDecision {
+  utteranceId: string;
   timestamp: number;
   transcript: string;
   activeApp: string | null;
@@ -34,6 +35,40 @@ interface DashboardResponse {
   generatedAt: number;
   decisions: JevDecision[];
   status: Record<string, unknown>;
+}
+
+const DETERMINISTIC_CONTROL_DETAIL = "Handled by deterministic local control";
+const OUTCOME_PRIORITY: Record<JevDecisionOutcome, number> = {
+  success: 5,
+  error: 4,
+  ignored: 3,
+  cancelled: 2,
+  pending: 1,
+};
+
+/** The dashboard shows one decision per utterance, not one row per Jev HTTP response.
+ * EagerEndOfTurn and EndOfTurn can both produce traces for the same utterance. */
+function canonicalDecisions(decisions: JevDecision[]): JevDecision[] {
+  const byUtterance = new Map<string, JevDecision>();
+  for (const decision of decisions) {
+    const previous = byUtterance.get(decision.utteranceId);
+    if (!previous || compareDecision(decision, previous) > 0) {
+      byUtterance.set(decision.utteranceId, decision);
+    }
+  }
+  return Array.from(byUtterance.values()).sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function compareDecision(a: JevDecision, b: JevDecision): number {
+  return OUTCOME_PRIORITY[a.outcome] - OUTCOME_PRIORITY[b.outcome]
+    || (a.turnEvent === "EndOfTurn" ? 1 : 0) - (b.turnEvent === "EndOfTurn" ? 1 : 0)
+    || a.timestamp - b.timestamp;
+}
+
+function visibleDecisions(decisions: JevDecision[]): JevDecision[] {
+  return canonicalDecisions(decisions).filter(
+    (decision) => decision.outcomeDetail !== DETERMINISTIC_CONTROL_DETAIL
+  );
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -143,11 +178,12 @@ function renderExceptions(decisions: JevDecision[]) {
 }
 
 function renderDashboard(data: DashboardResponse) {
-  const latest = data.decisions[0];
-  const executed = data.decisions.filter((decision) => decision.outcome === "success").length;
-  const ignored = data.decisions.filter((decision) => decision.outcome === "ignored").length;
-  const errors = data.decisions.filter((decision) => decision.outcome === "error").length;
-  setText("decisionCount", String(data.decisions.length));
+  const decisions = visibleDecisions(data.decisions);
+  const latest = decisions[0];
+  const executed = decisions.filter((decision) => decision.outcome === "success").length;
+  const ignored = decisions.filter((decision) => decision.outcome === "ignored").length;
+  const errors = decisions.filter((decision) => decision.outcome === "error").length;
+  setText("decisionCount", String(decisions.length));
   setText("executedCount", String(executed));
   setText("ignoredCount", String(ignored));
   setText("errorCount", String(errors));
@@ -166,8 +202,8 @@ function renderDashboard(data: DashboardResponse) {
     setText("resolvedAction", "—");
     setText("outcomeStatus", "Awaiting action");
     setText("executionLatency", "—");
-    renderHistory(data.decisions);
-    renderExceptions(data.decisions);
+    renderHistory(decisions);
+    renderExceptions(decisions);
     return;
   }
 
@@ -185,8 +221,8 @@ function renderDashboard(data: DashboardResponse) {
   renderChoice("intent", latest.choices.intent);
   renderChoice("target", latest.choices.target);
   renderChoice("direction", latest.choices.direction);
-  renderHistory(data.decisions);
-  renderExceptions(data.decisions);
+  renderHistory(decisions);
+  renderExceptions(decisions);
 }
 
 async function refresh() {

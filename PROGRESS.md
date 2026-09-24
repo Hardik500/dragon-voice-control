@@ -316,6 +316,15 @@ Summary, oldest to newest:
       normal app/browser commands require leaving Insert Mode. Keyboard/editing controls remain
       executable, and the text-first path bypasses Jev entirely.
 
+  14. Fourteenth pass, from the latest dashboard observation: the dashboard now collapses Jev
+      traces to one canonical row per `utteranceId`, preferring the terminal/final result. Local
+      deterministic controls mark any earlier Eager Jev result as cancelled and hide it from the
+      dashboard, so stale `Enter` / `Start typing` requests no longer look like duplicate commands.
+      The Jev answer cache now normalizes case, terminal punctuation, and whitespace, preventing
+      `Open Notepad.` / `Open notepad.` and similar Eager/End variants from making another request.
+      Duplicate suppression still prevents repeated execution; the dashboard now presents the
+      terminal decision per utterance.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
