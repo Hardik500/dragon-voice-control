@@ -122,6 +122,28 @@ export interface JevAnswerSummary {
   direction: Direction;
 }
 
+export interface JevChoiceTrace {
+  choice: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+}
+
+export interface JevDecisionTrace {
+  timestamp: number;
+  transcript: string;
+  activeApp: string | null;
+  activationMode: string;
+  turnEvent: TranscriptEvent["event"];
+  model: string;
+  complete: number;
+  addressed: number | null;
+  choices: {
+    intent: JevChoiceTrace;
+    target: JevChoiceTrace;
+    direction: JevChoiceTrace;
+  };
+}
+
 export interface ResolvedCommand {
   kind: Intent;
   /** Friendly display name (overlay/history/voice replies). */

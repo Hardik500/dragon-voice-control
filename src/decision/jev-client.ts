@@ -76,7 +76,12 @@ export async function callJev(
       intent: json.answers.intent?.choice,
       intentConfidence: json.answers.intent?.confidence,
       target: json.answers.target?.choice,
+      targetConfidence: json.answers.target?.confidence,
       direction: json.answers.direction?.choice,
+      directionConfidence: json.answers.direction?.confidence,
+      intentProbabilities: json.answers.intent?.probabilities,
+      targetProbabilities: json.answers.target?.probabilities,
+      directionProbabilities: json.answers.direction?.probabilities,
       complete: json.answers.complete?.noul,
       addressed: json.answers.addressed?.noul,
     });

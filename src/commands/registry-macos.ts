@@ -28,6 +28,7 @@ export const APP_ALIASES: Record<string, string> = {
   vscode: "Visual Studio Code",
   code: "Visual Studio Code",
   cursor: "Cursor",
+  antigravity: "Antigravity",
   notes: "Notes",
   calendar: "Calendar",
   reminders: "Reminders",

@@ -34,6 +34,11 @@ export function registerIpc(deps: IpcDeps) {
     deps.pipeline.clearHistory();
     return [];
   });
+  ipcMain.handle("jev:decisions", () => deps.pipeline.getJevDecisionTraces());
+  ipcMain.handle("jev:decisions:clear", () => {
+    deps.pipeline.clearJevDecisionTraces();
+    return [];
+  });
 
   ipcMain.handle("status:get", () => deps.getStatus());
 

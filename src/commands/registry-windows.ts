@@ -53,6 +53,7 @@ export const APP_ALIASES: Record<string, WinAppAlias> = {
   vscode: { launchToken: "code", processName: "Code", label: "Visual Studio Code" },
   code: { launchToken: "code", processName: "Code", label: "Visual Studio Code" },
   cursor: { launchToken: "cursor", processName: "Cursor", label: "Cursor" },
+  antigravity: { launchToken: "Antigravity", processName: "Antigravity", label: "Antigravity" },
   "sublime text": { launchToken: "sublime_text", processName: "sublime_text", label: "Sublime Text" },
   sublime: { launchToken: "sublime_text", processName: "sublime_text", label: "Sublime Text" },
   warp: { launchToken: "warp", processName: "Warp", label: "Warp" },

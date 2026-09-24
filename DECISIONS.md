@@ -594,3 +594,27 @@ documented harness pattern), covering every bug case above plus unchanged-behavi
 ("Open Chrome." still activates, "open cursor" override still fires, "Press enter." /
 "Select all." still resolve, all alias keys in both platform registries verified word-char
 only). Full `npm run build` + `npm run typecheck` + `node --check` on background.js all clean.
+
+## 2026-09-24 — Latest Windows run: targeted fixes and session-only Jev dashboard
+
+The supplied Windows run showed three concrete issues worth fixing without broadening the
+product scope: a missing app alias (`Open Antigravity.`), a false execution failure when
+opening a File Explorer location (`explorer.exe` can return a non-zero shell status after
+successfully handing off to Explorer), and exact media commands such as `Pause.` being rejected
+by the always-listening addressed gate even when Jev recognized them with high intent
+confidence. The first two are now registry/automation fixes. The media fix is deliberately
+narrow: only final, exact media-control phrases with at least 0.9 intent confidence bypass the
+addressed gate; ordinary speech still uses the gate.
+
+**Decision:** Keep Jev observability as a bounded, session-only in-memory dashboard in the
+existing Settings window. Each actual Jev call records the selected answers and probability
+maps for the three closed choice questions, while cache hits do not create fake new calls.
+The dashboard is not persisted and does not add telemetry or a new dependency.
+
+**Reason:** It demonstrates the system's typed decision capability and gives a useful debugging
+surface without storing API keys, request bodies, or an unbounded history. The existing
+Settings window is already the natural place for this diagnostic view.
+
+**Consequences:** The dashboard survives only until the app process exits; use the JSONL logs
+for longer-term inspection. The renderer and main-process IPC were typechecked on Linux, but
+the live Electron UI and Windows Explorer/Antigravity behavior still require target hardware.

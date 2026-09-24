@@ -294,7 +294,10 @@ export async function openFinderLocation(location: string): Promise<void> {
   const rel = LOCATIONS[location];
   if (rel == null) throw new Error(`Unknown File Explorer location: ${location}`);
   const target = rel.startsWith("shell:") ? rel : path.join(process.env.USERPROFILE ?? "", rel);
-  await run("explorer.exe", [target]);
+  // Explorer is a shell process and may return a non-zero status after successfully
+  // opening the requested folder. Use the same shell-start path as app launching and treat
+  // cmd's successful handoff as the operation's result instead of misreporting explorer.exe.
+  await startProcess(target);
 }
 
 let currentSay: ChildProcess | null = null;

@@ -100,7 +100,13 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   spoken acknowledgements with barge-in; command history persisted and viewable/clearable from
   Settings; JSONL debug logs rotated per day with key/audio redaction, now including explicit
   latency breakdowns (`sttToDecisionMs`, `decisionMs`, `executionMs`, `totalMs`) on every
-  `pipeline.execution`/`pipeline.decision_request`/`pipeline.dictation_*` event.
+  `pipeline.execution`/`pipeline.decision_request`/`pipeline.dictation_*` event. Action
+  confirmations now remain visible for five seconds across immediate idle/listening updates so
+  the result can be read before it is replaced by the next turn.
+- **Jev decision dashboard**: Settings now shows a bounded, session-only view of the latest
+  Jev calls, including the selected `intent`/`target`/`direction`, confidence, selected-choice
+  probability bars, top alternatives, transcript, model, and timing context. The same choice
+  probability distributions are included in the structured `jev.response` JSONL event.
 - **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, shortcuts, wake phrase,
   voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a new
   shortcut-registration-failure warning banner.
@@ -114,7 +120,9 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
 What was actually run and observed, this round:
 
 - `npm run typecheck` / `npm run build` succeed cleanly after the full Windows-boundary
-  refactor and all new features.
+  refactor, the latest log-driven fixes, and the Jev dashboard UI additions.
+- The Jev dashboard is renderer-only over an in-memory IPC snapshot; it was typechecked but not
+  exercised in a live Electron window in this Linux sandbox.
 - `npx electron . --dev` boots cleanly end-to-end (tray/windows/IPC/logging all initialize,
   clean shutdown) — `automation/index.ts`'s Linux dev-only fallback (uses the macOS module,
   logs `automation.unsupported_platform_dev_fallback`) makes this possible; real end users on
@@ -257,6 +265,13 @@ Summary, oldest to newest:
    `control/ctrl/command/cmd <letter>` to the semantic action; (5) DOM actions on
    `chrome://`/still-loading tabs threw the raw Chrome "Receiving end does not exist" error —
    the extension now returns an actionable message instead.
+  8. Eighth pass, from the latest supplied Windows run: added the missing `antigravity` app
+    alias on both platforms; routed File Explorer locations through the successful shell-start
+    handoff instead of treating Explorer's process exit status as the operation result; allowed
+    exact high-confidence media commands such as `Pause.` through the always-listening
+    addressed gate; retained action confirmations for five seconds; and added the session-only
+    Jev decision dashboard with choice probabilities and alternatives. The dashboard and Windows
+    Explorer/Antigravity behavior still require live Windows verification.
 
 ## Exact next task
 
@@ -275,6 +290,9 @@ the extension-connected tab state:
 - The brief `browser.extension_disconnected` → `extension_connected` blip ~2s after boot in
   the supplied log looked harmless (single reconnect), but keep an eye on it — if repeated
   disconnect/reconnects appear during a session, that's worth its own look.
+- Re-test "Open Antigravity." (now has a closed-vocabulary alias), "Go to desktop." (now uses
+  the shell-start handoff), and bare "Pause." in always-listening mode. Open Settings after a
+  few commands to inspect the Jev dashboard's selected choices and probability alternatives.
 
 Still unverified on real hardware (documented, not bugs): the dictation/editing flow on
 Windows, Windows-specific automation against third-party apps (Slack/Discord/Cursor/Docker),

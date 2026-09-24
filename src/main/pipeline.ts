@@ -7,7 +7,7 @@ import { buildQuestions, buildState, buildTargetCandidates } from "../decision/q
 import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
-import { HistoryEntry, JevAnswerSummary, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
+import { HistoryEntry, JevAnswerSummary, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
 import { HistoryStore } from "./history-store";
 
@@ -18,6 +18,21 @@ const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
 const DEFAULT_DELETE_WORD_COUNT = 3;
+
+/** Exact media-control commands that are unambiguous enough to bypass the addressed gate in
+ * always-listening mode. Without this, Jev can correctly recognize "Pause." as media control
+ * while still scoring it as incidental speech because "pause" is also an ordinary English word. */
+const EXPLICIT_MEDIA_CONTROL_PATTERN = /^(?:play|pause|play\s*\/\s*pause|next(?:\s+track)?|previous(?:\s+track)?)[.!?]?$/i;
+
+function isExplicitMediaControl(turn: TranscriptEvent, summary: JevAnswerSummary): boolean {
+  if (!turn.isFinal || summary.intentConfidence < 0.9) return false;
+  if (!EXPLICIT_MEDIA_CONTROL_PATTERN.test(turn.transcript.trim())) return false;
+  return (
+    summary.intent === "media_play_pause" ||
+    summary.intent === "media_next" ||
+    summary.intent === "media_previous"
+  );
+}
 
 interface InFlight {
   utteranceId: string;
@@ -77,6 +92,9 @@ export class DragonPipeline {
   /** Avoids asking Jev the exact same question twice for one utterance (e.g. EagerEndOfTurn
    * then EndOfTurn arriving with identical transcript text). Keyed by `${utteranceId}::${text}`. */
   private jevAnswerCache = new Map<string, JevAnswerSummary>();
+  /** Bounded, session-only dashboard data. This is observability UI state, not command history. */
+  private jevDecisionTraces: JevDecisionTrace[] = [];
+  private static readonly MAX_JEV_DECISION_TRACES = 50;
 
   // --- Dictation session state (see DECISIONS.md "voice dictation") -----------------------
   /** True once "type X" has executed; lets subsequent utterances that Jev doesn't recognize
@@ -101,6 +119,21 @@ export class DragonPipeline {
 
   clearHistory() {
     this.history.clear();
+  }
+
+  getJevDecisionTraces(): JevDecisionTrace[] {
+    return this.jevDecisionTraces;
+  }
+
+  clearJevDecisionTraces() {
+    this.jevDecisionTraces = [];
+  }
+
+  private recordJevDecision(trace: JevDecisionTrace) {
+    this.jevDecisionTraces.unshift(trace);
+    if (this.jevDecisionTraces.length > DragonPipeline.MAX_JEV_DECISION_TRACES) {
+      this.jevDecisionTraces.length = DragonPipeline.MAX_JEV_DECISION_TRACES;
+    }
   }
 
   private newUtteranceId(): string {
@@ -528,6 +561,34 @@ export class DragonPipeline {
         const result = await callJev(settings.openRouterApiKey, state, questions, controller.signal);
         this.unregisterInFlight(controller);
 
+        this.recordJevDecision({
+          timestamp: Date.now(),
+          transcript: effectiveText,
+          activeApp,
+          activationMode: settings.activationMode,
+          turnEvent: turn.event,
+          model: result.model,
+          complete: result.answers.complete.noul,
+          addressed: result.answers.addressed?.noul ?? null,
+          choices: {
+            intent: {
+              choice: result.answers.intent.choice,
+              confidence: result.answers.intent.confidence,
+              probabilities: result.answers.intent.probabilities,
+            },
+            target: {
+              choice: result.answers.target.choice,
+              confidence: result.answers.target.confidence,
+              probabilities: result.answers.target.probabilities,
+            },
+            direction: {
+              choice: result.answers.direction.choice,
+              confidence: result.answers.direction.confidence,
+              probabilities: result.answers.direction.probabilities,
+            },
+          },
+        });
+
         summary = summarizeAnswers(result.answers);
         decisionMs = Date.now() - startedAt;
         this.jevAnswerCache.set(cacheKey, summary);
@@ -538,7 +599,11 @@ export class DragonPipeline {
       // ("How are you doing?") reads as not-addressed-to-an-assistant almost by definition,
       // but during an active dictation session it should be typed, not discarded — the user
       // already explicitly started dictating with a real command. See DECISIONS.md.
-      if (settings.activationMode === "always_listening" && !this.dictationActive) {
+      if (
+        settings.activationMode === "always_listening" &&
+        !this.dictationActive &&
+        !isExplicitMediaControl(turn, summary)
+      ) {
         if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
           this.logIgnored(turn, "not_addressed", summary.intent);
           return;
