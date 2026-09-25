@@ -39,9 +39,11 @@ function psQuote(value: string): string {
 /** Inline User32 P/Invoke helper, prepended to any script that needs it. Safe to repeat: each
  * action runs in its own fresh `powershell.exe` process (no `Add-Type` collision risk).
  *
- * `AttachThreadInput` / `BringWindowToTop` / `SetFocus` / `IsIconic` / `GetCurrentThreadId` exist
+ * `AttachThreadInput` / `BringWindowToTop` / `IsIconic` / `GetCurrentThreadId` exist
  * solely to make foreground activation reliable — see `activateApp` for why a bare
- * `SetForegroundWindow` isn't enough. */
+ * `SetForegroundWindow` isn't enough.
+ *
+ * Note there is deliberately no `SetFocus` here. See `activateApp`. */
 const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -51,7 +53,6 @@ const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
-[DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 '@`;
@@ -158,6 +159,15 @@ export async function openApp(aliasKey: string): Promise<void> {
  * ran a ribbon command instead of inserting text (reported 2026-09-26). Activation must never
  * leave a keystroke behind in an app the user is about to type into.
  *
+ * There is also deliberately **no `SetFocus`**, for the same class of reason. `SetFocus` takes a
+ * window handle and moves keyboard focus to *that window*; for a text editor the caret lives in
+ * a child control (Notepad's is an EDIT / RichEdit child), so calling `SetFocus` on the top-level
+ * window after `SetForegroundWindow` — which has already delivered `WM_ACTIVATE` and let the app
+ * restore its own child focus — stomps it. The symptom is exactly "open notepad, and I have to
+ * click in the text area before I can type anything", including for Dragon's own dictated text
+ * (reported 2026-09-26, introduced in the 2026-09-25 pass). Bringing a window to the foreground
+ * is our job; deciding which control inside it holds the caret belongs to the app.
+ *
  * Unverified on real Windows hardware — see PROGRESS.md. */
 export async function activateApp(aliasKey: string): Promise<void> {
   const alias = resolveAlias(aliasKey);
@@ -195,7 +205,6 @@ if ($procs) {
   if ([Dragon.Win32]::IsIconic($h)) { [Dragon.Win32]::ShowWindow($h, ${SW_RESTORE}) | Out-Null }
   [Dragon.Win32]::BringWindowToTop($h) | Out-Null
   [Dragon.Win32]::SetForegroundWindow($h) | Out-Null
-  [Dragon.Win32]::SetFocus($h) | Out-Null
   if ($fgThread -ne 0) { [Dragon.Win32]::AttachThreadInput($ourThread, $fgThread, $false) | Out-Null }
   [Dragon.Win32]::AttachThreadInput($ourThread, $targetThread, $false) | Out-Null
   if ([Dragon.Win32]::GetForegroundWindow() -eq $h) { Write-Output '${FOCUS_OK}' } else { Write-Output '${FOCUS_MISS}' }

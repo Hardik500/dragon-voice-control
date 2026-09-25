@@ -964,3 +964,27 @@ which is how the Alt regression went unnoticed in the first place. The general r
 establishes: activating a window must never leave a pending key state in an app the user is about
 to type into. Alt+Tab in `switchToPreviousApp` and the named-key paths are unaffected; those keys
 are the point of the command.
+
+## 2026-09-26 — Activating a window must not choose focus inside it
+
+**Decision:** Removed `SetFocus` (and its P/Invoke) from `automation/windows.ts`'s `activateApp`,
+alongside the Alt tap removed the day before. The activation sequence is now `AttachThreadInput` →
+`IsIconic`-guarded `ShowWindow` → `BringWindowToTop` → `SetForegroundWindow` → detach → verify.
+
+**Reason:** Reported 2026-09-26: "open notepad" brought the window forward but left no caret, so
+nothing could be typed until the text area was clicked — which also blocked Dragon's dictated text,
+since that is injected as keystrokes. `SetFocus` moves keyboard focus to the window handle it is
+given. The caret in a text editor lives in a *child* control, and `SetForegroundWindow` has
+already delivered `WM_ACTIVATE` by the time we would call it, so the app has restored its own child
+focus and `SetFocus` on the top-level window then overwrites it. Introduced in the 2026-09-25 pass,
+which replaced a cold path that was merely passive (`Start-Process` and return, letting Windows
+activate the app normally).
+
+**Consequences:** Bringing a window to the foreground is Dragon's job; deciding which control
+inside it holds the caret belongs to the app, and Dragon has no way to know. This is the second
+regression from that one pass — the first was the Alt tap putting WinUI ribbons into KeyTips mode.
+Both are now documented in the `activateApp` comment so neither is re-added. The real lesson
+recorded in PROGRESS.md: that pass added a broad activation recipe on a machine where none of it
+could be executed, and the cost was two user-visible regressions. `SetForegroundWindow` with
+thread attachment is sufficient on its own; the focus verification (`automation.activate_app`,
+pass 32) means a future failure will be visible in the log rather than silent.

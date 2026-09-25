@@ -652,6 +652,34 @@ Summary, oldest to newest:
       no trailing `SetForegroundWindow` after the thread detach, focus markers present,
       `AttachThreadInput` / `IsIconic` / cold-start poll all still there. Not executed on Windows.
 
+  33. Thirty-third pass — **second regression from pass 27**, reported 2026-09-26: after "open
+      notepad", the window came to the front but the caret did not, so nothing could be typed
+      until the text area was clicked. That also blocked Dragon's own dictated text, which is
+      injected as keystrokes and needs the editor control to hold focus.
+
+      Cause: pass 27 added `[Dragon.Win32]::SetFocus($h)` to `activateApp`. `SetFocus` takes a
+      window handle and moves keyboard focus to *that window*. For a text editor the caret lives
+      in a child control (Notepad's is an EDIT / RichEdit child), so calling `SetFocus` on the
+      top-level window — after `SetForegroundWindow` has already delivered `WM_ACTIVATE` and let
+      Notepad restore its own child focus — stomped it. The pre-27 cold path was just
+      `Start-Process` and return, so Windows activated Notepad naturally and Notepad focused its
+      own editor; that is why this only started after that pass.
+
+      Fix: removed the `SetFocus` call and its P/Invoke declaration. The activation sequence is
+      now `AttachThreadInput` → `IsIconic`-guarded `ShowWindow` → `BringWindowToTop` →
+      `SetForegroundWindow` → detach → verify. Bringing a window to the foreground is Dragon's
+      job; choosing which control inside it holds the caret belongs to the app.
+
+      Note the two pass-27 regressions (the Alt tap, now removed in pass 32, and this) came from
+      the same root cause: adding a kitchen-sink activation recipe that could not be tested on
+      the development machine. Both are now called out in the `activateApp` doc comment so the
+      lines are not re-added.
+
+      Verified with `npm run typecheck`, `npm run build`, and a throwaway harness asserting on the
+      generated PowerShell: no `SetFocus` in either the P/Invoke block or the script body, no
+      Alt tap, and `SetForegroundWindow` / `AttachThreadInput` / `BringWindowToTop` / `IsIconic` /
+      cold-start poll / focus verification all still present. Not executed on Windows.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
