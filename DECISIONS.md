@@ -912,3 +912,32 @@ the menu bar and Dock. Because the overlay is `focusable: false` and click-throu
 costs nothing in interaction terms. The Settings window was not changed — the report was about the
 floating bar. Unverified on real hardware; whether the bar beats a full-screen app can only be
 confirmed on Windows.
+
+## 2026-09-25 — Request Deepgram Numerals so spoken numbers arrive as digits
+
+**Decision:** Added `numerals=true` to the connection-time query string on the Flux `/v2/listen`
+WebSocket, and logged the value in `stt.connected`. Not configurable — always on.
+
+**Reason:** The 18:00 run showed the user speaking numbers into Calculator and getting nothing:
+"Two plus two." and "Two four two." were transcribed as English words, Jev answered `intent: none`
+for both, and the pipeline discarded them as `not_addressed`. Dragon simply wasn't asking Deepgram
+for numeral formatting. Flux supports `numerals` as a connection-time parameter, and it is the only
+place it can be set — sending it in a `Configure` message returns `UNPARSABLE_CLIENT_MESSAGE` and
+closes the socket. Dragon already builds this URL by hand, so it was a one-parameter omission.
+
+**Consequences:** Every transcript now carries digits, so dictated text types numbers correctly
+("my number is 5551234" no longer types out the words) and `volume_set` / `delete_text` counts work
+from digits. Two things to watch, both consequences of the feature rather than bugs:
+
+- Numerals also rewrites ordinals, so "the first post" can arrive as "the 1st post". Browser
+  element candidates are scored by text similarity against the page, so an ordinal in a click
+  target ("First post") may match slightly worse against a digit-form transcript. This is inherent
+  to the feature — digits for numbers and words for ordinals can't both be had from one
+  transcript. If click accuracy on ordinal labels regresses, that trade is the thing to revisit.
+- Converted numbers carry no separators: "nine hundred ninety nine thousand nine hundred ninety
+  nine" becomes `999999`, never `999,999`.
+
+A bare numeric utterance with no verb ("2 + 2" said to Calculator) is still not a command and is
+still dropped outside Insert Mode — that is the documented one-command-per-utterance design, not a
+numerals problem. Prefixing with "type" ("type 2 plus 2") or entering Insert Mode first both work
+and are verified against the resolver. Unverified against the live Deepgram endpoint from Linux.

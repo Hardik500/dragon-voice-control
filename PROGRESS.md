@@ -512,6 +512,47 @@ Summary, oldest to newest:
       call remains outside the helper. Whether the bar actually stays above Chrome, Notepad, and
       a full-screen app is a window-manager behavior that still needs a real run to confirm.
 
+  29. Twenty-ninth pass, from the Jev run of 2026-09-25 18:00 (session `sess_muh9od79_zlxyne`).
+      Reported as: "we have difficulty when the user speaks a number, we always treat it as word."
+
+      The log shows the user opened Calculator and then spoke numbers, twice:
+
+      ```
+      18:03:00.995 stt.turn        transcript="Two plus two"
+      18:03:02.111 decision.response  intent=none  intentConfidence=0.86
+      18:03:02.111 pipeline.ignored   reason=not_addressed
+      18:03:06.035 stt.turn        transcript="Two four two"
+      18:03:06.731 decision.response  intent=none  intentConfidence=0.56
+      18:03:06.731 pipeline.ignored   reason=not_addressed
+      ```
+
+      Root cause: Dragon never asked Deepgram for numeral formatting. `deepgram-client.ts` builds
+      the Flux `/v2/listen` query string by hand and passed no `numerals` parameter, so every
+      spoken number reached the decision layer as an English word. Added `numerals=true` there (it
+      is a connection-time parameter on Flux — sending it in a `Configure` message instead returns
+      `UNPARSABLE_CLIENT_MESSAGE` and closes the socket) and logged the value in `stt.connected`
+      so a future run can confirm it took effect.
+
+      Verified with `npm run typecheck`, `npm run build`, and a throwaway harness that stubs `ws`
+      and captures the real connection URL, asserting `numerals=true` is present alongside the
+      existing params and that no key material lands in the query string. Also checked the
+      downstream resolvers against digit-form transcripts: "type 2 plus 2" → `type_text("2 plus
+      2")`, "type 5551234" → `type_text("5551234")`, "volume 50" → `volume_set(50)`, "delete the
+      last 3 words" → count 3.
+
+      Note that a bare "2 + 2" with no verb is still not a command and is still dropped outside
+      Insert Mode — that is the documented one-command-per-utterance design, not a numerals
+      problem. "type 2 plus 2", or entering Insert Mode first, are the working paths.
+
+      One trade-off to watch, recorded in DECISIONS.md: Numerals also rewrites ordinals, so "the
+      first post" can arrive as "the 1st post", and browser element candidates are scored by text
+      similarity against the page. A click target labelled "First post" may match slightly worse
+      against a digit-form transcript. Worth watching on the next browser run.
+
+      The same session also incidentally confirms pass 27's cold-start work is running:
+      "Open calculator." at 18:02:56 took `executionMs: 751` (a cold `Start-Process` plus the
+      window poll) and still reported no error.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

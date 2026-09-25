@@ -7,6 +7,9 @@ const STT_MODEL = "flux-general-en";
 const EAGER_EOT_THRESHOLD = "0.5";
 const FINAL_EOT_THRESHOLD = "0.7";
 const EOT_TIMEOUT_MS = "8000";
+/** Deepgram Numerals. On by default because a spoken number that stays a word is wrong for every
+ * downstream consumer (dictation, numeric entry, URLs) — see the `numerals` param below. */
+const NUMERALS = "true";
 const STT_KEYTERMS = [
   "Antigravity",
   "Cursor",
@@ -63,6 +66,13 @@ export class DeepgramFluxConnection {
         eager_eot_threshold: EAGER_EOT_THRESHOLD,
         eot_threshold: FINAL_EOT_THRESHOLD,
         eot_timeout_ms: EOT_TIMEOUT_MS,
+        // Deepgram's Numerals feature converts spoken numbers to digits ("nine hundred" -> "900").
+        // Without it every spoken number reaches the decision layer as an English word, so
+        // dictated text typed the words out ("five five five one two three…") and numeric entry
+        // into Calculator or a spreadsheet had no digit form to work with at all. This is a
+        // connection-time parameter on Flux /v2/listen — sending it in a `Configure` message
+        // instead returns UNPARSABLE_CLIENT_MESSAGE and closes the socket, so it must stay here.
+        numerals: NUMERALS,
       });
       for (const keyterm of STT_KEYTERMS) params.append("keyterm", keyterm);
       const url = `wss://api.deepgram.com/v2/listen?${params.toString()}`;
@@ -75,6 +85,7 @@ export class DeepgramFluxConnection {
           eagerEotThreshold: EAGER_EOT_THRESHOLD,
           finalEotThreshold: FINAL_EOT_THRESHOLD,
           eotTimeoutMs: EOT_TIMEOUT_MS,
+          numerals: NUMERALS,
           keytermCount: STT_KEYTERMS.length,
         });
         resolve();
