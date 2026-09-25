@@ -32,6 +32,22 @@ const STT_KEYTERMS = [
   "exit insert mode",
   "stop insert mode",
   "workflow mode",
+  // Core command verbs. These were being garbled at the start of a turn — the logs show
+  // "many"→minimize, "match"/"maxim"→maximize, "glue"→close, "believe"/"delivery"→delete,
+  // "price"→press — and none of them were boosted. Kept to the verbs that actually start a
+  // device-control command; deliberately no broad nouns, which would alter dictated text.
+  "open",
+  "close",
+  "minimize",
+  "maximize",
+  "scroll",
+  "click",
+  "type",
+  "search",
+  "press",
+  "delete",
+  "volume",
+  "mute",
 ];
 
 export type TurnHandler = (turn: TranscriptEvent) => void;

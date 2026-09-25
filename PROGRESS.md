@@ -553,6 +553,27 @@ Summary, oldest to newest:
       "Open calculator." at 18:02:56 took `executionMs: 751` (a cold `Start-Process` plus the
       window poll) and still reported no error.
 
+  30. Thirtieth pass: added 12 core command verbs to the Deepgram `keyterm` list — `open`,
+      `close`, `minimize`, `maximize`, `scroll`, `click`, `type`, `search`, `press`, `delete`,
+      `volume`, `mute` (40 keyterms / 54 tokens total, against a 500-token limit).
+
+      Scanned all 94 transcripts in the last two days that changed between StartOfTurn and
+      EndOfTurn. Most changes are ordinary refinement (`okay`→`open`, `click on`→`click`), but
+      the genuine mishearings are almost all command words, none of which were boosted:
+      `many`/`mindy`/`midima`→minimize, `match`/`maxim`→maximize, `glue`→close,
+      `believe`/`delivery`→delete, `price`→press, `end of`→enter, `cons`→select,
+      `that's`→backspace.
+
+      Scope was deliberately kept to the verbs and not widened: deriving keyterms from the
+      registry (61 app aliases + 47 key names, ~135 terms) was considered and rejected — app
+      names are essentially never garbled in these logs (`browser` once), and broad aliases like
+      `code`, `mail`, `word`, `notes` risk altering dictated text, which must stay verbatim.
+      40 terms is much closer to Deepgram's own 20–50 guidance than 135 would have been.
+
+      Note this is a best-effort knob, not a fix: `pause` and `play` were *already* keyterms and
+      were still misheard (`balls`/`body`/`well,`→pause). Worth judging from the next run's
+      transcripts rather than assuming.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
