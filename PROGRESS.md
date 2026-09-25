@@ -622,6 +622,36 @@ Summary, oldest to newest:
       `not_addressed`. `YouTube Music` is a keyterm and still garbled, which is consistent with
       keyterm prompting being best-effort rather than a fix.
 
+  32. Thirty-second pass — **regression from pass 27**, reported 2026-09-26: after "open notepad",
+      Notepad was left in a state where typing did nothing, and the screenshot showed the ribbon
+      expanded with single-letter KeyTips (F, E, V, H, L, B, I, O, R, P, U, S) overlaid on the
+      ribbon commands. Keystrokes were running ribbon commands instead of inserting text.
+
+      Cause: pass 27 added a synthetic Alt tap to `activateApp` as a last-resort
+      foreground-eligibility trick. Pressing Alt is precisely what puts a WinUI app's ribbon into
+      KeyTips mode, and Notepad's ribbon stays in keyboard-navigation mode after the Alt release,
+      so the app was left waiting for a ribbon key. It was the only keystroke injected anywhere in
+      the app-activation path, and the previous `activateApp` had none — which matches "this was
+      not happening before". Affected any app with a ribbon (Notepad, Word, Excel, File Explorer).
+
+      Fix: removed the Alt tap. The activation path now injects no keystrokes at all, so opening
+      an app can never leave a pending key state behind in something the user is about to type
+      into. `AttachThreadInput` + `BringWindowToTop` + `SetForegroundWindow` + `SetFocus` — the
+      part that actually does the work — is unchanged, as is the `IsIconic` guard and the
+      cold-start poll. `VK.ALT` and `keyEventLine` remain in use by `switchToPreviousApp` (a real
+      Alt+Tab) and the key-press paths, which are legitimate.
+
+      While in there, added the missing telemetry: the script now ends by comparing
+      `GetForegroundWindow()` against the target handle and printing `dragon_focus_ok` or
+      `dragon_focus_miss`, logged as `automation.activate_app` with the alias, process, and
+      `focused` boolean. There was previously no way to tell a working activation from a
+      silently-refused one, which is exactly why this regression went unnoticed.
+
+      Verified with `npm run typecheck`, `npm run build`, and a throwaway harness that stubs
+      `electron`/`child_process` and asserts on the generated PowerShell: no `keybd_event(18)`,
+      no trailing `SetForegroundWindow` after the thread detach, focus markers present,
+      `AttachThreadInput` / `IsIconic` / cold-start poll all still there. Not executed on Windows.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

@@ -66,6 +66,10 @@ const WM_CLOSE = 0x0010;
  * to focus it. Generous enough for a browser's first window, short enough to stay well inside
  * `run()`'s 10s timeout alongside PowerShell startup. */
 const ACTIVATE_LAUNCH_WAIT_SECONDS = 6;
+/** Markers the activation script prints so the caller can tell a real activation from a
+ * silently-refused one. */
+const FOCUS_OK = "dragon_focus_ok";
+const FOCUS_MISS = "dragon_focus_miss";
 
 const VK = {
   CONTROL: 0x11,
@@ -133,21 +137,26 @@ export async function openApp(aliasKey: string): Promise<void> {
 
 /** Bring an app's window to the foreground, launching it first if it isn't running.
  *
- * The previous version called a bare `SetForegroundWindow`, and Windows refused it: the OS only
+ * The original version called a bare `SetForegroundWindow`, and Windows refused it: the OS only
  * lets a process take the foreground if it already owns it or otherwise "qualifies", and
  * Dragon's short-lived PowerShell child almost never does. The app would launch or activate and
- * then sit behind the foreground window — the "opens in the background" symptom. Three changes
- * fix that, in order of how much they buy:
+ * then sit behind the foreground window — the "opens in the background" symptom. Two changes
+ * fix that:
  *
  * 1. `AttachThreadInput` our thread to the target window's thread (and the current foreground
  *    window's thread), which is what actually makes the activation calls take effect.
  * 2. `IsIconic` before `ShowWindow(SW_RESTORE)` — restoring an already-maximized window shrinks
  *    it back to normal size, so only restore when it's genuinely minimized.
- * 3. A synthetic Alt tap, the documented trick for making the caller eligible for foreground
- *    under the OS rules, then one more `SetForegroundWindow`.
  *
  * A cold start polls for the new main window instead of returning as soon as `Start-Process`
  * does, so a first-run app that takes a second to show a window still ends up in front.
+ *
+ * There is deliberately **no synthetic Alt tap** here, even though it is a widely-cited way to
+ * make a process eligible for foreground. An earlier version had one as a last resort and it was
+ * a serious regression: pressing Alt is what puts a WinUI app's ribbon into KeyTips mode, so
+ * "open notepad" left Notepad showing single-letter ribbon hints and every subsequent keystroke
+ * ran a ribbon command instead of inserting text (reported 2026-09-26). Activation must never
+ * leave a keystroke behind in an app the user is about to type into.
  *
  * Unverified on real Windows hardware — see PROGRESS.md. */
 export async function activateApp(aliasKey: string): Promise<void> {
@@ -189,11 +198,17 @@ if ($procs) {
   [Dragon.Win32]::SetFocus($h) | Out-Null
   if ($fgThread -ne 0) { [Dragon.Win32]::AttachThreadInput($ourThread, $fgThread, $false) | Out-Null }
   [Dragon.Win32]::AttachThreadInput($ourThread, $targetThread, $false) | Out-Null
-  ${keyEventLine(VK.ALT, false)}
-  ${keyEventLine(VK.ALT, true)}
-  [Dragon.Win32]::SetForegroundWindow($h) | Out-Null
+  if ([Dragon.Win32]::GetForegroundWindow() -eq $h) { Write-Output '${FOCUS_OK}' } else { Write-Output '${FOCUS_MISS}' }
 }`;
-  await runPowerShell(script);
+  const { stdout } = await runPowerShell(script);
+  // Report whether the window actually ended up in front. Without this there is no way to tell
+  // a working activation from a silently-refused one — which is exactly how the Alt-tap
+  // regression below went unnoticed.
+  logger.event("automation.activate_app", {
+    alias: aliasKey,
+    process: alias.processName,
+    focused: stdout.includes(FOCUS_OK),
+  });
 }
 
 export async function hideApp(aliasKey: string): Promise<void> {

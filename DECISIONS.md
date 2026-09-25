@@ -941,3 +941,26 @@ A bare numeric utterance with no verb ("2 + 2" said to Calculator) is still not 
 still dropped outside Insert Mode — that is the documented one-command-per-utterance design, not a
 numerals problem. Prefixing with "type" ("type 2 plus 2") or entering Insert Mode first both work
 and are verified against the resolver. Unverified against the live Deepgram endpoint from Linux.
+
+## 2026-09-26 — Never inject a keystroke while activating an app
+
+**Decision:** Removed the synthetic Alt tap from `automation/windows.ts`'s `activateApp`. The
+activation path now injects no keystrokes at all. `AttachThreadInput` + `BringWindowToTop` +
+`SetForegroundWindow` + `SetFocus` remain. Also added a `GetForegroundWindow()` post-check logged
+as `automation.activate_app` with a `focused` boolean.
+
+**Reason:** The Alt tap, added on 2026-09-25 as a last-resort foreground-eligibility trick, was a
+regression reported the next day: "open notepad" left Notepad with its ribbon in KeyTips mode —
+single-letter hints (F, E, V, H, L, B, I, O, R, P, U, S) over the ribbon commands — so every
+subsequent keystroke ran a ribbon command instead of inserting text. Pressing Alt is exactly what
+activates KeyTips, and a WinUI ribbon stays in keyboard-navigation mode after the Alt release. It
+was the only keystroke in the activation path, which is why this started only after that pass.
+
+**Consequences:** Foreground activation relies on the thread-attachment technique alone, which is
+the documented primary approach and the part that does the work; the eligibility hack is gone, so
+in the rare case Windows still refuses, the app may not come to the front. That is now
+*observable* — `automation.activate_app` reports `focused: false` — instead of failing silently,
+which is how the Alt regression went unnoticed in the first place. The general rule this
+establishes: activating a window must never leave a pending key state in an app the user is about
+to type into. Alt+Tab in `switchToPreviousApp` and the named-key paths are unaffected; those keys
+are the point of the command.
