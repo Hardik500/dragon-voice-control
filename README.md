@@ -154,7 +154,8 @@ muddles (notably: *"open google chrome"* must focus Chrome, not navigate to goog
 - **Decision provider** is Jev by default. An optional **Laya** local server is supported for
   running without OpenRouter. It's off by default and Dragon never starts it for you — install it
   with `scripts/bootstrap-laya-server.sh` (macOS/Linux) or `.ps1` (Windows), then enable it in
-  Settings and press **Start Laya server**. See [`DECISIONS.md`](DECISIONS.md) for the rationale.
+  Settings and press **Start Laya server**. If the server is unavailable Dragon reports the
+  failure rather than silently falling back to Jev, so you always know which model decided.
 - **The decision dashboard** shows each decision live — see [Screenshots](#screenshots).
 
 ```
@@ -215,15 +216,16 @@ npm run package:win   # release/Dragon 0.1.0.exe  (single portable file)
 
 Both are unsigned. macOS: right-click the `.app` → **Open** on first launch to clear Gatekeeper
 (or `xattr -dr com.apple.quarantine release/mac-arm64/Dragon.app`). Windows: accept the
-**SmartScreen** prompt via *More info → Run anyway*. Neither package has been run on its target
-OS yet — see `PROGRESS.md`.
+**SmartScreen** prompt via *More info → Run anyway*. Neither packaged build has been run on its
+target OS yet, so prefer `npm start` until one has been.
 
 ## Known limitations
 
 These are real and deliberate, not oversights:
 
 - **Both platforms work, and both will have bugs.** macOS and Windows are equally supported and
-  equally "expect rough edges" — the two are not tested to the same depth, so don't read a
+  equally "expect rough edges". Neither is exercised as heavily as the other — most recent work
+  has landed on Windows, and macOS was last re-run a few commits earlier — so don't read a
   difference in maturity as a difference in support.
 - **One command per utterance.** "Open Slack, search for X, and type a message" is three
   commands, not one. Workflow Mode handles a constrained `then`-separated form and nothing more.
@@ -236,16 +238,6 @@ These are real and deliberate, not oversights:
 - **A bare "2 + 2" isn't a command.** Prefix with `type` or use Insert Mode.
 - **Insert Mode dictates commands as text** — leave it before saying "open Chrome".
 - **No automated tests, no code signing, no notarization.**
-
-`PROGRESS.md` tracks what has been verified on real hardware, per platform.
-
-## Project documents
-
-| File | What it's for |
-|---|---|
-| [`PROGRESS.md`](PROGRESS.md) | What works, what's verified, what's next, known issues |
-| [`DECISIONS.md`](DECISIONS.md) | Why each non-obvious choice was made, with the reasoning |
-| [`AGENTS.md`](AGENTS.md) | Architecture rules and scope discipline for coding agents |
 
 ## License
 
