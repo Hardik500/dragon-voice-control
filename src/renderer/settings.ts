@@ -3,6 +3,9 @@ interface Window {
     get(): Promise<any>;
     update(partial: Record<string, unknown>): Promise<any>;
     checkDecisionProvider(): Promise<{ ok: boolean; provider: string; model: string | null; message: string }>;
+    startLayaServer(): Promise<{ state: string; message: string; pid: number | null; model: string | null; managed: boolean }>;
+    stopLayaServer(): Promise<{ state: string; message: string; pid: number | null; model: string | null; managed: boolean }>;
+    getLayaServerStatus(): Promise<{ state: string; message: string; pid: number | null; model: string | null; managed: boolean }>;
     openLogs(): Promise<void>;
     openDashboard(): Promise<void>;
     getHistory(): Promise<any[]>;
@@ -47,6 +50,7 @@ async function load() {
   byId<HTMLSelectElement>("decisionProvider").value = settings.decisionProvider;
   byId<HTMLInputElement>("layaBaseUrl").value = settings.layaBaseUrl;
   byId<HTMLInputElement>("layaModel").value = settings.layaModel;
+  byId<HTMLInputElement>("layaServerCommand").value = settings.layaServerCommand;
   byId<HTMLInputElement>("pushToTalkShortcut").value = settings.pushToTalkShortcut;
   byId<HTMLInputElement>("emergencyStopShortcut").value = settings.emergencyStopShortcut;
   byId<HTMLInputElement>("insertModeShortcut").value = settings.insertModeShortcut;
@@ -62,6 +66,7 @@ async function save() {
     decisionProvider: byId<HTMLSelectElement>("decisionProvider").value,
     layaBaseUrl: byId<HTMLInputElement>("layaBaseUrl").value.trim(),
     layaModel: byId<HTMLInputElement>("layaModel").value.trim() || "laya",
+    layaServerCommand: byId<HTMLInputElement>("layaServerCommand").value.trim() || "laya-server",
     pushToTalkShortcut: byId<HTMLInputElement>("pushToTalkShortcut").value,
     emergencyStopShortcut: byId<HTMLInputElement>("emergencyStopShortcut").value,
     insertModeShortcut: byId<HTMLInputElement>("insertModeShortcut").value,
@@ -83,6 +88,24 @@ async function save() {
   await load();
 }
 
+async function refreshLayaServerStatus() {
+  const status = await window.dragonSettings.getLayaServerStatus();
+  const target = byId<HTMLDivElement>("layaServerStatus");
+  target.textContent = status.message;
+  target.dataset.state = status.state;
+}
+
+async function startLayaServer() {
+  byId<HTMLDivElement>("layaServerStatus").textContent = "Starting Laya server…";
+  await window.dragonSettings.startLayaServer();
+  await refreshLayaServerStatus();
+}
+
+async function stopLayaServer() {
+  await window.dragonSettings.stopLayaServer();
+  await refreshLayaServerStatus();
+}
+
 async function testDecisionProvider() {
   const status = byId<HTMLDivElement>("statusLine");
   status.textContent = "Checking decision provider…";
@@ -93,6 +116,8 @@ async function testDecisionProvider() {
 window.addEventListener("DOMContentLoaded", () => {
   load();
   byId<HTMLButtonElement>("saveBtn").addEventListener("click", save);
+  byId<HTMLButtonElement>("startLayaServerBtn").addEventListener("click", startLayaServer);
+  byId<HTMLButtonElement>("stopLayaServerBtn").addEventListener("click", stopLayaServer);
   byId<HTMLButtonElement>("testProviderBtn").addEventListener("click", testDecisionProvider);
   byId<HTMLButtonElement>("openDashboardBtn").addEventListener("click", () => window.dragonSettings.openDashboard());
   byId<HTMLButtonElement>("openLogsBtn").addEventListener("click", () => window.dragonSettings.openLogs());
@@ -101,6 +126,8 @@ window.addEventListener("DOMContentLoaded", () => {
     await refreshHistory();
   });
   setInterval(refreshHistory, 4000);
+  refreshLayaServerStatus();
+  setInterval(refreshLayaServerStatus, 2000);
 
   const applyStatus = (status: any) => {
     const warn = byId<HTMLDivElement>("shortcutWarning");

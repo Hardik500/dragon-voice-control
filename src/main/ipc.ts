@@ -2,12 +2,14 @@ import { ipcMain, shell, BrowserWindow } from "electron";
 import { ActivationMode, DragonSettings, toRendererSafe } from "../types/settings";
 import { SettingsStore } from "./settings-store";
 import { DragonPipeline } from "./pipeline";
+import { LayaServerManager } from "./laya-server";
 import { checkDecisionProvider } from "../decision/jev-client";
 import { logger } from "../logging/logger";
 
 export interface IpcDeps {
   settingsStore: SettingsStore;
   pipeline: DragonPipeline;
+  layaServer: LayaServerManager;
   /** `changedMode` is only set when the activation mode actually changed, not merely
    * present in the update payload (the Settings window always submits every field). */
   onSettingsChanged: (settings: DragonSettings, changedMode?: ActivationMode) => void;
@@ -36,6 +38,10 @@ export function registerIpc(deps: IpcDeps) {
       layaModel: settings.layaModel,
     });
   });
+
+  ipcMain.handle("laya-server:start", () => deps.layaServer.start());
+  ipcMain.handle("laya-server:stop", () => deps.layaServer.stop());
+  ipcMain.handle("laya-server:status", () => deps.layaServer.getStatus());
 
   ipcMain.handle("settings:openLogs", () => {
     shell.openPath(logger.logDir);

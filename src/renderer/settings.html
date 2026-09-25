@@ -55,7 +55,12 @@
   <input id="layaBaseUrl" type="text" placeholder="http://127.0.0.1:8000" />
   <label for="layaModel">Laya model</label>
   <input id="layaModel" type="text" placeholder="laya" />
-  <div class="hint">Laya runs separately through laya-server. Start and save the provider settings before testing the connection.</div>
+  <label for="layaServerCommand">Laya server command</label>
+  <input id="layaServerCommand" type="text" placeholder="laya-server" />
+  <div class="hint">Laya runs as a separate local process. Save settings before starting it or testing the connection. The command must be available on PATH.</div>
+  <button id="startLayaServerBtn" class="secondary">Start Laya server</button>
+  <button id="stopLayaServerBtn" class="secondary">Stop Laya server</button>
+  <div id="layaServerStatus" class="hint">Laya server is not running</div>
   <button id="testProviderBtn" class="secondary">Test decision provider</button>
 
   <h2>Activation</h2>

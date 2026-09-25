@@ -4,6 +4,7 @@ import { SettingsStore } from "./settings-store";
 import { BrowserBridge } from "../browser/server";
 import { DashboardServer } from "./dashboard-server";
 import { DragonPipeline } from "./pipeline";
+import { LayaServerManager } from "./laya-server";
 import { createMicWindow, createOverlayWindow, createSettingsWindow } from "./windows";
 import { createTray } from "./tray";
 import { registerIpc, broadcastStatus } from "./ipc";
@@ -27,6 +28,7 @@ let settingsStore: SettingsStore;
 let browserBridge: BrowserBridge;
 let dashboardServer: DashboardServer;
 let pipeline: DragonPipeline;
+let layaServer: LayaServerManager;
 let settingsWindow: BrowserWindow;
 let overlayWindow: BrowserWindow;
 let micWindow: BrowserWindow;
@@ -46,6 +48,7 @@ function currentStatus() {
     workflowStep: pipeline.getWorkflowStepCount(),
     browserConnected: browserBridge.isConnected(),
     browserBindError: browserBridge.getBindError(),
+    layaServer: layaServer.getStatus(),
     shortcutStatus,
   };
 }
@@ -166,6 +169,10 @@ app.whenReady().then(async () => {
       pushStatus();
     }
   );
+  layaServer = new LayaServerManager(
+    () => settingsStore.get(),
+    () => pushStatus()
+  );
 
   dashboardServer = new DashboardServer(
     () => pipeline.getJevDecisionTraces(),
@@ -176,6 +183,7 @@ app.whenReady().then(async () => {
   registerIpc({
     settingsStore,
     pipeline,
+    layaServer,
     onSettingsChanged: (settings, changedMode) => {
       logger.setVerbosity(settings.logVerbosity);
       registerAppShortcuts();
@@ -299,6 +307,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   pipeline?.emergencyStop();
+  layaServer?.dispose();
   browserBridge?.stop();
   dashboardServer?.stop();
 });

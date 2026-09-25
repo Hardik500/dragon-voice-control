@@ -361,6 +361,17 @@ Summary, oldest to newest:
       and dashboard traces, and Laya failures do not silently fall back to Jev. Laya model startup,
       Windows support, and live comparison runs remain unverified.
 
+  21. Twenty-first pass: added a managed external `laya-server` lifecycle. Settings can start and
+      stop the command, Dragon polls the local health endpoint until the model is ready, and an
+      already-running compatible server is detected but not killed. The command is configurable for
+      installations where `laya-server` is not on PATH; Python/model weights remain outside Electron.
+
+  22. Twenty-second pass: added pinned macOS/Linux and Windows bootstrap scripts for the real
+      `laya-server` project. The scripts install `uv` when needed, install the server at commit
+      `0a2928f7ab415e8dd14bde483dc793e566c9f8fb`, and download the selected checkpoint into the normal
+      Hugging Face cache. No model weights are committed to Git. Setup and real model download remain
+      unverified in this environment.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

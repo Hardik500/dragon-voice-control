@@ -159,14 +159,33 @@ and is not a bug.
 
 ## Laya local provider
 
-Laya is an optional local decision provider. It is not routed through OpenRouter and requires a
-separate [laya-server](https://github.com/nvkudva/laya-server) process. Start the server first,
-then select **Laya via local server** in Settings, save, and use **Test decision provider**.
+Laya is an optional local decision provider. It is not routed through OpenRouter and uses the
+[laya-server](https://github.com/nvkudva/laya-server) process. Install `laya-server` separately
+using its platform instructions and make sure the `laya-server` command is available on PATH. In
+Dragon Settings, select **Laya via local server**, save, then use **Start Laya server**. Dragon
+manages the process it starts, polls the local health endpoint, and stops that process on request or
+when Dragon quits. If a compatible Laya server is already running, Dragon uses it without taking
+ownership.
 
 The default local endpoint is `http://127.0.0.1:8000`; Dragon accepts only local HTTP Laya URLs.
+The `Laya server command` setting can point to a custom executable if `laya-server` is not on PATH.
 The first Laya run downloads model weights and loads them into memory, so startup is much slower
 than a normal Dragon launch. Laya is explicit opt-in: if its server is unavailable, Dragon reports
 the provider error rather than silently falling back to Jev.
+
+To install the pinned real server and download a model, run one of:
+
+```bash
+# macOS / Linux
+bash scripts/bootstrap-laya-server.sh laya
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap-laya-server.ps1 laya
+```
+
+The bootstrap installs `uv` when needed, installs `laya-server` into the user environment, and
+stores model weights in the normal Hugging Face cache rather than in this Git repository. Restart
+Dragon after bootstrapping so its process environment includes the newly installed command.
 
 ## Decision dashboard
 

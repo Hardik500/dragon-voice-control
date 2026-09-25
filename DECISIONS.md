@@ -725,6 +725,35 @@ or download model weights. The OpenRouter key is unnecessary when Laya is select
 are included in structured logs and dashboard traces, and Settings includes a local connectivity
 check. Laya latency, model quality, and Windows `laya-server` support still require live testing.
 
+## 2026-09-25 — Manage the external Laya server process
+
+**Decision:** Add a small main-process manager that starts, polls, and stops the external
+`laya-server` executable when requested from Settings. Dragon does not bundle Python, model weights,
+or a Python runtime. A pre-existing compatible local server is detected and left running.
+
+**Reason:** The user selected the managed-external scope. This gives the alpha a real Laya server
+lifecycle without adding a second application runtime or a large model installer to the Electron
+package. Explicit process ownership also avoids silently killing a server the user started.
+
+**Consequences:** `laya-server` must be installed and available through `layaServerCommand` (default
+`laya-server`). First startup can take minutes while weights download/load. The manager is exposed
+through Settings, and Dragon stops only the process it started.
+
+## 2026-09-25 — Pin and bootstrap the real Laya server
+
+**Decision:** Add cross-platform bootstrap scripts that install the real `laya-server` project at a
+pinned commit, install `uv` when needed, and download the selected Laya checkpoint into the normal
+Hugging Face cache. Model weights are not committed to this repository.
+
+**Reason:** The user wants a real local Laya server/model rather than a mock. Keeping the server
+pinned makes the experiment reproducible while avoiding an approximately 800 MB binary addition to
+Git and the Electron application package.
+
+**Consequences:** Initial setup requires network access and several hundred megabytes of model
+download. The scripts install a user-level `laya-server` command; Dragon's managed launcher then
+starts and stops that real command. The pinned server commit should be reviewed before future
+upgrades.
+
 ## 2026-09-24 — Explicit insert mode for voice dictation
 
 **Decision:** Reuse the existing `dictationActive`/`dictationBuffer` session as an explicit

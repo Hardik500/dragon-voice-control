@@ -10,6 +10,7 @@ export interface DragonSettings {
   decisionProvider: DecisionProvider;
   layaBaseUrl: string;
   layaModel: string;
+  layaServerCommand: string;
   pushToTalkShortcut: string;
   emergencyStopShortcut: string;
   insertModeShortcut: string;
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   decisionProvider: "jev",
   layaBaseUrl: "http://127.0.0.1:8000",
   layaModel: "laya",
+  layaServerCommand: "laya-server",
   pushToTalkShortcut: DEFAULT_PUSH_TO_TALK_SHORTCUT,
   emergencyStopShortcut: DEFAULT_EMERGENCY_STOP_SHORTCUT,
   insertModeShortcut: DEFAULT_INSERT_MODE_SHORTCUT,
