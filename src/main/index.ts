@@ -5,7 +5,7 @@ import { BrowserBridge } from "../browser/server";
 import { DashboardServer } from "./dashboard-server";
 import { DragonPipeline } from "./pipeline";
 import { LayaServerManager } from "./laya-server";
-import { createMicWindow, createOverlayWindow, createSettingsWindow } from "./windows";
+import { createMicWindow, createOverlayWindow, createSettingsWindow, showOverlay } from "./windows";
 import { createTray } from "./tray";
 import { registerIpc, broadcastStatus } from "./ipc";
 import { registerShortcuts, ShortcutRegistrationStatus } from "./shortcuts";
@@ -104,7 +104,7 @@ function toggleOverlay() {
   const settings = settingsStore.get();
   const next = !settings.overlayVisible;
   settingsStore.update({ overlayVisible: next });
-  if (next) overlayWindow.showInactive();
+  if (next) showOverlay(overlayWindow);
   else overlayWindow.hide();
   refreshTray();
 }
@@ -285,7 +285,7 @@ app.whenReady().then(async () => {
   }
   registerAppShortcuts();
 
-  if (settingsStore.get().overlayVisible) overlayWindow.showInactive();
+  if (settingsStore.get().overlayVisible) showOverlay(overlayWindow);
 
   await requestMicPermission();
 

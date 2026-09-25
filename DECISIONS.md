@@ -891,3 +891,24 @@ activating a maximized window leaves it maximized. The cold-start poll adds up t
 app is focused (bounded well inside `run()`'s 10s timeout); for an already-running app there is
 no wait. Unverified on real hardware — the foreground-lock behavior in particular can only be
 confirmed on Windows, and is the first thing to re-test.
+
+## 2026-09-25 — Re-assert topmost after showing the overlay, with a platform-split level
+
+**Decision:** Added `showOverlay(win)` in `main/windows.ts` — `showInactive()` followed by
+`setAlwaysOnTop(true, level)` — and routed both reveal paths in `index.ts` (startup and the
+tray's show/hide toggle) through it. The overlay also re-asserts on its own `show` event. The
+level is `screen-saver` on Windows and `floating` on macOS.
+
+**Reason:** Reported directly: "when I ask to open chrome or other apps the floating bar goes
+behind them." The overlay already passed `alwaysOnTop: true`, so the flag was never the missing
+piece — the *reveal* was. The window is constructed with `show: false` and revealed later, and on
+Windows `WS_EX_TOPMOST` is applied at show time, so a topmost hint set on a hidden window doesn't
+reliably survive into the first reveal. Re-asserting after the show is the documented workaround.
+
+**Consequences:** The overlay now owns the highest topmost band on Windows, so it also sits above
+other always-on-top windows rather than only above normal ones. macOS deliberately gets `floating`
+instead: the same level maps to `NSScreenSaverWindowLevel`, which would float a 360×220 bar above
+the menu bar and Dock. Because the overlay is `focusable: false` and click-through, the higher band
+costs nothing in interaction terms. The Settings window was not changed — the report was about the
+floating bar. Unverified on real hardware; whether the bar beats a full-screen app can only be
+confirmed on Windows.

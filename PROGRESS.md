@@ -489,6 +489,29 @@ Summary, oldest to newest:
       itself was never executed — there is no Windows machine here, so the foreground behavior is
       unverified and is the single most important thing to re-test.**
 
+  28. Twenty-eighth pass: the floating overlay was sinking behind other apps. Reported as "when I
+      ask to open chrome or other apps the floating bar goes behind them, instead it should
+      always stay at the top."
+
+      The overlay already passed `alwaysOnTop: true` at construction, so the cause is the reveal,
+      not the flag: the window is built with `show: false` and only made visible later via
+      `showInactive()`. On Windows the `WS_EX_TOPMOST` bit is applied when the window is shown, so
+      a topmost hint set on a still-hidden window does not reliably survive into the first reveal
+      — and both reveal paths (startup, and the tray's show/hide toggle) went straight to
+      `showInactive()`.
+
+      Added `showOverlay()` in `main/windows.ts`, which reveals the window and then re-asserts
+      `setAlwaysOnTop(true, level)`. Both call sites in `index.ts` now route through it, and the
+      overlay additionally re-asserts on its own `show` event so a future reveal path can't
+      regress it silently. The level is platform-split: `screen-saver` (the highest `HWND_TOPMOST`
+      band) on Windows, so the bar also beats other always-on-top windows, and `floating` on
+      macOS, where that same level would float the bar above the menu bar and Dock.
+
+      The Settings window was left alone — this report was specifically about the floating bar.
+      Verified with `npm run typecheck` and `npm run build`, and by confirming no `showInactive`
+      call remains outside the helper. Whether the bar actually stays above Chrome, Notepad, and
+      a full-screen app is a window-manager behavior that still needs a real run to confirm.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
