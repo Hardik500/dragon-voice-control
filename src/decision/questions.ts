@@ -76,6 +76,9 @@ export function buildTargetCandidates(payload: ExtractedPayload): TargetCandidat
     out.push({ id: `element:${el.id}`, description: `${el.role || el.tag} on the current Chrome page labeled "${label}".` });
   }
   out.push({ id: "none", description: "No specific application or page element is targeted by this command." });
+  // Laya's System One schema requires at least two choice criteria, while the shared
+  // question builder can legitimately have no extracted app or page target.
+  out.push({ id: "other", description: "No known target was extracted; the command may still be targetless." });
   return out;
 }
 

@@ -12,7 +12,8 @@ import { DragonSettings } from "../types/settings";
 import { HistoryStore } from "./history-store";
 
 const MAX_IN_FLIGHT_DECISIONS = 2;
-const ADDRESSED_THRESHOLD = 0.55;
+const JEV_ADDRESSED_THRESHOLD = 0.55;
+const LAYA_ADDRESSED_THRESHOLD = 0.5;
 const INTENT_CONFIDENCE_THRESHOLD = 0.35;
 const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
@@ -868,7 +869,8 @@ export class DragonPipeline {
         !this.workflowActive &&
         !isExplicitMediaControl(turn, summary)
       ) {
-        if (summary.addressed == null || summary.addressed < ADDRESSED_THRESHOLD) {
+        const addressedThreshold = settings.decisionProvider === "laya" ? LAYA_ADDRESSED_THRESHOLD : JEV_ADDRESSED_THRESHOLD;
+        if (summary.addressed == null || summary.addressed < addressedThreshold) {
           this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "Not addressed to Dragon");
           this.logIgnored(turn, "not_addressed", summary.intent);
           return;

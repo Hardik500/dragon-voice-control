@@ -372,6 +372,16 @@ Summary, oldest to newest:
       Hugging Face cache. No model weights are committed to Git. Setup and real model download remain
       unverified in this environment.
 
+  23. Twenty-third pass, from the first real Laya Dragon run: Laya is now receiving provider
+      requests, but targetless commands returned HTTP 422 because the shared target question had
+      only the `none` choice while System One requires at least two choices. Added a deterministic
+      `other` fallback target candidate for the no-candidate case.
+
+  24. Twenty-fourth pass: added a Laya-specific Always Listening addressed threshold of `0.50`,
+      based on observed Laya `addressed` values around `0.52` for valid direct commands. Jev keeps its
+      existing `0.55` threshold. The threshold and target-schema fixes still require a rebuilt Dragon
+      run before their live effect can be confirmed.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
