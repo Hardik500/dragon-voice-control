@@ -8,18 +8,9 @@ down"*, *"delete the last 3 words"* — Dragon does it, and shows you its reason
 
 ## Demo
 
-[![Watch the Dragon demo](assets/app-icon-512.png)](docs/demo.mp4)
+Using Voice to Control Window Setup - Watch Video
 
-Sixty seconds, start to finish: launching an app and bringing it to the front, dictating a
-paragraph into Notepad, then driving Chrome — including the live decision trace in the dashboard.
-
-<!--
-  To publish your recording, either:
-    1. Drop the file into docs/ as demo.mp4  (docs/README.md explains the folder), or
-    2. Host it anywhere and point the link above at the URL — YouTube, Vimeo, Loom, S3, etc.
-  Then swap assets/app-icon-512.png for a real frame from the video.
-  GitHub renders relative paths and absolute https URLs equally well here.
--->
+[![Watch Dragon demo](https://www.loom.com/v1/videos/129c880fd1a34c21be42fc4e95d53934/thumbnail.gif)](https://www.loom.com/share/129c880fd1a34c21be42fc4e95d53934)
 
 ## Screenshots
 
@@ -29,10 +20,8 @@ Every command, with the reasoning left visible: the transcript, the selected int
 their confidence, the runner-up choices, and the latency split between STT, the decision request,
 and execution. Served locally at `http://127.0.0.1:17873/dashboard` while Dragon is running.
 
-![The Dragon decision dashboard: a transcript, the chosen intent and target with confidence bars and alternatives, and a latency breakdown](docs/dashboard.png)
+<img width="1471" height="958" alt="Screenshot 2026-09-26 034621" src="https://github.com/user-attachments/assets/3b7e8c47-cc8a-40d7-b6fe-4fb3b0d335c4" />
 
-> Place your screenshot at `docs/dashboard.png` — `docs/README.md` has the details. Until then, run
-> Dragon and open the URL above.
 
 ## What it does
 
