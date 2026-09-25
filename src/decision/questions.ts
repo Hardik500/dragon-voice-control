@@ -122,7 +122,7 @@ export function buildQuestions(opts: {
     questions.addressed = {
       type: "noul",
       instructions:
-        "The speaker wants a computer/voice assistant to actually perform this right now (open something, click/type/scroll, adjust volume, control media, etc.), as opposed to talking to another person, narrating/thinking aloud, or reading something unrelated out loud. The speaker does not need to say a wake word or name an assistant for this to be true — a plain instruction like 'open chrome', 'turn the volume up', or a direct media command like 'pause' or 'play' on its own counts as wanting the assistant to act.",
+        "The speaker wants a computer/voice assistant to actually perform this right now (open something, click/type/scroll, adjust volume, control media, etc.), as opposed to talking to another person, narrating/thinking aloud, or reading something unrelated out loud. The speaker does not need to address the assistant by name for this to be true — a plain instruction like 'open chrome', 'turn the volume up', or a direct media command like 'pause' or 'play' on its own counts as wanting the assistant to act.",
     };
   }
 

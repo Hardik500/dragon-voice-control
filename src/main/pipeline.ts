@@ -353,12 +353,6 @@ export class DragonPipeline {
     };
   }
 
-  private stripWakeWord(transcript: string, wakePhrase: string): string | null {
-    const idx = transcript.toLowerCase().indexOf(wakePhrase.toLowerCase());
-    if (idx === -1) return null;
-    return transcript.slice(idx + wakePhrase.length).trim();
-  }
-
   // --- Dictation session helpers -----------------------------------------------------------
 
   private startOrContinueDictation(chunk: string) {
@@ -580,26 +574,7 @@ export class DragonPipeline {
       return; // Only EagerEndOfTurn/EndOfTurn trigger decisions (debounces interim noise).
     }
 
-    let effectiveText = turn.transcript;
-    if (settings.activationMode === "wake_word") {
-      const stripped = this.stripWakeWord(turn.transcript, settings.wakePhrase);
-      if (stripped == null || stripped.length === 0) {
-        // Wake phrase not present (yet). Surface this in the overlay instead of going
-        // silent, so it doesn't look like the app simply ignored what was said.
-        this.onOverlay({
-          utteranceId: turn.utteranceId,
-          state: "idle",
-          transcript: turn.transcript,
-          isFinal: turn.isFinal,
-          action: null,
-          status: `Say "${settings.wakePhrase}" first to give a command`,
-          latencyMs: null,
-          activationMode: settings.activationMode,
-        });
-        return;
-      }
-      effectiveText = stripped;
-    }
+    const effectiveText = turn.transcript;
     if (effectiveText.trim().length === 0) return;
 
     // Fast path: deterministic insert-mode/editing commands skip Jev entirely for speed and

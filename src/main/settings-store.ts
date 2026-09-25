@@ -19,7 +19,14 @@ export class SettingsStore {
     try {
       if (fs.existsSync(this.filePath)) {
         const raw = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
-        return { ...DEFAULT_SETTINGS, ...raw };
+        const rawMode = typeof raw.activationMode === "string" ? raw.activationMode : null;
+        const settings = { ...DEFAULT_SETTINGS, ...raw } as DragonSettings & { wakePhrase?: string };
+        if (rawMode === "wake_word") {
+          settings.activationMode = "always_listening";
+          logger.event("settings.migrated", { from: "wake_word", to: "always_listening" });
+        }
+        delete settings.wakePhrase;
+        return settings as DragonSettings;
       }
     } catch (err) {
       logger.error("settings.load", err);

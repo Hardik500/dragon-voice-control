@@ -1,4 +1,4 @@
-export type ActivationMode = "push_to_talk" | "wake_word" | "always_listening";
+export type ActivationMode = "push_to_talk" | "always_listening";
 
 export type LogVerbosity = "normal" | "verbose";
 
@@ -10,7 +10,6 @@ export interface DragonSettings {
   emergencyStopShortcut: string;
   insertModeShortcut: string;
   workflowModeShortcut: string;
-  wakePhrase: string;
   voiceReplyEnabled: boolean;
   logVerbosity: LogVerbosity;
   overlayVisible: boolean;
@@ -33,7 +32,6 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   emergencyStopShortcut: DEFAULT_EMERGENCY_STOP_SHORTCUT,
   insertModeShortcut: DEFAULT_INSERT_MODE_SHORTCUT,
   workflowModeShortcut: DEFAULT_WORKFLOW_MODE_SHORTCUT,
-  wakePhrase: "Dragon",
   voiceReplyEnabled: true,
   logVerbosity: "normal",
   overlayVisible: true,

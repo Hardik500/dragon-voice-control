@@ -47,7 +47,6 @@ async function load() {
   byId<HTMLInputElement>("emergencyStopShortcut").value = settings.emergencyStopShortcut;
   byId<HTMLInputElement>("insertModeShortcut").value = settings.insertModeShortcut;
   byId<HTMLInputElement>("workflowModeShortcut").value = settings.workflowModeShortcut;
-  byId<HTMLInputElement>("wakePhrase").value = settings.wakePhrase;
   byId<HTMLInputElement>("voiceReplyEnabled").checked = settings.voiceReplyEnabled;
   byId<HTMLSelectElement>("logVerbosity").value = settings.logVerbosity;
   await refreshHistory();
@@ -60,7 +59,6 @@ async function save() {
     emergencyStopShortcut: byId<HTMLInputElement>("emergencyStopShortcut").value,
     insertModeShortcut: byId<HTMLInputElement>("insertModeShortcut").value,
     workflowModeShortcut: byId<HTMLInputElement>("workflowModeShortcut").value,
-    wakePhrase: byId<HTMLInputElement>("wakePhrase").value,
     voiceReplyEnabled: byId<HTMLInputElement>("voiceReplyEnabled").checked,
     logVerbosity: byId<HTMLSelectElement>("logVerbosity").value,
   };

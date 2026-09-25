@@ -49,7 +49,6 @@
   <label for="activationMode">Activation mode</label>
   <select id="activationMode">
     <option value="push_to_talk">Push to talk</option>
-    <option value="wake_word">Wake word</option>
     <option value="always_listening">Always listening</option>
   </select>
   <label for="pushToTalkShortcut">Push-to-talk / listen toggle shortcut</label>
@@ -61,8 +60,6 @@
   <label for="workflowModeShortcut">Toggle Workflow Mode shortcut</label>
   <input id="workflowModeShortcut" type="text" placeholder="Control+Alt+Shift+W" />
   <div class="hint">Mode shortcuts change Dragon's interaction mode without starting or stopping the microphone. Emergency Stop always clears both modes.</div>
-  <label for="wakePhrase">Wake phrase</label>
-  <input id="wakePhrase" type="text" placeholder="Dragon" />
   <div class="hint">Electron cannot detect key-up globally, so push-to-talk is a toggle: press once to start listening, press again (or use the tray menu) to stop.</div>
   <div class="warning" id="shortcutWarning"></div>
   <div class="warning" id="bridgeWarning"></div>

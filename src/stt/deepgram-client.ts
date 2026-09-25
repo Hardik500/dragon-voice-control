@@ -94,6 +94,10 @@ export class DeepgramFluxConnection {
         if (msg.type === "Error") {
           logger.event("stt.fatal_error", { code: msg.code, description: msg.description });
           this.onError(new Error(`Deepgram error ${msg.code}: ${msg.description}`));
+          // Deepgram can report a protocol/keepalive error without immediately closing the
+          // socket. Close it here so the pipeline's close handler schedules a reconnect
+          // instead of leaving a dead connection in the listening state.
+          this.ws?.close();
           return;
         }
         if (msg.type === "TurnInfo") {

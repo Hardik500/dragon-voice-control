@@ -183,7 +183,7 @@ app.whenReady().then(async () => {
         applyModeChange(changedMode);
       } else {
         pushStatus();
-        refreshTray(); // e.g. wake phrase changed, which the tray label shows.
+        refreshTray();
       }
     },
     openDashboard: () => {

@@ -69,10 +69,8 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   new-tab/close-tab/switch-tab, plus a new `focus_or_open` action (reuse an existing tab
   matching the target hostname instead of always opening a new one — "open my existing tabs").
   A `chrome.alarms` keepalive fights MV3 service-worker eviction.
-- **All three activation modes**: push-to-talk (toggle), wake-word (strips up to the phrase,
-  surfaces "say the wake phrase first" in the overlay when absent instead of going silent),
-  always-listening (the `addressed` question is worded to not require literally naming the
-  assistant — a plain "open chrome" counts).
+- **Two activation modes**: push-to-talk (toggle) and always-listening (the `addressed` question is
+  worded to not require literally naming the assistant — a plain "open chrome" counts).
 - **Voice dictation and in-session editing** (new): after any "type X" command, or explicitly
   saying "start typing"/"insert mode", subsequent utterances Jev doesn't recognize as another
   command are typed verbatim and folded into a tracked `dictationBuffer`, so the user doesn't
@@ -118,8 +116,8 @@ keys has been smoke-tested (see "Manual check results" below for exactly what th
   included in the structured `jev.response` JSONL event. The tray menu and Settings both provide
   an **Open Dashboard** action.
 - **Settings UI**: paste OpenRouter/Deepgram keys, activation mode, all four global shortcuts,
-  wake phrase, voice-reply toggle, log verbosity, open-logs button, history table + clear button,
-  and a shortcut-registration-failure warning banner. Mode toggles are independent from the
+  voice-reply toggle, log verbosity, open-logs button, history table + clear button, and a
+  shortcut-registration-failure warning banner. Mode toggles are independent from the
   microphone/listening state; the tray and overlay show the active interaction mode.
 - **Unsigned packaging for both platforms**: `electron-builder.yml` has both a macOS `dir`
   target and a Windows `portable` target (`npm run package:mac` / `npm run package:win`), with
@@ -343,6 +341,18 @@ Summary, oldest to newest:
       recorded utterances. At `0.7`, 65 utterances had a usable Eager transcript versus 33 at
       `0.8`, with a median Eager-to-final gap of about 46 ms. The active STT thresholds are now
       logged at connection time; real Windows accuracy and latency comparison remains pending.
+
+  18. Eighteenth pass, from the `dragon-2026-09-25.jsonl` log: fixed Wake Word mode's standalone
+      wake-word handling. `Dragon.` no longer leaves `.` for Jev; it arms a 10-second window for
+      the next command, while `Dragon open Chrome` remains supported. The log also showed a Deepgram
+      `INACTIVE_CLIENT` disconnect after 60 seconds without a ping; the STT client now closes
+      protocol-error sockets immediately so the existing reconnect path runs deterministically.
+      Real Windows behavior remains to be verified.
+
+  19. Nineteenth pass: removed Wake Word mode from the active product surface to keep the alpha
+      simple. Existing persisted `wake_word` settings migrate to `always_listening`; wake-word
+      settings, stripping, latching, tray/UI options, and current documentation were removed. The
+      Deepgram protocol-error reconnect fix remains.
 
 ## Exact next task
 

@@ -8,7 +8,7 @@ been verified on real hardware, and `DECISIONS.md` for why things are built the 
 
 ## What works
 
-- Push-to-talk, wake-word ("Dragon"), and always-listening activation modes.
+- Push-to-talk and always-listening activation modes.
 - Open/activate/hide/quit apps, switch to the previous app, press keys and shortcuts, control
   the active window, adjust/mute system volume, control media playback, open Settings panes
   and Finder/File Explorer locations.
@@ -136,7 +136,7 @@ and is not a bug.
 - **OpenRouter API key** / **Deepgram API key** — pasted, masked, never re-displayed once
   saved (Settings shows "saved" as a placeholder). Leave the field blank on Save to keep the
   existing key.
-- **Activation mode** — push to talk / wake word / always listening.
+- **Activation mode** — push to talk / always listening.
 - **Push-to-talk shortcut** — **toggles** listening on/off (Electron has no global key-up
   event, so true press-and-hold isn't possible without a native helper; press once to start,
   press again to stop). Default `Alt+Space` on macOS, `Control+Alt+D` on Windows (macOS's
@@ -149,8 +149,6 @@ and is not a bug.
   starting or stopping the microphone.
 - **Toggle Workflow Mode shortcut** — default `Control+Alt+Shift+W`; toggles a sequential
   one-step-per-utterance workflow session. A failed step ends the workflow.
-- **Wake phrase** — default `Dragon`; case-insensitive; everything before and including the
-  phrase is stripped before the remainder is treated as the command.
 - **Speak short replies** — toggles native spoken acknowledgements (`say` on macOS,
   `System.Speech.Synthesis.SpeechSynthesizer` via PowerShell on Windows).
 - **Debug log verbosity** — `normal` skips noisy interim (`Update`) STT events; `verbose`
@@ -222,7 +220,7 @@ Do this on a real Mac after pasting real API keys:
    **"open youtube music"** then **"search for &lt;a song&gt;"** and confirm it searches
    YouTube Music, not Google.
 7. Say **"turn the volume up"**, **"set volume to 30"**, **"mute the volume"**.
-8. Repeat one command in each activation mode (push-to-talk, wake word, always listening).
+8. Repeat one command in each activation mode (push-to-talk and always listening).
 9. Open the JSONL log and confirm you can see the transcript, the Jev decision
    (intent/target/direction/confidence), the executed command, latency breakdown, and any
    error — with no API keys or raw audio present.

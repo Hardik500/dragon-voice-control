@@ -69,7 +69,6 @@ export function createTray(cb: TrayCallbacks): TrayHandle {
       { type: "separator" },
       { label: "Activation Mode", enabled: false },
       modeItem("push_to_talk", "Push to Talk"),
-      modeItem("wake_word", `Wake Word ("${settings.wakePhrase}")`),
       modeItem("always_listening", "Always Listening"),
       { type: "separator" },
       {

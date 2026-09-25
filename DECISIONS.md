@@ -678,6 +678,35 @@ the earlier conservative setting.
 execution must be checked on real Windows hardware. The dashboard's STT timing and the new
 `stt.connected` configuration log are the comparison points for the next run.
 
+## 2026-09-25 — Support a standalone wake-word latch
+
+**Decision:** In Wake Word mode, accept both `Dragon open Chrome` and a standalone `Dragon` followed
+by the command in the next STT utterance. A standalone wake word arms a 10-second window; the next
+final command consumes the window. Wake-only transcripts are not sent to Jev, and punctuation after
+the phrase is discarded.
+
+**Reason:** The latest Windows log showed `Dragon.` being stripped to `.` and sent to Jev, while
+the following `open Chrome` utterance was rejected because it did not repeat the wake word. This
+does not match normal wake-word interaction and makes the mode feel broken.
+
+**Consequences:** The next command no longer needs to repeat the wake word, but a standalone wake
+word expires after 10 seconds and only one command consumes it. Same-utterance commands remain
+supported. The behavior still requires live Windows verification.
+
+## 2026-09-25 — Remove Wake Word mode from the active product
+
+**Decision:** Remove Wake Word as an activation mode and remove the wake phrase from the active
+Settings/tray surface. Keep only Push to Talk and Always Listening. Persisted `wake_word` settings
+migrate to `always_listening` on load.
+
+**Reason:** The latest Windows run showed the wake-word interaction was confusing and the feature
+added a second activation model without providing enough value for the alpha. Keeping the product
+to two clear modes is simpler and more reliable.
+
+**Consequences:** Users who had Wake Word selected will be moved to Always Listening. The
+Deepgram protocol-error reconnect fix remains active. Historical wake-word decisions remain in this
+file for context, but no current code path uses them.
+
 ## 2026-09-24 — Explicit insert mode for voice dictation
 
 **Decision:** Reuse the existing `dictationActive`/`dictationBuffer` session as an explicit
