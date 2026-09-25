@@ -774,8 +774,12 @@ steps belong) and was split into a two-minute smoke test plus the full per-platf
 README is documentation rather than a test plan. The Laya section was compressed to four lines
 (it is optional, off by default, and unused), permission tables were folded into the first-run
 flow, and the unusable single-bullet Insert Mode description became a phrase table under "What it
-does". Added a demo-video section and a `docs/` folder for the recording, and documented the
-Chrome-extension **Reload** gotcha that cost a debugging round on 2026-09-26.
+does". Added a **Demo** section (the recording ended up hosted on Loom rather than in-repo, since
+GitHub markdown does not autoplay a linked video and every clone would carry the file) and a
+**Screenshots** section for the dashboard capture, and documented the Chrome-extension **Reload**
+gotcha that cost a debugging round on 2026-09-26. Also made the two required API keys explicit in
+a short table — Deepgram for STT, OpenRouter with System One access for the decision model — and
+noted that there is no `.env` file.
 
 Per AGENTS.md there are no automated tests, so correctness on real hardware is established by
 running this by hand.

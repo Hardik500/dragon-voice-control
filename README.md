@@ -82,10 +82,16 @@ Numbers come through as digits, so `type my number is 5551234` types the digits,
 
 ## Quick start
 
-**You'll need**: macOS on Apple Silicon or **Windows 11 x64** · Node.js 18+ · Chrome already
-installed (Dragon drives *your* Chrome, not a managed one) · a
-[Deepgram key](https://console.deepgram.com/) · an
-[OpenRouter key](https://openrouter.ai/settings/keys) with System One access.
+**System**: macOS on Apple Silicon or **Windows 11 x64** · Node.js 18+ · Chrome already
+installed (Dragon drives *your* Chrome, not a managed one).
+
+**Two API keys.** Both have free tiers, and you paste them into the app — there is no `.env`
+file and nothing to configure before it runs.
+
+| Key | Used for | Get one |
+|---|---|---|
+| **Deepgram** | Speech-to-text | [console.deepgram.com](https://console.deepgram.com/) |
+| **OpenRouter** | The decision model. Needs a key with **System One** access | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
 
 ```bash
 git clone <this repo> && cd dragon
@@ -100,8 +106,10 @@ First launch:
 2. **macOS only:** the first app-switching or keystroke command triggers an **Accessibility**
    prompt. Grant it under *System Settings → Privacy & Security → Accessibility*, or to your
    terminal if you're running from a dev shell. Windows has no equivalent gate.
-3. Click the tray icon (menu bar / system tray) → **Open Settings…** and paste both API keys.
-   They're stored in Electron's `userData` and never logged.
+3. Click the tray icon (menu bar / system tray) → **Open Settings…** and paste the two keys.
+   They're saved to Electron's `userData` and never logged. If the OpenRouter key lacks System
+   One access, commands will fail with a decision error — check the log for
+   `pipeline.decision_failed`.
 
 ### Load the Chrome extension
 
