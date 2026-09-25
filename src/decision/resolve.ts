@@ -67,6 +67,12 @@ function findElementIdForTarget(target: string, payload: ExtractedPayload): stri
  * low confidence, likely because "cursor" also reads as a UI concept). This is a deterministic
  * code override for one specific closed pattern, not a guardrail or a planner. */
 const OPEN_APP_PATTERN = /^\s*(?:please\s+)?(?:open|launch|start|switch to|go to)\b/i;
+const NEW_TAB_PATTERN = /^\s*(?:please\s+)?(?:open\s+(?:a\s+)?)?new\s+tab\s*[.!?]?\s*$/i;
+
+function newTabOverride(effectiveText: string): ResolvedCommand | null {
+  if (!NEW_TAB_PATTERN.test(effectiveText)) return null;
+  return { kind: "chrome_new_tab" };
+}
 
 function clickElementOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (payload.browserElementCandidates.length === 0) return null;
@@ -96,6 +102,9 @@ export function resolveCommand(
   effectiveText: string
 ): ResolvedCommand | null {
   const { intent, target, direction } = summary;
+
+  const newTab = newTabOverride(effectiveText);
+  if (newTab) return newTab;
 
   // Deterministic override applies before Jev's intent is even trusted, but only for the
   // specific low-risk pattern above, and only when Jev didn't already choose a different,

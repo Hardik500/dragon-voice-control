@@ -382,6 +382,11 @@ Summary, oldest to newest:
       existing `0.55` threshold. The threshold and target-schema fixes still require a rebuilt Dragon
       run before their live effect can be confirmed.
 
+  25. Twenty-fifth pass, from the latest Laya run: added a narrow deterministic `new tab` path
+      (`new tab`, `open new tab`, and `open a new tab`) so the command bypasses provider intent
+      classification and resolves directly to `chrome_new_tab`. Deterministic mode/edit controls
+      now suppress interim provider calls and wait for the final turn before executing.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

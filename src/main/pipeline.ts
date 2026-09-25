@@ -51,6 +51,7 @@ type DictationControl =
   | { type: "workflow_start" }
   | { type: "workflow_stop" }
   | { type: "key"; keyName: string }
+  | { type: "browser_new_tab" }
   | { type: "newline" }
   | { type: "delete_all" }
   | { type: "delete_last_chunk" }
@@ -411,6 +412,7 @@ export class DragonPipeline {
     ) {
       return { type: "stop" };
     }
+    if (/^(?:please\s+)?(?:open\s+(?:a\s+)?)?new\s+tab[.!?]?$/.test(lower)) return { type: "browser_new_tab" };
     if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
     const keyName = extractKeyName(trimmed);
     if (keyName && isStandaloneKeyboardCommand(trimmed, keyName)) return { type: "key", keyName };
@@ -459,6 +461,10 @@ export class DragonPipeline {
         case "key":
           actionLabel = `Press ${control.keyName}`;
           await automation.pressNamedKey(control.keyName);
+          break;
+        case "browser_new_tab":
+          actionLabel = "Open new tab";
+          await this.requireBrowserAction({ kind: "new_tab" });
           break;
         case "stop":
           actionLabel = "Stop dictation";
@@ -545,7 +551,7 @@ export class DragonPipeline {
       utteranceId: turn.utteranceId,
       timestamp: Date.now(),
       transcript: turn.transcript,
-      intent: control.type === "key" ? "press_key" : control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
+      intent: control.type === "key" ? "press_key" : control.type === "browser_new_tab" ? "chrome_new_tab" : control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
       action: actionLabel,
       status: execError ? "error" : "success",
       detail: execError ?? "",
@@ -580,18 +586,31 @@ export class DragonPipeline {
 
     // Fast path: deterministic insert-mode/editing commands skip Jev entirely for speed and
     // reliability. Mode entry is allowed outside an active session; edit controls require one.
-    if (turn.isFinal) {
-      const control = this.matchDictationControl(effectiveText);
-      if (
-        control &&
-        (this.dictationActive || control.type === "start" || control.type === "workflow_start" || control.type === "workflow_stop")
-      ) {
-        this.abortUtterance(turn.utteranceId);
-        if (this.executedUtterances.has(turn.utteranceId)) return;
-        this.executedUtterances.add(turn.utteranceId);
-        await this.runDictationControl(turn, control, settings);
+    const control = this.matchDictationControl(effectiveText);
+    const controlAllowed = control && (
+      control.type === "browser_new_tab"
+        ? !this.dictationActive
+        : this.dictationActive || control.type === "start" || control.type === "workflow_start" || control.type === "workflow_stop"
+    );
+    if (controlAllowed) {
+      this.abortUtterance(turn.utteranceId);
+      if (!turn.isFinal) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "listening",
+          transcript: turn.transcript,
+          isFinal: false,
+          action: null,
+          status: "waiting for final confirmation",
+          latencyMs: null,
+          activationMode: settings.activationMode,
+        });
         return;
       }
+      if (this.executedUtterances.has(turn.utteranceId)) return;
+      this.executedUtterances.add(turn.utteranceId);
+      await this.runDictationControl(turn, control, settings);
+      return;
     }
 
     if (this.workflowActive && turn.isFinal) {
