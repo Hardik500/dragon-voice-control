@@ -21,6 +21,19 @@ paragraph into Notepad, then driving Chrome — including the live decision trac
   GitHub renders relative paths and absolute https URLs equally well here.
 -->
 
+## Screenshots
+
+### Decision dashboard
+
+Every command, with the reasoning left visible: the transcript, the selected intent and target,
+their confidence, the runner-up choices, and the latency split between STT, the decision request,
+and execution. Served locally at `http://127.0.0.1:17873/dashboard` while Dragon is running.
+
+![The Dragon decision dashboard: a transcript, the chosen intent and target with confidence bars and alternatives, and a latency breakdown](docs/dashboard.png)
+
+> Place your screenshot at `docs/dashboard.png` — `docs/README.md` has the details. Until then, run
+> Dragon and open the URL above.
+
 ## What it does
 
 Every phrase below is a real command — not a paraphrase. Punctuation is optional.
@@ -144,9 +157,7 @@ muddles (notably: *"open google chrome"* must focus Chrome, not navigate to goog
   running without OpenRouter. It's off by default and Dragon never starts it for you — install it
   with `scripts/bootstrap-laya-server.sh` (macOS/Linux) or `.ps1` (Windows), then enable it in
   Settings and press **Start Laya server**. See [`DECISIONS.md`](DECISIONS.md) for the rationale.
-- **The dashboard** at `http://127.0.0.1:17873/dashboard` shows each decision live: intent,
-  target, confidence, the runner-up choices, and the latency split between STT, the decision
-  request, and execution.
+- **The decision dashboard** shows each decision live — see [Screenshots](#screenshots).
 
 ```
 src/main/        Pipeline, tray, windows, shortcuts, IPC, dashboard server

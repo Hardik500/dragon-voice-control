@@ -1,13 +1,15 @@
 # docs/
 
-This folder is where the demo recording lives.
+This folder holds the media the main `README.md` displays: the demo recording and the
+dashboard screenshot.
 
-The main `README.md` links to the video from here. To publish it, either:
+| File | Used by | How to supply it |
+|---|---|---|
+| `demo.mp4` | The **Demo** section | Drop it in here, *or* host the video anywhere and change the link target in `README.md` to the `https://` URL — YouTube, Vimeo, Loom, S3, whatever you like. |
+| `dashboard.png` | The **Screenshots** section | Drop it in here. GitHub renders relative image paths natively, so no link change is needed. |
 
-1. **Drop the file in as `demo.mp4`** — the README's link already points here and will work
-   immediately. Keep it small; a 60-second screen recording at 1080p is a few MB.
-2. **Host it elsewhere** — YouTube, Vimeo, Loom, S3 — and change the link target in
-   `README.md` to the `https://` URL instead. Nothing in this folder is needed then.
+Either way, also swap the demo thumbnail (`assets/app-icon-512.png` in `README.md`) for a real
+frame from the recording.
 
-Either way, also swap the thumbnail in `README.md` (`assets/app-icon-512.png`) for a real frame
-from the recording.
+Keep both files small — a 60-second 1080p screen recording is a few MB, and a cropped dashboard
+screenshot should be well under 1 MB.
