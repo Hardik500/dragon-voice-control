@@ -78,7 +78,7 @@ export function createTray(cb: TrayCallbacks): TrayHandle {
         click: () => cb.toggleOverlay(),
       },
       { label: "Open Settings…", click: () => cb.openSettings() },
-      { label: "Open Jev Dashboard", click: () => cb.openDashboard() },
+      { label: "Open Decision Dashboard", click: () => cb.openDashboard() },
       { label: "Open Logs Folder", click: () => cb.openLogsFolder() },
       { label: "Clear History", click: () => cb.clearHistory() },
       { type: "separator" },

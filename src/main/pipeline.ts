@@ -4,14 +4,14 @@ import { logger } from "../logging/logger";
 import { automation } from "../automation";
 import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
-import { callJev, JevCancelledError, JevRequestError } from "../decision/jev-client";
+import { callDecisionProvider, DecisionCancelledError, DecisionRequestError } from "../decision/jev-client";
 import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
 import { HistoryStore } from "./history-store";
 
-const MAX_IN_FLIGHT_JEV = 2;
+const MAX_IN_FLIGHT_DECISIONS = 2;
 const ADDRESSED_THRESHOLD = 0.55;
 const INTENT_CONFIDENCE_THRESHOLD = 0.35;
 const COMPLETE_THRESHOLD = 0.5;
@@ -624,7 +624,7 @@ export class DragonPipeline {
   private registerInFlight(utteranceId: string): AbortController {
     // Reliability control (not a guardrail): cap concurrent Jev requests and
     // cancel the oldest once the cap is exceeded, per PROGRESS.md policy.
-    while (this.inFlight.length >= MAX_IN_FLIGHT_JEV) {
+    while (this.inFlight.length >= MAX_IN_FLIGHT_DECISIONS) {
       const oldest = this.inFlight.shift();
       oldest?.controller.abort();
     }
@@ -772,7 +772,7 @@ export class DragonPipeline {
       });
       const state = buildState({ transcript: effectiveText, activeApp, browserPage });
 
-      const cacheKey = `${turn.utteranceId}::${normalizeDecisionText(effectiveText)}::${settings.activationMode}`;
+      const cacheKey = `${turn.utteranceId}::${settings.decisionProvider}:${settings.layaModel}::${normalizeDecisionText(effectiveText)}::${settings.activationMode}`;
       const cached = this.jevAnswerCache.get(cacheKey);
       let summary: JevAnswerSummary;
       let decisionMs: number;
@@ -792,13 +792,24 @@ export class DragonPipeline {
           turnEvent: turn.event,
           activeApp,
           effectiveText,
+          provider: settings.decisionProvider,
           sttTurnMs,
           sttToDecisionMs,
           appCandidates: payload.appCandidates.map((c) => c.label),
           elementCandidates: payload.browserElementCandidates.length,
         });
 
-        const result = await callJev(settings.openRouterApiKey, state, questions, controller.signal);
+        const result = await callDecisionProvider(
+          {
+            provider: settings.decisionProvider,
+            openRouterApiKey: settings.openRouterApiKey,
+            layaBaseUrl: settings.layaBaseUrl,
+            layaModel: settings.layaModel,
+          },
+          state,
+          questions,
+          controller.signal
+        );
         this.unregisterInFlight(controller);
         jevMs = result.timingMs;
 
@@ -810,6 +821,7 @@ export class DragonPipeline {
           activeApp,
           activationMode: settings.activationMode,
           turnEvent: turn.event,
+          provider: result.provider,
           model: result.model,
           sttTurnMs,
           sttToDecisionMs,
@@ -1011,6 +1023,7 @@ export class DragonPipeline {
       logger.event("pipeline.execution", {
         utteranceId: turn.utteranceId,
         intent: resolved.kind,
+        provider: settings.decisionProvider,
         sttTurnMs,
         sttToDecisionMs,
         decisionMs,
@@ -1048,11 +1061,11 @@ export class DragonPipeline {
       }
     } catch (err) {
       this.unregisterInFlight(controller);
-      if (err instanceof JevCancelledError) {
+      if (err instanceof DecisionCancelledError) {
         logger.event("pipeline.decision_cancelled", { utteranceId: turn.utteranceId });
         return;
       }
-      const message = err instanceof JevRequestError ? err.message : err instanceof Error ? err.message : String(err);
+      const message = err instanceof DecisionRequestError ? err.message : err instanceof Error ? err.message : String(err);
       if (this.workflowActive) this.stopWorkflow();
       this.updateJevDecisionOutcome(turn.utteranceId, "error", message);
       logger.error("pipeline.decision_failed", err, { utteranceId: turn.utteranceId });

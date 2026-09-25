@@ -1,4 +1,5 @@
 export type ActivationMode = "push_to_talk" | "always_listening";
+export type DecisionProvider = "jev" | "laya";
 
 export type LogVerbosity = "normal" | "verbose";
 
@@ -6,6 +7,9 @@ export interface DragonSettings {
   openRouterApiKey: string;
   deepgramApiKey: string;
   activationMode: ActivationMode;
+  decisionProvider: DecisionProvider;
+  layaBaseUrl: string;
+  layaModel: string;
   pushToTalkShortcut: string;
   emergencyStopShortcut: string;
   insertModeShortcut: string;
@@ -28,6 +32,9 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   openRouterApiKey: "",
   deepgramApiKey: "",
   activationMode: "push_to_talk",
+  decisionProvider: "jev",
+  layaBaseUrl: "http://127.0.0.1:8000",
+  layaModel: "laya",
   pushToTalkShortcut: DEFAULT_PUSH_TO_TALK_SHORTCUT,
   emergencyStopShortcut: DEFAULT_EMERGENCY_STOP_SHORTCUT,
   insertModeShortcut: DEFAULT_INSERT_MODE_SHORTCUT,

@@ -354,6 +354,13 @@ Summary, oldest to newest:
       settings, stripping, latching, tray/UI options, and current documentation were removed. The
       Deepgram protocol-error reconnect fix remains.
 
+  20. Twentieth pass: added an explicit decision-provider seam for Jev and Laya. Jev remains the
+      default through OpenRouter; Laya uses a separately running local `laya-server` at a loopback
+      HTTP URL, with configurable model and a Settings connectivity check. The shared question
+      builder, resolver, and execution path are unchanged. Provider/model are now included in logs
+      and dashboard traces, and Laya failures do not silently fall back to Jev. Laya model startup,
+      Windows support, and live comparison runs remain unverified.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -380,8 +387,12 @@ the extension-connected tab state:
   Insert Mode is active, say "Open Chrome" and verify it is typed as text; leave Insert Mode before
   testing normal app commands.
   Open
-  `http://127.0.0.1:17873/dashboard` after a few commands to inspect Jev probabilities and
-  STT/Jev timing; compare the accuracy change against the observed STT-turn latency.
+  `http://127.0.0.1:17873/dashboard` after a few commands to inspect provider probabilities and
+  STT/provider timing; compare the accuracy change against the observed STT-turn latency.
+- Start `laya-server` separately, select **Laya via local server** in Settings, save, and use
+  **Test decision provider**. Run the same app/window/browser commands with Jev and Laya separately;
+  compare provider latency, model output, and action agreement. Keep Jev selected when Laya is
+  unavailable so the failure is explicit.
 - Press `Control+Alt+I` to toggle Insert Mode without changing microphone state, then press it
   again to leave. Press `Control+Alt+Shift+W` to start a sequential Workflow Mode session,
   execute two browser steps, and press it again to finish. Confirm Emergency Stop clears both

@@ -707,6 +707,24 @@ to two clear modes is simpler and more reliable.
 Deepgram protocol-error reconnect fix remains active. Historical wake-word decisions remain in this
 file for context, but no current code path uses them.
 
+## 2026-09-25 — Add explicit Laya decision provider
+
+**Decision:** Add a selectable `DecisionProvider` setting with `jev` as the default and `laya` as
+an opt-in local provider. Jev continues to use the existing OpenRouter System One endpoint and key.
+Laya uses a separately running local `laya-server` at a loopback HTTP URL, with a configurable model
+name. Both providers share the current question builder, answer shape, resolver, and execution
+path. Laya failures are surfaced explicitly; there is no automatic fallback to Jev.
+
+**Reason:** Laya exposes a System One-compatible local server and may provide materially lower
+decision latency, but it is not an OpenRouter-hosted model. Keeping the provider boundary explicit
+preserves a safe rollback path and prevents provider/cost/latency comparisons from being obscured
+by hidden fallback behavior.
+
+**Consequences:** Laya requires Python/model startup outside Dragon for now; Dragon does not bundle
+or download model weights. The OpenRouter key is unnecessary when Laya is selected. Provider/model
+are included in structured logs and dashboard traces, and Settings includes a local connectivity
+check. Laya latency, model quality, and Windows `laya-server` support still require live testing.
+
 ## 2026-09-24 — Explicit insert mode for voice dictation
 
 **Decision:** Reuse the existing `dictationActive`/`dictationBuffer` session as an explicit

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Jev Decision Stream · Dragon</title>
+<title>Dragon Decision Stream</title>
 <style>
   :root {
     color-scheme: dark;
@@ -115,7 +115,7 @@
     <header class="masthead">
       <div class="brand">
         <div class="brand-mark">d/</div>
-        <div><div class="brand-name">Dragon / Jev</div><div class="brand-sub">Structured decision stream</div></div>
+        <div><div class="brand-name">Dragon / Decisions</div><div class="brand-sub">Structured decision stream</div></div>
       </div>
       <div class="connection"><span class="pulse"></span><span id="connectionText">Connecting to local Dragon</span></div>
     </header>
@@ -124,7 +124,7 @@
       <div>
         <h1>Every decision,<br /><em>made visible.</em></h1>
       </div>
-      <p class="intro-copy">A live view of Jev choosing from Dragon's closed vocabularies. See the selected intent, target, and direction — plus the alternatives it weighed.</p>
+      <p class="intro-copy">A live view of the selected decision provider choosing from Dragon's closed vocabularies. See the selected intent, target, and direction — plus the alternatives it weighed.</p>
     </section>
 
     <section class="stats" aria-label="Decision summary">
@@ -138,7 +138,7 @@
     <section>
       <div class="section-heading"><h2>Latest decision</h2><span id="latestTime" class="section-note">Waiting for a command</span></div>
       <article class="latest">
-        <div class="latest-meta"><span id="latestContext">No transcript yet</span><span id="latestModel">Jev</span></div>
+        <div class="latest-meta"><span id="latestContext">No transcript yet</span><span id="latestModel">Decision provider</span></div>
         <div id="latestQuote" class="quote">Speak a command to see the decision surface</div>
         <div class="choices">
           <div class="choice"><div class="choice-title">Intent</div><div class="choice-main"><span id="intentValue">—</span><span id="intentConfidence" class="choice-confidence">—</span></div><div class="meter"><span id="intentBar"></span></div><div id="intentAlternatives" class="alternatives">No alternatives yet</div></div>
@@ -148,7 +148,7 @@
         <div class="timing-strip" aria-label="Decision timing">
           <div class="timing"><span class="timing-label">STT turn</span><strong id="sttLatency" class="timing-value">—</strong></div>
           <div class="timing"><span class="timing-label">STT → decision</span><strong id="decisionLatency" class="timing-value">—</strong></div>
-          <div class="timing"><span class="timing-label">Jev response</span><strong id="jevLatency" class="timing-value">—</strong></div>
+          <div class="timing"><span class="timing-label">Provider response</span><strong id="jevLatency" class="timing-value">—</strong></div>
           <div class="timing"><span class="timing-label">Decision preparation</span><strong id="decisionPreparation" class="timing-value">—</strong></div>
         </div>
         <div class="outcome">
@@ -162,7 +162,7 @@
 
     <section>
       <div class="section-heading"><h2>Recent decisions</h2><span class="section-note">Newest first</span></div>
-      <ol id="history" class="history"><li class="empty">No Jev calls recorded in this session.</li></ol>
+      <ol id="history" class="history"><li class="empty">No decision-provider calls recorded in this session.</li></ol>
     </section>
 
     <section>

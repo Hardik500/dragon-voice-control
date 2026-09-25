@@ -13,6 +13,7 @@ interface JevDecision {
   activeApp: string | null;
   activationMode: string;
   turnEvent: string;
+  provider: "jev" | "laya";
   model: string;
   sttTurnMs: number;
   sttToDecisionMs: number;
@@ -46,7 +47,7 @@ const OUTCOME_PRIORITY: Record<JevDecisionOutcome, number> = {
   pending: 1,
 };
 
-/** The dashboard shows one decision per utterance, not one row per Jev HTTP response.
+/** The dashboard shows one decision per utterance, not one row per provider HTTP response.
  * EagerEndOfTurn and EndOfTurn can both produce traces for the same utterance. */
 function canonicalDecisions(decisions: JevDecision[]): JevDecision[] {
   const byUtterance = new Map<string, JevDecision>();
@@ -104,7 +105,7 @@ function renderOutcome(decision: JevDecision) {
   setText("executionLatency", formatMs(decision.executionMs ?? undefined));
 }
 
-function renderChoice(name: "intent" | "target" | "direction", choice: JevChoice) {
+function renderChoice(name: "intent" | "target" | "direction", choice: JevChoice, provider: string) {
   const label = name[0].toUpperCase() + name.slice(1);
   setText(`${name}Value`, choice.choice);
   setText(`${name}Confidence`, formatProbability(choice.confidence));
@@ -116,7 +117,7 @@ function renderChoice(name: "intent" | "target" | "direction", choice: JevChoice
     .map(([candidate, probability]) => `${candidate} ${formatProbability(Number(probability))}`)
     .join("  ·  ");
   setText(`${name}Alternatives`, alternatives || "No alternatives reported");
-  byId<HTMLElement>(`${name}Value`).title = `${label} selected by Jev`;
+  byId<HTMLElement>(`${name}Value`).title = `${label} selected by ${provider.toUpperCase()}`;
 }
 
 function renderHistory(decisions: JevDecision[]) {
@@ -125,7 +126,7 @@ function renderHistory(decisions: JevDecision[]) {
   if (decisions.length === 0) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = "No Jev calls recorded in this session.";
+    empty.textContent = "No decision-provider calls recorded in this session.";
     history.appendChild(empty);
     return;
   }
@@ -144,7 +145,7 @@ function renderHistory(decisions: JevDecision[]) {
     target.className = "history-target";
     const jevTarget = document.createElement("span");
     jevTarget.className = "history-jev-target";
-    jevTarget.textContent = `Jev ${decision.choices.target.choice} · ${formatMs(decision.jevMs)}`;
+    jevTarget.textContent = `${decision.provider.toUpperCase()} ${decision.choices.target.choice} · ${formatMs(decision.jevMs)}`;
     const resolvedAction = document.createElement("span");
     resolvedAction.className = "history-resolved-action";
     resolvedAction.textContent = decision.resolvedAction ? `Resolved ${decision.resolvedAction}` : "No resolved action";
@@ -203,7 +204,7 @@ function renderDashboard(data: DashboardResponse) {
     setText("dragonState", data.status?.listening ? "Listening" : "Idle");
     setText("latestTime", "Waiting for a command");
     setText("latestContext", "No transcript yet");
-    setText("latestModel", "Jev");
+    setText("latestModel", "Decision provider");
     setText("latestQuote", "Speak a command to see the decision surface");
     setText("resolvedAction", "—");
     setText("outcomeStatus", "Awaiting action");
@@ -220,13 +221,13 @@ function renderDashboard(data: DashboardResponse) {
   setText("decisionPreparation", formatMs(latest.decisionMs));
   setText("dragonState", data.status?.listening ? "Listening" : "Idle");
   setText("latestTime", new Date(latest.timestamp).toLocaleTimeString());
-  setText("latestContext", `${latest.activeApp || "Unknown app"} · ${latest.activationMode.replace(/_/g, " ")} · ${latest.turnEvent}`);
-  setText("latestModel", latest.model || "Jev");
+  setText("latestContext", `${latest.provider.toUpperCase()} · ${latest.model || "unknown model"} · ${latest.activeApp || "Unknown app"} · ${latest.activationMode.replace(/_/g, " ")} · ${latest.turnEvent}`);
+  setText("latestModel", latest.model || "Decision provider");
   setText("latestQuote", latest.transcript);
   renderOutcome(latest);
-  renderChoice("intent", latest.choices.intent);
-  renderChoice("target", latest.choices.target);
-  renderChoice("direction", latest.choices.direction);
+  renderChoice("intent", latest.choices.intent, latest.provider);
+  renderChoice("target", latest.choices.target, latest.provider);
+  renderChoice("direction", latest.choices.direction, latest.provider);
   renderHistory(decisions);
   renderExceptions(decisions);
 }

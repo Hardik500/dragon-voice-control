@@ -2,6 +2,7 @@ interface Window {
   dragonSettings: {
     get(): Promise<any>;
     update(partial: Record<string, unknown>): Promise<any>;
+    checkDecisionProvider(): Promise<{ ok: boolean; provider: string; model: string | null; message: string }>;
     openLogs(): Promise<void>;
     openDashboard(): Promise<void>;
     getHistory(): Promise<any[]>;
@@ -43,6 +44,9 @@ async function load() {
     ? "•••••••• (saved — leave blank to keep)"
     : "Deepgram key";
   byId<HTMLSelectElement>("activationMode").value = settings.activationMode;
+  byId<HTMLSelectElement>("decisionProvider").value = settings.decisionProvider;
+  byId<HTMLInputElement>("layaBaseUrl").value = settings.layaBaseUrl;
+  byId<HTMLInputElement>("layaModel").value = settings.layaModel;
   byId<HTMLInputElement>("pushToTalkShortcut").value = settings.pushToTalkShortcut;
   byId<HTMLInputElement>("emergencyStopShortcut").value = settings.emergencyStopShortcut;
   byId<HTMLInputElement>("insertModeShortcut").value = settings.insertModeShortcut;
@@ -55,6 +59,9 @@ async function load() {
 async function save() {
   const partial: Record<string, unknown> = {
     activationMode: byId<HTMLSelectElement>("activationMode").value,
+    decisionProvider: byId<HTMLSelectElement>("decisionProvider").value,
+    layaBaseUrl: byId<HTMLInputElement>("layaBaseUrl").value.trim(),
+    layaModel: byId<HTMLInputElement>("layaModel").value.trim() || "laya",
     pushToTalkShortcut: byId<HTMLInputElement>("pushToTalkShortcut").value,
     emergencyStopShortcut: byId<HTMLInputElement>("emergencyStopShortcut").value,
     insertModeShortcut: byId<HTMLInputElement>("insertModeShortcut").value,
@@ -76,9 +83,17 @@ async function save() {
   await load();
 }
 
+async function testDecisionProvider() {
+  const status = byId<HTMLDivElement>("statusLine");
+  status.textContent = "Checking decision provider…";
+  const result = await window.dragonSettings.checkDecisionProvider();
+  status.textContent = result.ok ? result.message : `Provider unavailable: ${result.message}`;
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   load();
   byId<HTMLButtonElement>("saveBtn").addEventListener("click", save);
+  byId<HTMLButtonElement>("testProviderBtn").addEventListener("click", testDecisionProvider);
   byId<HTMLButtonElement>("openDashboardBtn").addEventListener("click", () => window.dragonSettings.openDashboard());
   byId<HTMLButtonElement>("openLogsBtn").addEventListener("click", () => window.dragonSettings.openLogs());
   byId<HTMLButtonElement>("clearHistoryBtn").addEventListener("click", async () => {

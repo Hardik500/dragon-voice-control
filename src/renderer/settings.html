@@ -40,10 +40,23 @@
   <h1>Dragon — Settings</h1>
 
   <h2>API Keys</h2>
-  <label for="openRouterApiKey">OpenRouter API key (used for Jev decisions)</label>
+  <label for="openRouterApiKey">OpenRouter API key (used when Jev is selected)</label>
   <input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" />
   <label for="deepgramApiKey">Deepgram API key (used for streaming transcription)</label>
   <input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" />
+
+  <h2>Decision provider</h2>
+  <label for="decisionProvider">Provider</label>
+  <select id="decisionProvider">
+    <option value="jev">Jev via OpenRouter</option>
+    <option value="laya">Laya via local server</option>
+  </select>
+  <label for="layaBaseUrl">Laya server URL</label>
+  <input id="layaBaseUrl" type="text" placeholder="http://127.0.0.1:8000" />
+  <label for="layaModel">Laya model</label>
+  <input id="layaModel" type="text" placeholder="laya" />
+  <div class="hint">Laya runs separately through laya-server. Start and save the provider settings before testing the connection.</div>
+  <button id="testProviderBtn" class="secondary">Test decision provider</button>
 
   <h2>Activation</h2>
   <label for="activationMode">Activation mode</label>

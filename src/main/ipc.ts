@@ -2,6 +2,7 @@ import { ipcMain, shell, BrowserWindow } from "electron";
 import { ActivationMode, DragonSettings, toRendererSafe } from "../types/settings";
 import { SettingsStore } from "./settings-store";
 import { DragonPipeline } from "./pipeline";
+import { checkDecisionProvider } from "../decision/jev-client";
 import { logger } from "../logging/logger";
 
 export interface IpcDeps {
@@ -24,6 +25,16 @@ export function registerIpc(deps: IpcDeps) {
     const modeChanged = partial.activationMode != null && partial.activationMode !== previous.activationMode;
     deps.onSettingsChanged(updated, modeChanged ? partial.activationMode : undefined);
     return toRendererSafe(updated);
+  });
+
+  ipcMain.handle("decision-provider:check", async () => {
+    const settings = deps.settingsStore.get();
+    return checkDecisionProvider({
+      provider: settings.decisionProvider,
+      openRouterApiKey: settings.openRouterApiKey,
+      layaBaseUrl: settings.layaBaseUrl,
+      layaModel: settings.layaModel,
+    });
   });
 
   ipcMain.handle("settings:openLogs", () => {

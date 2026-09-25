@@ -11,7 +11,7 @@ const DASHBOARD_HTML = path.join(RENDERER_DIR, "dashboard.html");
 const DASHBOARD_JS = path.join(__dirname, "..", "..", "dist-renderer", "dashboard.js");
 
 /**
- * A tiny read-only local web app for inspecting Jev's typed decisions. It is intentionally
+ * A tiny read-only local web app for inspecting the active decision provider's typed decisions. It is intentionally
  * separate from the Chrome extension bridge so the dashboard can be opened in the user's
  * normal browser at a stable URL without coupling the two local protocols.
  */

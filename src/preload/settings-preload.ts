@@ -4,6 +4,7 @@ import { DragonSettings } from "../types/settings";
 contextBridge.exposeInMainWorld("dragonSettings", {
   get: () => ipcRenderer.invoke("settings:get"),
   update: (partial: Partial<DragonSettings>) => ipcRenderer.invoke("settings:update", partial),
+  checkDecisionProvider: () => ipcRenderer.invoke("decision-provider:check"),
   openLogs: () => ipcRenderer.invoke("settings:openLogs"),
   openDashboard: () => ipcRenderer.invoke("settings:openDashboard"),
   getHistory: () => ipcRenderer.invoke("history:get"),

@@ -133,9 +133,12 @@ and is not a bug.
 
 ## Settings reference
 
+- **Decision provider** — `Jev via OpenRouter` (default) or `Laya via local server`. Both use the
+  same closed decision questions; Laya is an external local process and does not use the OpenRouter
+  key. Laya server settings are `http://127.0.0.1:8000` and model `laya` by default.
 - **OpenRouter API key** / **Deepgram API key** — pasted, masked, never re-displayed once
   saved (Settings shows "saved" as a placeholder). Leave the field blank on Save to keep the
-  existing key.
+  existing key. The OpenRouter key is used only by the Jev provider.
 - **Activation mode** — push to talk / always listening.
 - **Push-to-talk shortcut** — **toggles** listening on/off (Electron has no global key-up
   event, so true press-and-hold isn't possible without a native helper; press once to start,
@@ -154,7 +157,18 @@ and is not a bug.
 - **Debug log verbosity** — `normal` skips noisy interim (`Update`) STT events; `verbose`
   includes them.
 
-## Jev decision dashboard
+## Laya local provider
+
+Laya is an optional local decision provider. It is not routed through OpenRouter and requires a
+separate [laya-server](https://github.com/nvkudva/laya-server) process. Start the server first,
+then select **Laya via local server** in Settings, save, and use **Test decision provider**.
+
+The default local endpoint is `http://127.0.0.1:8000`; Dragon accepts only local HTTP Laya URLs.
+The first Laya run downloads model weights and loads them into memory, so startup is much slower
+than a normal Dragon launch. Laya is explicit opt-in: if its server is unavailable, Dragon reports
+the provider error rather than silently falling back to Jev.
+
+## Decision dashboard
 
 With Dragon running, open:
 
@@ -164,8 +178,8 @@ http://127.0.0.1:17873/dashboard
 
 The URL is also available from the tray menu or the **Open Dashboard** button in Settings. The
 page is a clean, read-only view of the current Dragon session: it shows the transcript, active
-application, selected Jev intent/target/direction, confidence, probability bars, closest
-alternative choices, latency from STT turn start through Jev response, the resolved action,
+application, selected provider/model, intent/target/direction, confidence, probability bars,
+closest alternative choices, latency from STT turn start through provider response, the resolved action,
 execution outcome, and a compact recent-exceptions list. The bounded session data is exposed
 read-only at
 `http://127.0.0.1:17873/api/decisions`; restart Dragon to begin a new session. No API keys or
@@ -175,7 +189,7 @@ audio are sent to the dashboard.
 
 - Dragon lives in the **menu bar** (macOS) / **system tray** (Windows) — no Dock/taskbar
   window. Click the tray icon for: listening on/off, activation-mode picker, show/hide
-  overlay, open settings, open the Jev dashboard, open logs folder, clear history, quit.
+  overlay, open settings, open the decision dashboard, open logs folder, clear history, quit.
 - Use **Quit Dragon** from the tray menu to exit (no main window to close).
 
 ## Packaging an unsigned local build

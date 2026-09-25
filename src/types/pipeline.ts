@@ -139,12 +139,13 @@ export interface JevDecisionTrace {
   activeApp: string | null;
   activationMode: string;
   turnEvent: TranscriptEvent["event"];
+  provider: "jev" | "laya";
   model: string;
   /** Milliseconds from the first STT turn event to this decision request. */
   sttTurnMs: number;
   /** Milliseconds from the STT event receipt to the start of decision processing. */
   sttToDecisionMs: number;
-  /** Time spent inside the Jev HTTP request. */
+  /** Time spent inside the selected decision provider's HTTP request. */
   jevMs: number;
   /** Total time spent preparing and obtaining the decision, including Jev. */
   decisionMs: number;
