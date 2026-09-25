@@ -84,8 +84,17 @@ function send(message) {
 }
 
 async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return tab ?? null;
+  // Prefer a normal browser window. Chrome runs installed PWAs / "apps" (e.g. YouTube Music
+  // installed as an app) in their own window of type "app", and `lastFocusedWindow` happily
+  // returns one of those — so once a PWA window had focus, every browser command (navigate,
+  // search, new_tab, click) landed in the PWA instead of the browser (observed 2026-09-26).
+  // `windowType` is a documented tabs.query filter, so this needs no extra permission.
+  const [normal] = await chrome.tabs.query({ active: true, windowType: "normal" });
+  if (normal) return normal;
+  // No normal window open (headless-ish setups, or the user only has a PWA running): fall back
+  // to the previous behavior rather than failing.
+  const [fallback] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return fallback ?? null;
 }
 
 async function getSnapshotFromActiveTab() {

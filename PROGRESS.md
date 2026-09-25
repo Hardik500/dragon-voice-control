@@ -680,6 +680,40 @@ Summary, oldest to newest:
       Alt tap, and `SetForegroundWindow` / `AttachThreadInput` / `BringWindowToTop` / `IsIconic` /
       cold-start poll / focus verification all still present. Not executed on Windows.
 
+  34. Thirty-fourth pass, reported 2026-09-26: "open chrome" kept raising the YouTube Music PWA
+      instead of the browser. Confirmed by the user that closing the PWA window makes "open chrome"
+      behave, so the PWA was Chrome's last-focused window and Dragon was selecting it.
+
+      Two independent causes, both "Dragon has no notion of which window is the real one":
+
+      - `automation/windows.ts`: `activateApp` (and `hideApp`) took `Get-Process -Name 'chrome' |
+        Where MainWindowHandle -ne 0` and used `$procs[0]`. An app can own several top-level
+        windows and `MainWindowHandle` returns whichever Windows considers the process's main
+        window, which is not necessarily the one the user means. Now a helper reorders the
+        candidates by window title, preferring one that carries the registry `label`
+        ("<page> - Google Chrome" vs an app window titled just "YouTube Music"), with the
+        original ordering kept as a fallback so it can only reorder, never lose, candidates. The
+        discriminator needs no new P/Invoke — `Get-Process` already exposes `MainWindowTitle` —
+        which matters given three regressions from this file came from new P/Invoke added blind.
+        This path does not involve the extension at all, which is why the extension fix alone
+        could not have covered the reported command.
+
+      - `chrome-extension/background.js`: `getActiveTab()` used
+        `chrome.tabs.query({ active: true, lastFocusedWindow: true })`. Chrome runs installed
+        PWAs in their own window of type `"app"`, and `lastFocusedWindow` is unfiltered, so once
+        a PWA had focus every browser command (navigate, search, new_tab, click) landed in it.
+        Now queries `windowType: "normal"` first and falls back to the previous behavior when no
+        normal window exists. `windowType` is a documented `tabs.query` filter, so no new
+        permission is needed.
+
+      Verified with `npm run typecheck`, `npm run build`, and two throwaway harnesses: one
+      evaluating the extension's `getActiveTab` against a stubbed Chrome API (PWA last-focused →
+      picks the browser window; only a PWA open → still works; no windows → null, no throw), and
+      one dumping the generated PowerShell to assert the title preference, its ordering after the
+      cold-start poll, the fallback branch, correct quoting for a label containing a space
+      ("Docker Desktop"), and that the `SetFocus`/Alt-tap fixes are still intact. The PowerShell
+      was not executed — no Windows machine here.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

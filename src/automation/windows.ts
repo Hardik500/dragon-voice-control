@@ -127,6 +127,25 @@ async function startProcess(token: string, args: string[] = []): Promise<void> {
   await run("cmd.exe", ["/c", "start", "", token, ...args]);
 }
 
+/** PowerShell that reorders candidate processes so the app's *primary* window wins.
+ *
+ * An app can own several top-level windows, and `Get-Process`'s `MainWindowHandle` just hands
+ * back whichever one Windows considers the process's main window — which is not necessarily the
+ * one the user means by the app's name. The observed case (2026-09-26): with a Chrome PWA
+ * installed, "open chrome" kept raising the YouTube Music app window instead of the browser.
+ *
+ * The discriminator is the window title, which needs no extra P/Invoke: a primary window carries
+ * the app's display name ("<page> - Google Chrome", "Untitled - Notepad"), while an installed
+ * app/PWA window is titled with just the app's own name ("YouTube Music"). Preferring a title
+ * containing the registry `label` therefore picks the primary window, and the original ordering is
+ * kept as a fallback so this can only reorder candidates, never lose them.
+ */
+function preferLabeledWindow(label: string | undefined): string {
+  if (!label) return "$procs";
+  const escaped = psQuote(label).replace(/'/g, "''");
+  return `@(if (@($procs | Where-Object { $_.MainWindowTitle -match [regex]::Escape('${escaped}') }).Count -gt 0) { $procs | Where-Object { $_.MainWindowTitle -match [regex]::Escape('${escaped}') } } else { $procs })`;
+}
+
 /** Windows has no `open -a` equivalent, and `cmd /c start` on an already-running app can leave
  * the new window behind the foreground one — that was the "it opens in the background" symptom.
  * `activateApp` already does both halves (launch when absent, focus when present), so "open" and
@@ -191,6 +210,7 @@ if (-not $procs) {
     $procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
   } while (-not $procs -and (Get-Date) -lt $deadline)
 }
+$procs = ${preferLabeledWindow(alias.label)}
 if ($procs) {
   $h = $procs[0].MainWindowHandle
   $procIdOut = 0
@@ -222,8 +242,11 @@ if ($procs) {
 
 export async function hideApp(aliasKey: string): Promise<void> {
   const alias = resolveAlias(aliasKey);
+  // Same primary-window selection as activateApp — otherwise "hide chrome" would minimize the
+  // PWA window rather than the browser.
   const script = `${WIN32_TYPE}
 $procs = Get-Process -Name '${psQuote(alias.processName)}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+$procs = ${preferLabeledWindow(alias.label)}
 if ($procs) { [Dragon.Win32]::ShowWindow($procs[0].MainWindowHandle, ${SW_MINIMIZE}) }`;
   await runPowerShell(script);
 }

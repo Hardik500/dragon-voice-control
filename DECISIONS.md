@@ -988,3 +988,31 @@ recorded in PROGRESS.md: that pass added a broad activation recipe on a machine 
 could be executed, and the cost was two user-visible regressions. `SetForegroundWindow` with
 thread attachment is sufficient on its own; the focus verification (`automation.activate_app`,
 pass 32) means a future failure will be visible in the log rather than silent.
+
+## 2026-09-26 — Prefer an app's primary window over a secondary one
+
+**Decision:** Two changes, because there were two independent causes.
+`automation/windows.ts`'s `activateApp`/`hideApp` now reorder their `Get-Process` candidates and
+prefer a window whose title contains the registry `label`, keeping the original order as a
+fallback. `chrome-extension/background.js`'s `getActiveTab()` now queries
+`windowType: "normal"` first and falls back to `lastFocusedWindow: true` when no normal window
+exists.
+
+**Reason:** Reported 2026-09-26 — "open chrome" kept raising the YouTube Music PWA; closing that
+window made the command behave, confirming the PWA was Chrome's last-focused window. Neither layer
+distinguished a primary window from a secondary one. `Get-Process`'s `MainWindowHandle` returns
+whichever window Windows considers the process's main window, and an app can own several. In the
+extension, `lastFocusedWindow` is unfiltered and Chrome runs installed PWAs in a window of type
+`"app"`, so once a PWA had focus, navigate/search/new_tab/click all landed in it.
+
+**Consequences:** The two are not interchangeable — the reported command ("open chrome") goes
+through `activateApp` and never touches the extension, so fixing only the extension would not have
+covered it. The title discriminator (`"<page> - Google Chrome"` vs an app window titled just
+`"YouTube Music"`) uses `MainWindowTitle`, which `Get-Process` already exposes, so it adds no
+P/Invoke; that mattered because three of this session's regressions came from new P/Invoke added
+without any way to execute it. The filter is strictly a reordering with a fallback, so it can
+change which window is picked but cannot lose a candidate, and an app whose windows all lack the
+label falls back to today's behavior. It applies to every alias, not just Chrome — a
+Chrome-only special case would have been the unprincipled option. The extension filter uses the
+documented `windowType` query filter, so no new permission. The PowerShell remains unexecuted
+here; the extension half is covered by a stubbed-Chrome-API harness.
