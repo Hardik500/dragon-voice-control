@@ -766,6 +766,54 @@ Summary, oldest to newest:
       would take app launches from ~1.5s to tens of milliseconds and delete the pre-provider cost
       outright, but it is a refactor, not a quick fix.
 
+## Manual verification checklist
+
+Restructured the `README.md` alongside a demo recording: 343 lines / 21 KB down to 241 / 12 KB.
+The 50-line per-OS "Manual alpha check" moved here (where AGENTS.md says manual verification
+steps belong) and was split into a two-minute smoke test plus the full per-platform pass, so the
+README is documentation rather than a test plan. The Laya section was compressed to four lines
+(it is optional, off by default, and unused), permission tables were folded into the first-run
+flow, and the unusable single-bullet Insert Mode description became a phrase table under "What it
+does". Added a demo-video section and a `docs/` folder for the recording, and documented the
+Chrome-extension **Reload** gotcha that cost a debugging round on 2026-09-26.
+
+Per AGENTS.md there are no automated tests, so correctness on real hardware is established by
+running this by hand.
+
+### Smoke test (~2 minutes, both platforms)
+
+1. Launch Dragon, paste both API keys, grant microphone (and Accessibility on macOS).
+2. Load the unpacked `chrome-extension/` folder at `chrome://extensions` and confirm
+   `browser.extension_connected` in the log.
+3. `Open notepad` — the window must come to the **front** and accept typing immediately, with no
+   click into the text area first.
+4. `Start typing`, dictate a sentence, `new line`, dictate another, `delete the last 3 words`,
+   `replace X with Y`, `stop typing`.
+5. `Open google chrome` — must focus Chrome, **not** navigate to google.com.
+6. With Chrome on a real page: `search for cats`, `click on` a visible label, `scroll down`,
+   `new tab`, `close tab`.
+7. `volume up`, `mute`, `minimize window`, `press enter`.
+8. Open the log and confirm transcript, decision, execution, and a latency split are present, with
+   no API keys or audio.
+
+### Full per-platform check
+
+**macOS** (Apple Silicon) — additionally: the first `osascript`/System Events call triggers the
+Accessibility prompt; grant it and restart if commands fail with "not allowed to send
+keystrokes". Repeat step 6 in each activation mode. Confirm voice replies are interrupted by
+starting to speak again.
+
+**Windows 11 x64** — additionally: accept the SmartScreen prompt on first run. Exercise copy,
+paste, undo, save, Enter, Escape, Tab and arrow keys. Check `set volume to 30` produces the
+documented "not supported on Windows yet" error rather than a silent no-op, and that `mute` and
+`unmute` both toggle. Open a Settings pane ("open the sound settings") and a File Explorer
+location ("open downloads"). Repeat one direct command in each activation mode.
+
+**Cross-platform** — the STT transcripts and decision traces are the real signal. Read
+`stt.turn` for misheards (keyterm prompting helps but doesn't eliminate them),
+`pipeline.ignored` for drops, and `pipeline.execution` for the latency split
+(`sttTurnMs` / `activeAppMs` / `snapshotMs` / `jevMs` / `executionMs` / `totalMs`).
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
@@ -790,10 +838,9 @@ the extension-connected tab state:
   "Start typing", dictate two sentences, say "Press enter", dictate another sentence, then
   "Stop typing"; verify the keyboard action executes and ordinary speech continues typing. While
   Insert Mode is active, say "Open Chrome" and verify it is typed as text; leave Insert Mode before
-  testing normal app commands.
-  Open
-  `http://127.0.0.1:17873/dashboard` after a few commands to inspect provider probabilities and
-  STT/provider timing; compare the accuracy change against the observed STT-turn latency.
+  testing normal app commands. Open `http://127.0.0.1:17873/dashboard` after a few commands to
+  inspect provider probabilities and STT/provider timing; compare the accuracy change against the
+  observed STT-turn latency.
 - Start `laya-server` separately, select **Laya via local server** in Settings, save, and use
   **Test decision provider**. Run the same app/window/browser commands with Jev and Laya separately;
   compare provider latency, model output, and action agreement. Keep Jev selected when Laya is
