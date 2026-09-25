@@ -60,11 +60,11 @@ record of what Dragon typed — it never reads the contents of the app you're in
 | Say | Result |
 |---|---|
 | `open reddit dot com` | Navigate (speaks domains as "dot com") |
-| `search for cats` | Search — on the current site if it has its own search (YouTube, GitHub, …), else Google |
+| `search for cats` (in Chrome) | Search — using the current site's own search if it has one (YouTube, GitHub, …), else Google |
 | `click on the first post` | Click a visible element by its label |
 | `scroll down` · `back` · `forward` · `reload` | Page control |
 | `new tab` · `close tab` · `switch to the previous tab` | Tab control |
-| `search for cats in slack` | The app's own Cmd/Ctrl+K quick-open |
+| `search for cats` (in Slack, Notion, VS Code, …) | That app's own Cmd/Ctrl+K quick-open |
 
 Navigation and search work without the extension. Clicking, typing, scrolling, and tabs need it.
 
@@ -82,8 +82,8 @@ Numbers come through as digits, so `type my number is 5551234` types the digits,
 
 ## Quick start
 
-**System**: macOS on Apple Silicon or **Windows 11 x64** · Node.js 18+ · Chrome already
-installed (Dragon drives *your* Chrome, not a managed one).
+**System**: macOS or **Windows 11 x64** · Node.js 18+ · Chrome already installed (Dragon drives
+*your* Chrome, not a managed one).
 
 **Two API keys.** Both have free tiers, and you paste them into the app — there is no `.env`
 file and nothing to configure before it runs.
