@@ -3,8 +3,9 @@
 A voice-control agent for macOS and Windows. Say *"open Notepad"*, *"search for X"*, *"scroll
 down"*, *"delete the last 3 words"* — Dragon does it, and shows you its reasoning as it decides.
 
-> **Personal alpha.** Unsigned, no automated tests, no confirmation prompts, and deliberately
-> conservative about what it will do on its own. See [Known limitations](#known-limitations).
+> **Personal alpha.** Runs on **macOS and Windows** — both work, and both are equally expected to
+> have bugs. Unsigned, no automated tests, no confirmation prompts, and deliberately conservative
+> about what it will do on its own. See [Known limitations](#known-limitations).
 
 ## Demo
 
@@ -221,6 +222,9 @@ OS yet — see `PROGRESS.md`.
 
 These are real and deliberate, not oversights:
 
+- **Both platforms work, and both will have bugs.** macOS and Windows are equally supported and
+  equally "expect rough edges" — the two are not tested to the same depth, so don't read a
+  difference in maturity as a difference in support.
 - **One command per utterance.** "Open Slack, search for X, and type a message" is three
   commands, not one. Workflow Mode handles a constrained `then`-separated form and nothing more.
 - **No confirmation prompts or deny-lists.** A recognised command executes. That's the design.
@@ -233,8 +237,7 @@ These are real and deliberate, not oversights:
 - **Insert Mode dictates commands as text** — leave it before saying "open Chrome".
 - **No automated tests, no code signing, no notarization.**
 
-`PROGRESS.md` tracks exactly what has been verified on real hardware and what hasn't — including
-the parts of this README that are still aspirational on macOS.
+`PROGRESS.md` tracks what has been verified on real hardware, per platform.
 
 ## Project documents
 

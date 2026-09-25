@@ -3,15 +3,26 @@
 ## Current milestone
 
 **Milestone 8 (Windows packaging and documentation) — implementation complete for both
-platforms, pending real macOS *and* real Windows hardware verification.**
+platforms, and both have been run on real hardware.**
 
 All eight milestones from the updated plan have working code: the shared macOS alpha
 (Milestones 1-5), the extracted `PlatformAutomation` boundary (Milestone 6), the Windows
 execution adapter (Milestone 7), and Windows packaging/docs (Milestone 8). The voice
 dictation/editing feature, site-aware search, tab reuse, and generic in-app search requested
-alongside Windows support are also implemented. Everything builds and typechecks cleanly on
-this Linux sandbox; everything verifiable without real macOS/Windows hardware or live API
-keys has been smoke-tested (see "Manual check results" below for exactly what that means).
+alongside Windows support are also implemented.
+
+**Verification status.** Windows 11 x64 has been run repeatedly and is where all recent work is
+verified, including the focus, window-targeting and latency fixes. macOS has been run several
+times on real hardware with real logs (see pass 6 below and the 2026-09-21 entries in
+`DECISIONS.md`), the most recent on the Windows-support/dictation build. The shared-code changes
+made since that macOS run — STT `numerals`/keyterms/`eager_eot_threshold`, and the pipeline
+latency restructure — have not been re-run on macOS. The Windows-only changes cannot affect it.
+Both platforms are supported and both are expected to have bugs; they are simply not exercised
+to the same depth.
+
+Everything builds and typechecks cleanly on this Linux sandbox; everything verifiable without
+real hardware or live API keys has been smoke-tested (see "Manual check results" below for
+exactly what that means).
 
 ## Completed capabilities
 
