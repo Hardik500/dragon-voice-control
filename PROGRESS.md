@@ -434,6 +434,61 @@ Summary, oldest to newest:
       needs Electron and a real OS — so (b) and (c) are reasoned from the code paths plus the log
       evidence, not executed end to end.
 
+  27. Twenty-seventh pass, from the Jev run of 2026-09-25 17:45 (session
+      `sess_muh94ew6_vhsjgw`), which ran on a build including pass 26.
+
+      **Pass 26 confirmed by this run:** "Open Chrome." and "Open Notepad." both executed
+      `activate_app` (no google.com hijack), "New tab." twice and "Start typing." resolved
+      through the deterministic dictation-control path, and — most clearly — every utterance now
+      produced exactly **one** `pipeline.decision_request` followed by `decision_cache_hit` for
+      later turns. The previous run had three concurrent requests for a single utterance, so the
+      in-flight serialization fix is confirmed working against the real log.
+
+      Two gaps remained:
+
+      a. **Apps opened but never came to the foreground** (reported directly). `activateApp` called
+         a bare `SetForegroundWindow`, which Windows refuses for any process that doesn't already
+         own the foreground — and Dragon's short-lived PowerShell child never qualifies. The
+         cold-start branch was worse: `Start-Process` returned as soon as the process existed and
+         never tried to focus the new window at all, so "Open Notepad." from Chrome left Notepad
+         behind. Rewritten to (1) `AttachThreadInput` our thread to the target window's thread and
+         to the current foreground window's thread, which is what makes the activation calls take
+         effect, (2) `BringWindowToTop` + `SetForegroundWindow` + `SetFocus`, (3) a synthetic Alt
+         tap (the documented trick for making the caller foreground-eligible) and one more
+         `SetForegroundWindow`. Two side fixes came out of the same rewrite: `ShowWindow` is now
+         guarded by `IsIconic` so saying "open chrome" while Chrome is maximized no longer shrinks
+         it back to normal, and a cold start polls up to 6s for the new main window instead of
+         returning immediately.
+
+         `openApp` now delegates to `activateApp` on Windows. It had become reachable again
+         ("focus chrome" matches no `openAppOverride` pattern, so `resolveCommand` can return
+         `open_app`), and `cmd /c start` on a running app is exactly the background-launch path
+         being removed. Windows has no `open -a`/`activate` distinction worth keeping; macOS still
+         keeps the two distinct.
+
+      b. **"Start writing." failed twice with `resolution_failed`.** It isn't a mode-entry alias
+         (`typing|dictation|insert mode|type mode`), so it fell through to Jev, which returned
+         `type_text` — but `extractDictatedText` needs content after the verb, so there was nothing
+         to type and resolution failed. Added `writing` / `write mode` / `writing mode` to the
+         start aliases and `writing` / `stop writing` to the stop aliases. Verified not to collide
+         with the dictated-text path: "write hello" still extracts `hello`, and "start writing my
+         essay" is still not a mode command.
+
+      Not fixed, and still worth knowing about before a demo: "Click on exact price video." hit
+      `browser_target_missing` because the page snapshot came back with `elementCandidates: 0`.
+      The surrounding requests on the same YouTube page returned 3–4 elements, and the empty ones
+      cluster right after startup, so this looks like a snapshot racing page load rather than a
+      selector problem. A retry on an empty snapshot would likely mask it, but that is an
+      extension/page-state change that can't be validated from Linux, so it is left alone and
+      recorded here instead.
+
+      Verified by `npm run typecheck`, `npm run build`, and three throwaway harnesses: one dumping
+      the exact generated PowerShell for `activateApp` (electron + child_process stubbed) and
+      asserting the quoting of process names containing spaces, one for the mode-alias patterns,
+      and one re-running pass 26's resolve assertions as a regression guard. **The PowerShell
+      itself was never executed — there is no Windows machine here, so the foreground behavior is
+      unverified and is the single most important thing to re-test.**
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

@@ -37,7 +37,11 @@ function psQuote(value: string): string {
 }
 
 /** Inline User32 P/Invoke helper, prepended to any script that needs it. Safe to repeat: each
- * action runs in its own fresh `powershell.exe` process (no `Add-Type` collision risk). */
+ * action runs in its own fresh `powershell.exe` process (no `Add-Type` collision risk).
+ *
+ * `AttachThreadInput` / `BringWindowToTop` / `SetFocus` / `IsIconic` / `GetCurrentThreadId` exist
+ * solely to make foreground activation reliable — see `activateApp` for why a bare
+ * `SetForegroundWindow` isn't enough. */
 const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -45,6 +49,11 @@ const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 '@`;
 
 const KEYEVENTF_EXTENDEDKEY = 0x0001;
@@ -53,6 +62,10 @@ const SW_MINIMIZE = 6;
 const SW_MAXIMIZE = 3;
 const SW_RESTORE = 9;
 const WM_CLOSE = 0x0010;
+/** How long `activateApp` waits for a cold-launched app to expose a main window before trying
+ * to focus it. Generous enough for a browser's first window, short enough to stay well inside
+ * `run()`'s 10s timeout alongside PowerShell startup. */
+const ACTIVATE_LAUNCH_WAIT_SECONDS = 6;
 
 const VK = {
   CONTROL: 0x11,
@@ -109,28 +122,76 @@ async function startProcess(token: string, args: string[] = []): Promise<void> {
   await run("cmd.exe", ["/c", "start", "", token, ...args]);
 }
 
+/** Windows has no `open -a` equivalent, and `cmd /c start` on an already-running app can leave
+ * the new window behind the foreground one — that was the "it opens in the background" symptom.
+ * `activateApp` already does both halves (launch when absent, focus when present), so "open" and
+ * "activate" share one reliable path here. macOS keeps the two distinct (`open -a` vs System
+ * Events), which is why this asymmetry is Windows-only. */
 export async function openApp(aliasKey: string): Promise<void> {
-  const alias = resolveAlias(aliasKey);
-  if (alias.processName.toLowerCase() === "chrome") {
-    const exe = findChromeExe();
-    if (exe) {
-      await run(exe, []);
-      return;
-    }
-  }
-  await startProcess(alias.launchToken);
+  return activateApp(aliasKey);
 }
 
+/** Bring an app's window to the foreground, launching it first if it isn't running.
+ *
+ * The previous version called a bare `SetForegroundWindow`, and Windows refused it: the OS only
+ * lets a process take the foreground if it already owns it or otherwise "qualifies", and
+ * Dragon's short-lived PowerShell child almost never does. The app would launch or activate and
+ * then sit behind the foreground window — the "opens in the background" symptom. Three changes
+ * fix that, in order of how much they buy:
+ *
+ * 1. `AttachThreadInput` our thread to the target window's thread (and the current foreground
+ *    window's thread), which is what actually makes the activation calls take effect.
+ * 2. `IsIconic` before `ShowWindow(SW_RESTORE)` — restoring an already-maximized window shrinks
+ *    it back to normal size, so only restore when it's genuinely minimized.
+ * 3. A synthetic Alt tap, the documented trick for making the caller eligible for foreground
+ *    under the OS rules, then one more `SetForegroundWindow`.
+ *
+ * A cold start polls for the new main window instead of returning as soon as `Start-Process`
+ * does, so a first-run app that takes a second to show a window still ends up in front.
+ *
+ * Unverified on real Windows hardware — see PROGRESS.md. */
 export async function activateApp(aliasKey: string): Promise<void> {
   const alias = resolveAlias(aliasKey);
+  // Quoted, not just escaped: process names legitimately contain spaces ("Docker Desktop").
+  const procName = `'${psQuote(alias.processName)}'`;
+  // Cold start: prefer Chrome's real executable path over the bare `chrome` token, which
+  // `cmd /c start` resolution used to handle for us, and give a freshly launched window time
+  // to appear before trying to focus it.
+  let launchTarget = alias.launchToken;
+  if (alias.processName.toLowerCase() === "chrome") {
+    const exe = findChromeExe();
+    if (exe) launchTarget = exe;
+  }
   const script = `${WIN32_TYPE}
-$procs = Get-Process -Name '${psQuote(alias.processName)}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+$procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+if (-not $procs) {
+  Start-Process '${psQuote(launchTarget)}'
+  $deadline = (Get-Date).AddSeconds(${ACTIVATE_LAUNCH_WAIT_SECONDS})
+  do {
+    Start-Sleep -Milliseconds 150
+    $procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+  } while (-not $procs -and (Get-Date) -lt $deadline)
+}
 if ($procs) {
   $h = $procs[0].MainWindowHandle
-  [Dragon.Win32]::ShowWindow($h, ${SW_RESTORE})
-  [Dragon.Win32]::SetForegroundWindow($h)
-} else {
-  Start-Process '${psQuote(alias.launchToken)}'
+  $procIdOut = 0
+  $targetThread = [Dragon.Win32]::GetWindowThreadProcessId($h, [ref]$procIdOut)
+  $procIdOut = 0
+  $fg = [Dragon.Win32]::GetForegroundWindow()
+  $fgThread = 0
+  if ($fg -ne [IntPtr]::Zero) { $fgThread = [Dragon.Win32]::GetWindowThreadProcessId($fg, [ref]$procIdOut) }
+  $ourThread = [Dragon.Win32]::GetCurrentThreadId()
+  [Dragon.Win32]::AttachThreadInput($ourThread, $targetThread, $true) | Out-Null
+  if ($fgThread -ne 0) { [Dragon.Win32]::AttachThreadInput($ourThread, $fgThread, $true) | Out-Null }
+  if ([Dragon.Win32]::IsIconic($h)) { [Dragon.Win32]::ShowWindow($h, ${SW_RESTORE}) | Out-Null }
+  [Dragon.Win32]::BringWindowToTop($h) | Out-Null
+  [Dragon.Win32]::SetForegroundWindow($h) | Out-Null
+  [Dragon.Win32]::SetFocus($h) | Out-Null
+  if ($fgThread -ne 0) { [Dragon.Win32]::AttachThreadInput($ourThread, $fgThread, $false) | Out-Null }
+  [Dragon.Win32]::AttachThreadInput($ourThread, $targetThread, $false) | Out-Null
+  ${keyEventLine(VK.ALT, false)}
+  ${keyEventLine(VK.ALT, true)}
+  [Dragon.Win32]::SetForegroundWindow($h) | Out-Null
 }`;
   await runPowerShell(script);
 }

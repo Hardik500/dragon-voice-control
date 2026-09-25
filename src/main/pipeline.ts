@@ -398,17 +398,20 @@ export class DragonPipeline {
       return { type: "workflow_stop" };
     }
     if (
-      /^(?:start|begin|enter|switch\s+to|go\s+to)\s+(?:typing|dictation|insert\s+mode|type\s+mode)$/.test(lower) ||
+      /^(?:start|begin|enter|switch\s+to|go\s+to)\s+(?:typing|dictation|writing|insert\s+mode|type\s+mode|write\s+mode|writing\s+mode)$/.test(lower) ||
       lower === "insert mode" ||
-      lower === "type mode"
+      lower === "type mode" ||
+      lower === "write mode" ||
+      lower === "writing mode"
     ) {
       return { type: "start" };
     }
     if (
-      /^(?:stop|end|exit)\s+(?:dictation|typing|dictating|insert\s+mode|type\s+mode)$/.test(lower) ||
+      /^(?:stop|end|exit)\s+(?:dictation|typing|dictating|writing|insert\s+mode|type\s+mode)$/.test(lower) ||
       lower === "done" ||
       lower === "that's it" ||
-      lower === "stop typing"
+      lower === "stop typing" ||
+      lower === "stop writing"
     ) {
       return { type: "stop" };
     }

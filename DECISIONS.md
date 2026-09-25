@@ -864,3 +864,30 @@ the app — "open google chrome", "open maps". Genuine site navigation still nee
 domain or no app alias in the sentence. The same predicate (`isDeterministicAppLaunch`) now also
 exempts this shape from the Always Listening addressed gate, which had been dropping plain
 "open <app>" utterances outright.
+
+## 2026-09-25 — Force foreground on Windows with AttachThreadInput, not a bare SetForegroundWindow
+
+**Decision:** `automation/windows.ts`'s `activateApp` now attaches our thread's input to the target
+window's thread (and the current foreground window's thread) before calling `BringWindowToTop` /
+`SetForegroundWindow` / `SetFocus`, then falls back to a synthetic Alt tap plus one more
+`SetForegroundWindow`. `ShowWindow(SW_RESTORE)` is guarded by `IsIconic`, and a cold start polls
+for the new main window before focusing it. `openApp` now delegates to `activateApp` on Windows
+only. Five P/Invokes were added to the inline `WIN32_TYPE` helper (`IsIconic`,
+`BringWindowToTop`, `SetFocus`, `AttachThreadInput`, `GetCurrentThreadId`).
+
+**Reason:** Reported directly after the 17:45 run: "the app gets opened, but doesn't get in focus,
+and it opens in background only." Both failure modes were in the old script. The warm branch
+called a bare `SetForegroundWindow`, which Windows refuses for a process that doesn't own the
+foreground — a short-lived PowerShell child spawned by Electron essentially never qualifies, so
+the call silently did nothing. The cold branch (`Start-Process` with no follow-up) never attempted
+focus at all, which is why "Open Notepad." from Chrome left Notepad behind. `cmd /c start` in
+`openApp` had the same background-launch property.
+
+**Consequences:** `openApp` and `activateApp` are now the same operation on Windows — which is
+honest, since Windows has no `open -a` vs activate distinction — but it does mean "open chrome"
+now focuses an existing Chrome window rather than reliably spawning a second one. macOS is
+untouched and still distinguishes the two. `SW_RESTORE` is no longer applied unconditionally, so
+activating a maximized window leaves it maximized. The cold-start poll adds up to 6s before the
+app is focused (bounded well inside `run()`'s 10s timeout); for an already-running app there is
+no wait. Unverified on real hardware — the foreground-lock behavior in particular can only be
+confirmed on Windows, and is the first thing to re-test.
