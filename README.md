@@ -224,18 +224,18 @@ target OS yet, so prefer `npm start` until one has been.
 These are real and deliberate, not oversights:
 
 - **Both platforms work, and both will have bugs.** macOS and Windows are equally supported and
-  equally "expect rough edges". Neither is exercised as heavily as the other — most recent work
-  has landed on Windows, and macOS was last re-run a few commits earlier — so don't read a
+  equally "expect rough edges". Neither is exercised as heavily as the other — recent work has
+  landed on Windows, and macOS was last re-run several commits earlier — so don't read a
   difference in maturity as a difference in support.
 - **One command per utterance.** "Open Slack, search for X, and type a message" is three
-  commands, not one. Workflow Mode handles a constrained `then`-separated form and nothing more.
+  commands, not one. There is no natural-language planner that chains them for you.
 - **No confirmation prompts or deny-lists.** A recognised command executes. That's the design.
-- **Spoken numbers can still be misheard** — keyterm prompting improves the common command words
-  but doesn't eliminate it. "minimize" occasionally arrives as "many".
+- **Spoken words can still be misheard** — keyterm prompting improves the common command words
+  but doesn't eliminate it. "minimize" occasionally arrives as "many" or "mini mice".
 - **Windows: exact volume % and separate mute/unmute** aren't implemented; mute is a toggle.
 - **Windows Store apps** (Calculator, Photos, Settings, …) host their windows under
-  `ApplicationFrameHost`, so window targeting is less reliable than for classic Win32 apps.
-- **A bare "2 + 2" isn't a command.** Prefix with `type` or use Insert Mode.
+  `ApplicationFrameHost`, so activating one may open a second instance rather than focus the
+  running one. Untested since that targeting was changed.
 - **Insert Mode dictates commands as text** — leave it before saying "open Chrome".
 - **No automated tests, no code signing, no notarization.**
 
