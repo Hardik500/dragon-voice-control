@@ -126,24 +126,37 @@ export function extractWorkflowSteps(transcript: string): string[] | null {
   return steps;
 }
 
-export function extractUrl(transcript: string): string | null {
+export interface ExtractedUrl {
+  url: string | null;
+  /** True when the URL came from the `KNOWN_WEBSITES` keyword heuristic rather than from a
+   * domain the user actually spoke ("reddit dot com", "https://…").
+   *
+   * This distinction matters because a keyword hit is a substring match, not a navigation
+   * target: "open google chrome" contains the `google` entry, so a heuristic-only reading
+   * navigated Chrome to google.com instead of focusing Chrome (observed in real logs on
+   * 2026-09-25). An explicitly spoken domain stays authoritative, so "open right.com on
+   * chrome" still navigates rather than re-activating Chrome. */
+  isHeuristic: boolean;
+}
+
+export function extractUrl(transcript: string): ExtractedUrl {
   const normalized = normalizeSpokenDomain(transcript);
 
   const explicit = normalized.match(/\bhttps?:\/\/\S+/i);
-  if (explicit) return explicit[0];
+  if (explicit) return { url: explicit[0], isHeuristic: false };
 
   const domainLike = normalized.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|to|co|gov|edu|app|ai|uk))\b/i);
-  if (domainLike) return `https://${domainLike[1]}`;
+  if (domainLike) return { url: `https://${domainLike[1]}`, isHeuristic: false };
 
   const lowerT = lower(normalized);
   // Longer keys first ("youtube music" before "youtube") so the more specific site wins.
   const sites = Object.entries(KNOWN_WEBSITES).sort((a, b) => b[0].length - a[0].length);
   for (const [site, url] of sites) {
     if (new RegExp(`\\b${site}\\b`).test(lowerT) && /\b(go to|open|navigate to|visit|search for)\b/.test(lowerT)) {
-      return url;
+      return { url, isHeuristic: true };
     }
   }
-  return null;
+  return { url: null, isHeuristic: false };
 }
 
 /** When Chrome is already on a known site, route "search for X" to that site's own search
@@ -291,10 +304,12 @@ export function findBrowserElementCandidates(
 
 export function extractPayload(transcript: string, page: BrowserPageState | null): ExtractedPayload {
   const searchQuery = extractSearchQuery(transcript);
+  const { url, isHeuristic } = extractUrl(transcript);
   return {
     appCandidates: findAppCandidates(transcript),
     dictatedText: extractDictatedText(transcript),
-    url: extractUrl(transcript),
+    url,
+    urlIsHeuristic: isHeuristic,
     siteSearchUrl: computeSiteSearchUrl(searchQuery, page),
     searchQuery,
     number: extractNumber(transcript),

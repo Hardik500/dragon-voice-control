@@ -5,7 +5,7 @@ import { automation } from "../automation";
 import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { callDecisionProvider, DecisionCancelledError, DecisionRequestError } from "../decision/jev-client";
-import { INTERIM_ELIGIBLE_INTENTS, resolveCommand, summarizeAnswers } from "../decision/resolve";
+import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
@@ -718,10 +718,15 @@ export class DragonPipeline {
   }
 
   private async runDecision(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
+    // Serialize decisions per utterance so an EagerEndOfTurn and the EndOfTurn behind it can't
+    // both spend a provider call on the same sentence. The chaining has to happen
+    // synchronously: reading `previous` and only then storing `current` left a window where two
+    // turns arriving in the same tick both read the same `previous`, both resumed when it
+    // settled, and both ran — three concurrent provider calls for one utterance were logged on
+    // 2026-09-25, and a response derived from a stale interim transcript could win that race.
     const previous = this.decisionInFlightByUtterance.get(turn.utteranceId);
-    if (previous) await previous;
-
-    const current = this.runDecisionInternal(turn, effectiveText, settings);
+    const run = () => this.runDecisionInternal(turn, effectiveText, settings);
+    const current = previous ? previous.then(run, run) : run();
     this.decisionInFlightByUtterance.set(turn.utteranceId, current);
     try {
       await current;
@@ -882,11 +887,19 @@ export class DragonPipeline {
       // ("How are you doing?") reads as not-addressed-to-an-assistant almost by definition,
       // but during an active dictation session it should be typed, not discarded — the user
       // already explicitly started dictating with a real command. See DECISIONS.md.
+      //
+      // The other exemptions are utterances that are commands by shape alone and so can't be
+      // incidental speech: a bare key name ("Escape.", "Backspace."), and a plain "open <known
+      // app>" ("Open Warp."). Both were being scored not_addressed in always-listening mode and
+      // silently dropped even though the intent was right (observed 2026-09-25).
+      const standaloneKeyboardCommand = isStandaloneKeyboardCommand(effectiveText, payload.keyName);
       if (
         settings.activationMode === "always_listening" &&
         !this.dictationActive &&
         !this.workflowActive &&
-        !isExplicitMediaControl(turn, summary)
+        !isExplicitMediaControl(turn, summary) &&
+        !standaloneKeyboardCommand &&
+        !isDeterministicAppLaunch(effectiveText, payload)
       ) {
         const addressedThreshold = settings.decisionProvider === "laya" ? LAYA_ADDRESSED_THRESHOLD : JEV_ADDRESSED_THRESHOLD;
         if (summary.addressed == null || summary.addressed < addressedThreshold) {
@@ -897,7 +910,6 @@ export class DragonPipeline {
       }
 
       const keyboardIntent = summary.intent === "press_key" || summary.intent === "shortcut";
-      const standaloneKeyboardCommand = isStandaloneKeyboardCommand(effectiveText, payload.keyName);
       if (this.dictationActive && keyboardIntent && (!turn.isFinal || !standaloneKeyboardCommand)) {
         if (turn.isFinal) {
           logger.event("pipeline.dictation_text_override", {

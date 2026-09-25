@@ -387,6 +387,53 @@ Summary, oldest to newest:
       classification and resolves directly to `chrome_new_tab`. Deterministic mode/edit controls
       now suppress interim provider calls and wait for the final turn before executing.
 
+  26. Twenty-sixth pass, from the Jev run of 2026-09-25 17:31 (session `sess_muh8mvmn_l3klaf`),
+      which showed four distinct classes of miss. All four are fixed; see DECISIONS.md for the
+      heuristic-URL split.
+
+      a. **"Open Google Chrome" never focused Chrome.** `extractUrl()` matched the `google` entry
+         in `KNOWN_WEBSITES` (it's a substring of the `google chrome` app alias) and returned
+         `https://www.google.com`, so `openAppOverride` bailed on `payload.url` and the
+         `open_app` case resolved to `chrome_open_url`. The log shows Jev answering correctly —
+         `open_app` / `app:Google Chrome` at confidence 1.0 with `appCandidates: ["Google
+         Chrome"]` — and the app then navigating instead of launching. `extractUrl()` now returns
+         `{ url, isHeuristic }`; a `KNOWN_WEBSITES` keyword hit is marked heuristic and a
+         heuristic URL no longer outranks a matched app alias. An explicitly spoken domain
+         ("open right dot com", "open right.com on chrome") still outranks it, so the earlier
+         locative-app-name fix is preserved. Verified: "open google chrome" → `activate_app:chrome`,
+         "open maps" → `activate_app:maps`, "open youtube" → still navigates, "open right.com on
+         chrome" → still navigates.
+
+      b. **The Always Listening "addressed" gate silently dropped real commands.** `Open Warp.`
+         (`open_app`), `Escape.` (`press_key`), `Backspace.` (`delete_text`) and `Minimize Chrome.`
+         (`hide_app`) were all discarded as `not_addressed` with the correct intent already
+         recognized. The gate exempted only explicit media control; it now also exempts a
+         standalone keyboard command and a deterministic `open <known app>` (reusing the
+         `isDeterministicAppLaunch` predicate exported from `resolve.ts`, so the pattern isn't
+         duplicated).
+
+      c. **One utterance could fan out into several concurrent provider calls.** `runDecision`
+         read `decisionInFlightByUtterance`, then `await`ed it, and only stored the new promise
+         afterwards — two turns landing in the same tick both read the same predecessor, both
+         resumed when it settled, and both ran. The log shows three `pipeline.decision_request`
+         events 3 ms apart for `utt_1790357552068_8` and three `decision.response` events, with
+         one execution. Beyond wasting calls, a response derived from a stale interim transcript
+         ("Open Reddit dot") could win that race. The chain is now built synchronously, so only
+         the newest link is ever read.
+
+      d. **`Open camera.` failed to resolve twice.** No `camera` entry in the Windows
+         `APP_ALIASES`, so `open_app` had no candidate. Added the Windows inbox apps a demo is
+         likely to name: camera, clock, calendar, weather, sticky notes, snipping tool, voice
+         recorder. These are protocol-handler launch tokens and, like every existing Windows
+         entry, are best-effort and version-dependent — **not verified on a real Windows machine**.
+
+      Verified by `npm run typecheck` and by two throwaway harnesses run against the built
+      `dist/`: one asserting the resolve/extract behavior for all the phrases above plus
+      regression guards, one replicating the old vs. new `runDecision` chaining shape to confirm
+      peak concurrency drops from >1 to 1. `DragonPipeline` itself was not instantiated — that
+      needs Electron and a real OS — so (b) and (c) are reasoned from the code paths plus the log
+      evidence, not executed end to end.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

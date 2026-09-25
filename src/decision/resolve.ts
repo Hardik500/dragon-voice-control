@@ -81,14 +81,27 @@ function clickElementOverride(effectiveText: string, payload: ExtractedPayload):
 }
 
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
-  if (payload.appCandidates.length === 0) return null;
-  // A URL is a more specific, more certain signal than an app-name substring match — without
-  // this, "Open right.com on Chrome" matched "chrome" as an app candidate and the override
-  // hijacked it into just re-activating Chrome, silently dropping the actual navigation.
-  if (payload.url) return null;
-  if (!OPEN_APP_PATTERN.test(effectiveText)) return null;
+  if (!isDeterministicAppLaunch(effectiveText, payload)) return null;
   const cand = payload.appCandidates[0];
   return { kind: "activate_app", appName: cand.label, appAlias: cand.appAlias };
+}
+
+/** True when this utterance is unambiguously "launch the app", decided entirely in code.
+ *
+ * Two conditions beyond the closed "open/launch/start X" pattern and a matched app alias:
+ *
+ * - A URL the user actually spoke ("open right dot com") outranks an app-name match, because
+ *   the app name is then usually locative ("open right.com *on chrome*") and hijacking it
+ *   silently drops the real navigation. A `KNOWN_WEBSITES` keyword hit is *not* that: it's a
+ *   substring match, and "open google chrome" hits the `google` entry, which navigated Chrome
+ *   to google.com instead of focusing Chrome.
+ * - Exported so the pipeline can also use it to exempt this shape from the "was this addressed
+ *   to Dragon?" gate, which otherwise dropped plain "open <app>" utterances in always-listening
+ *   mode (observed: "Open Warp." scored not_addressed and never ran). */
+export function isDeterministicAppLaunch(effectiveText: string, payload: ExtractedPayload): boolean {
+  if (payload.appCandidates.length === 0) return false;
+  if (!OPEN_APP_PATTERN.test(effectiveText)) return false;
+  return !payload.url || payload.urlIsHeuristic;
 }
 
 /**
@@ -126,8 +139,11 @@ export function resolveCommand(
     case "activate_app": {
       // "open X" with a concrete navigable target (a real URL/site was extracted) should
       // navigate there, not focus an app whose alias merely appears in the sentence as a
-      // locative ("open right.com *on chrome*"). When there's no URL it's genuinely an app.
-      if (payload.url) {
+      // locative ("open right.com *on chrome*"). A heuristic `KNOWN_WEBSITES` keyword is a
+      // weak URL, so when an app alias also matched the app wins instead — that is what makes
+      // "open google chrome" focus Chrome rather than navigate to google.com. With no app
+      // candidate the heuristic is all we have, so "open youtube" still navigates.
+      if (payload.url && (!payload.urlIsHeuristic || payload.appCandidates.length === 0)) {
         return { kind: "chrome_open_url", url: payload.url };
       }
       const cand = findAppCandidateForTarget(target, payload);

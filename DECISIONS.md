@@ -840,3 +840,27 @@ prevents a spoken sentence from unexpectedly leaving the text session.
 **Consequences:** `Control+Alt+I`, "stop typing", or "exit insert mode" is required before normal
 app commands work again. Keyboard controls such as Enter, Escape, arrows, shortcuts, newline,
 delete, and replace remain executable while Insert Mode is active.
+
+## 2026-09-25 — Split heuristic website matches from explicitly spoken URLs
+
+**Decision:** `extractUrl()` now returns `{ url, isHeuristic }` and `ExtractedPayload` carries
+`urlIsHeuristic`. A `KNOWN_WEBSITES` keyword hit is heuristic; an `https://` literal or a spoken
+domain ("reddit dot com") is not. A heuristic URL never outranks a matched app alias in
+`resolve.ts` — neither in `openAppOverride` nor in the `open_app` / `activate_app` case. With no
+app candidate it still navigates, so "open youtube" is unchanged.
+
+**Reason:** The Windows log of 2026-09-25 17:31 showed "Open Google Chrome" resolving to
+`chrome_open_url` against `https://www.google.com` while Jev had correctly answered
+`open_app` / `app:Google Chrome` at confidence 1.0. The `google` key in `KNOWN_WEBSITES` matched
+the `google chrome` app alias as a substring, and the pre-existing rule "a URL is a more specific
+signal than an app-name match" then discarded the app. That rule is right for "open right.com on
+chrome", where the app name is locative — but a keyword coincidence inside an app's own name is
+not a navigation target, and it broke the single most common app command. Tagging the weak signal
+keeps both cases correct instead of trading one bug for the other.
+
+**Consequences:** `extractUrl`'s signature changed; it had exactly one caller
+(`extractPayload`). A phrase that names both a known site and an app alias now always resolves to
+the app — "open google chrome", "open maps". Genuine site navigation still needs either a spoken
+domain or no app alias in the sentence. The same predicate (`isDeterministicAppLaunch`) now also
+exempts this shape from the Always Listening addressed gate, which had been dropping plain
+"open <app>" utterances outright.

@@ -42,6 +42,10 @@ export interface ExtractedPayload {
   appCandidates: AppCandidate[];
   dictatedText: string | null;
   url: string | null;
+  /** True when `url` came from the `KNOWN_WEBSITES` keyword heuristic instead of a domain the
+   * user actually spoke. A heuristic URL must not outrank a matched app alias — see
+   * `extract.ts`'s `ExtractedUrl` for why "open google chrome" was navigating to google.com. */
+  urlIsHeuristic: boolean;
   /** Set when Chrome is on a known site (e.g. music.youtube.com) whose own search should be
    * used instead of a generic Google search for this utterance's search query. */
   siteSearchUrl: string | null;

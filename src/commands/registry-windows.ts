@@ -67,6 +67,19 @@ export const APP_ALIASES: Record<string, WinAppAlias> = {
   powerpoint: { launchToken: "powerpnt", processName: "POWERPNT", label: "Microsoft PowerPoint" },
   outlook: { launchToken: "outlook", processName: "OUTLOOK", label: "Microsoft Outlook" },
   mail: { launchToken: "outlookmail:", processName: "olk", label: "Mail" },
+  // Windows 11 inbox apps. These are the ones a voice demo is most likely to ask for by name
+  // ("open camera", "open clock", …) and they were missing, so the utterance resolved to
+  // open_app with no app candidate and failed silently. Launch tokens are the `ms-*:` protocol
+  // handlers; like every entry here they're best-effort and version-dependent (an app removed
+  // or renamed in a later Windows release just fails to launch, which the pipeline reports).
+  camera: { launchToken: "microsoft.windows.camera:", processName: "WindowsCamera", label: "Camera" },
+  clock: { launchToken: "ms-clock:", processName: "ClockApp", label: "Clock" },
+  calendar: { launchToken: "ms-calendar:", processName: "CalendarApp", label: "Calendar" },
+  weather: { launchToken: "ms-weather:", processName: "WeatherApp", label: "Weather" },
+  "sticky notes": { launchToken: "ms-sticky-notes:", processName: "StickyNotesApp", label: "Sticky Notes" },
+  stickynotes: { launchToken: "ms-sticky-notes:", processName: "StickyNotesApp", label: "Sticky Notes" },
+  "snipping tool": { launchToken: "SnippingTool", processName: "SnippingTool", label: "Snipping Tool" },
+  "voice recorder": { launchToken: "SoundRecorder", processName: "SoundRecorderApp", label: "Voice Recorder" },
 };
 
 export interface WinKeySpec {
