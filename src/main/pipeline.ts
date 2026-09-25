@@ -744,6 +744,10 @@ export class DragonPipeline {
     const startedAt = Date.now();
     const sttTurnMs = Math.max(0, turn.receivedAt - turn.turnStartedAt);
     const sttToDecisionMs = startedAt - turn.receivedAt;
+    /** Split of the pre-provider work, logged so the latency budget is measurable rather than
+     * inferred from `decisionMs - jevMs`. See the Promise.all in the try block below. */
+    let activeAppMs = 0;
+    let snapshotMs = 0;
     const controller = this.registerInFlight(turn.utteranceId);
 
     this.onOverlay({
@@ -785,23 +789,33 @@ export class DragonPipeline {
     }
 
     try {
-      const activeApp = await automation.getActiveAppName();
-      const isChromeActive = activeApp === "Google Chrome";
-      // Fetch the page snapshot whenever the extension is connected, not only when our
-      // own (sometimes-unreliable) frontmost-app detection says "Google Chrome" — the
-      // user may be looking at Chrome while a different app briefly reports as frontmost,
-      // and this call is a cheap local WebSocket round trip either way.
-      const browserPage = this.browserBridge.isConnected() ? await this.browserBridge.requestSnapshot() : null;
-      const payload = extractPayload(effectiveText, browserPage);
-      const targetCandidates = buildTargetCandidates(payload);
-      const questions = buildQuestions({
-        includeAddressed: settings.activationMode === "always_listening",
-        targetCandidates,
-      });
-      const state = buildState({ transcript: effectiveText, activeApp, browserPage });
-
+      // Hoisted above every await: the cache key depends only on the utterance, provider and
+      // normalized text, so a hit can be detected without first paying for the reads below.
       const cacheKey = `${turn.utteranceId}::${settings.decisionProvider}:${settings.layaModel}::${normalizeDecisionText(effectiveText)}::${settings.activationMode}`;
       const cached = this.jevAnswerCache.get(cacheKey);
+
+      // The OS active-app read spawns a `powershell.exe` that compiles the User32 P/Invoke
+      // block on every call. That measured at ~700ms — more than the LLM request itself — and
+      // it was running before the cache check, so all 19 cache hits in one session paid for a
+      // read only the provider path needs (the app context in the prompt). Skip it on a hit.
+      //
+      // The page snapshot is still needed on both paths, because `payload` drives the addressed
+      // gate and the resolver even for a cached answer (a cached chrome_click still has to
+      // resolve an element id). The two reads are independent, so overlap them: previously they
+      // were sequential.
+      const activeAppStarted = Date.now();
+      const snapshotStarted = Date.now();
+      const [activeApp, browserPage] = await Promise.all([
+        (cached ? Promise.resolve(null) : automation.getActiveAppName()).then((value) => {
+          activeAppMs = Date.now() - activeAppStarted;
+          return value;
+        }),
+        (this.browserBridge.isConnected() ? this.browserBridge.requestSnapshot() : Promise.resolve(null)).then((value) => {
+          snapshotMs = Date.now() - snapshotStarted;
+          return value;
+        }),
+      ]);
+      const payload = extractPayload(effectiveText, browserPage);
       let summary: JevAnswerSummary;
       let decisionMs: number;
       let jevMs: number | null = null;
@@ -811,14 +825,30 @@ export class DragonPipeline {
         // EagerEndOfTurn immediately followed by an EndOfTurn with no new words) — reuse the
         // answer instead of spending another Jev call on an identical question.
         this.unregisterInFlight(controller);
-        logger.event("pipeline.decision_cache_hit", { utteranceId: turn.utteranceId, turnEvent: turn.event });
+        logger.event("pipeline.decision_cache_hit", {
+          utteranceId: turn.utteranceId,
+          turnEvent: turn.event,
+          activeAppMs,
+          snapshotMs,
+        });
         summary = cached;
         decisionMs = Date.now() - startedAt;
       } else {
+        // Only the provider path needs the target candidates, the question set and the state
+        // built from the active app / page snapshot, so build them here rather than above.
+        const targetCandidates = buildTargetCandidates(payload);
+        const questions = buildQuestions({
+          includeAddressed: settings.activationMode === "always_listening",
+          targetCandidates,
+        });
+        const state = buildState({ transcript: effectiveText, activeApp, browserPage });
+
         logger.event("pipeline.decision_request", {
           utteranceId: turn.utteranceId,
           turnEvent: turn.event,
           activeApp,
+          activeAppMs,
+          snapshotMs,
           effectiveText,
           provider: settings.decisionProvider,
           sttTurnMs,
@@ -1024,7 +1054,7 @@ export class DragonPipeline {
       const execStarted = Date.now();
       let execError: string | null = null;
       try {
-        await this.executeCommand(resolved, isChromeActive);
+        await this.executeCommand(resolved);
       } catch (err) {
         execError = err instanceof Error ? err.message : String(err);
       }
@@ -1062,6 +1092,8 @@ export class DragonPipeline {
         provider: settings.decisionProvider,
         sttTurnMs,
         sttToDecisionMs,
+        activeAppMs,
+        snapshotMs,
         decisionMs,
         jevMs,
         executionMs,
@@ -1199,7 +1231,7 @@ export class DragonPipeline {
     });
   }
 
-  private async executeCommand(cmd: ResolvedCommand, isChromeActive: boolean): Promise<void> {
+  private async executeCommand(cmd: ResolvedCommand): Promise<void> {
     switch (cmd.kind) {
       case "open_app":
         return automation.openApp(cmd.appAlias!);
@@ -1247,11 +1279,10 @@ export class DragonPipeline {
       case "open_finder_location":
         return automation.openFinderLocation(cmd.location!);
       case "chrome_open_url":
-        return this.openUrlPreferringExistingTab(cmd.url!, isChromeActive);
+        return this.openUrlPreferringExistingTab(cmd.url!);
       case "chrome_search":
         return this.openUrlPreferringExistingTab(
-          cmd.url ?? `https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`,
-          isChromeActive
+          cmd.url ?? `https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`
         );
       case "chrome_click":
         return this.requireBrowserAction({ kind: "click", elementId: cmd.elementId! });
@@ -1310,7 +1341,7 @@ export class DragonPipeline {
    * one. Falls back to the plain OS-level open (which always creates a new tab/window) when
    * the extension isn't loaded/connected — no DOM access required either way.
    */
-  private async openUrlPreferringExistingTab(url: string, _isChromeActive: boolean): Promise<void> {
+  private async openUrlPreferringExistingTab(url: string): Promise<void> {
     if (this.browserBridge.isConnected()) {
       const res = await this.browserBridge.sendAction({ kind: "focus_or_open", url });
       if (res.ok) return;

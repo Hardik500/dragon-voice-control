@@ -4,7 +4,14 @@ import { TranscriptEvent } from "../types/pipeline";
 
 const SAMPLE_RATE = 16000;
 const STT_MODEL = "flux-general-en";
-const EAGER_EOT_THRESHOLD = "0.5";
+/** Flux end-of-turn confidence for the *eager* (preemptive) end-of-turn event. Lowered from our
+ * previous 0.5 to 0.35 because this is the largest single term in the latency budget: `sttTurnMs`
+ * measured ~850ms median, which is mostly the silence wait after the user stops speaking. Deepgram
+ * documents 0.3-0.9 as the usable range. Executing from an interim turn is already gated on intent
+ * confidence and sentence completeness in the pipeline, so a lower threshold mostly means the
+ * transcript is *available* earlier rather than that a truncated command runs. Raise this back
+ * toward 0.5 if interim misfires appear; it is a pure tuning value. */
+const EAGER_EOT_THRESHOLD = "0.35";
 const FINAL_EOT_THRESHOLD = "0.7";
 const EOT_TIMEOUT_MS = "8000";
 /** Deepgram Numerals. On by default because a spoken number that stays a word is wrong for every

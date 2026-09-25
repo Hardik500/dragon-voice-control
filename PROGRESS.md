@@ -714,6 +714,58 @@ Summary, oldest to newest:
       ("Docker Desktop"), and that the `SetFocus`/Alt-tap fixes are still intact. The PowerShell
       was not executed — no Windows machine here.
 
+  35. Thirty-fifth pass — latency. From the run of 2026-09-25 20:34 (session
+      `sess_muhf6a1w_fe7s5i`, 13 commands). Median end-to-end was `totalMs` 1963, broken down as:
+
+      | Component | Median | Whose cost |
+      | --- | --- | --- |
+      | `sttTurnMs` (speech + end-of-turn silence) | 847ms | partly tunable |
+      | pre-provider overhead (`decisionMs` − `jevMs`) | ~715ms | ours |
+      | `jevMs` (the LLM request) | 398ms | theirs |
+      | `executionMs` | 121ms (p90 1459) | ours, for app commands |
+
+      The ~715ms was `automation.getActiveAppName()`, which spawns a `powershell.exe` that
+      compiles the User32 `Add-Type` block on every call — more expensive than the LLM request it
+      was feeding. Three changes, none of which add P/Invoke or touch the resolver:
+
+      - **The cache lookup now runs above the awaits.** The cache key depends only on utterance,
+        provider and normalized text, so a hit is detectable without any read. One session had 19
+        hits, and all 19 had been paying for an active-app read only the provider path needs. The
+        page snapshot still runs on both paths, because `payload` drives the addressed gate and
+        the resolver even for a cached answer (a cached `chrome_click` still has to resolve an
+        element id).
+      - **The two reads are overlapped with `Promise.all`** instead of running sequentially.
+      - **Removed the dead `isChromeActive` parameter** threaded through `executeCommand` into
+        `openUrlPreferringExistingTab(url, _isChromeActive)`, which never used it. Not just
+        cleanup: the cache-hit change makes that flag silently `false` on hits, so leaving a
+        parameter that looks load-bearing but is not would have been a latent trap.
+      - **`eager_eot_threshold` 0.5 → 0.35** (Deepgram documents 0.3–0.9). This attacks
+        `sttTurnMs`, the largest term, which is mostly the silence wait after the user stops
+        talking. Interim execution is already gated on intent confidence and sentence
+        completeness, so this mostly makes the transcript *available* earlier rather than running
+        truncated commands. `eot_threshold` (0.7) and `eot_timeout_ms` (8000) are deliberately
+        untouched — those guard the final turn. Pure tuning value, revert in one place if interim
+        misfires appear.
+
+      **Added the missing instrumentation:** `activeAppMs` and `snapshotMs` are now logged on
+      `pipeline.decision_request`, `pipeline.decision_cache_hit` and `pipeline.execution`. Until
+      now the split could only be inferred from `decisionMs - jevMs`, which is why the PowerShell
+      cost went unnoticed for so long. Check these first on the next run.
+
+      Verified with `npm run typecheck`, `npm run build`, and two throwaway harnesses: one
+      exercising the exact restructured control flow (cache hit → active-app read not called and
+      no PowerShell cost, snapshot still fetched; cache miss → both reads overlap so total is
+      under the sequential sum; extension disconnected → no snapshot, still works), and one
+      asserting the STT connection params (`eager_eot_threshold` 0.35 with `eot_threshold`,
+      `eot_timeout_ms`, `numerals` and all 33 keyterms unchanged) plus a resolver regression
+      guard. **The measured effect is unknown** — these cannot be executed on Linux. The next run's
+      `totalMs` median and the new `activeAppMs` / `snapshotMs` fields are the measurement.
+
+      Still not attempted, and the real fix for both the remaining overhead and the ~1.5s app
+      command executions: a persistent PowerShell host instead of one process per action. That
+      would take app launches from ~1.5s to tens of milliseconds and delete the pre-provider cost
+      outright, but it is a refactor, not a quick fix.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

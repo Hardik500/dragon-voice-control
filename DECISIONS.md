@@ -1016,3 +1016,36 @@ label falls back to today's behavior. It applies to every alias, not just Chrome
 Chrome-only special case would have been the unprincipled option. The extension filter uses the
 documented `windowType` query filter, so no new permission. The PowerShell remains unexecuted
 here; the extension half is covered by a stubbed-Chrome-API harness.
+
+## 2026-09-26 — Don't read the frontmost app when the answer is already cached
+
+**Decision:** In `pipeline.ts`'s `runDecisionInternal`, the provider-answer cache lookup now runs
+above the two front-end reads. On a cache hit the OS active-app read is skipped entirely; on a miss
+the active-app read and the page snapshot are issued together with `Promise.all` instead of
+sequentially. `buildTargetCandidates` / `buildQuestions` / `buildState` moved into the provider
+branch, where they are the only consumer. The dead `isChromeActive` parameter was removed from
+`executeCommand` and `openUrlPreferringExistingTab`. `eager_eot_threshold` lowered 0.5 → 0.35.
+`activeAppMs` and `snapshotMs` are now logged.
+
+**Reason:** The 20:34 run showed `decisionMs` ~1113ms against a `jevMs` of ~398ms — roughly 715ms
+of our own overhead per decision, and `getActiveAppName()` spawns a `powershell.exe` that compiles
+the User32 `Add-Type` block on every call. It ran *before* the cache check, so all 19 cache hits in
+that session paid for a read only the provider path needs (app context in the prompt). The two
+reads were also sequential despite being independent. Separately, `sttTurnMs` at ~850ms median is
+the largest single term and is mostly end-of-turn silence, which is what the threshold change
+attacks.
+
+**Consequences:** A cache hit no longer spawns a PowerShell process, and a miss overlaps the two
+reads. The page snapshot is still fetched on both paths on purpose: `payload` drives the addressed
+gate and `resolveCommand` even for a cached answer, and a cached `chrome_click` still has to
+resolve an element id — skipping it would break cached browser commands. Removing `isChromeActive`
+was not cosmetic: the cache-hit change makes that flag `false` on hits, so a parameter that looks
+load-bearing but is not would have been a latent trap for whoever wires it up next. The threshold
+change trades a little truncation risk for latency; interim execution is already gated on intent
+confidence and sentence completeness, `eot_threshold` and `eot_timeout_ms` are untouched, and it
+reverts in one place. The new `activeAppMs` / `snapshotMs` fields exist because this cost was
+invisible until now — it had to be inferred from `decisionMs - jevMs`, which is how a ~700ms
+per-turn expense survived several passes. **None of this is measured yet**: the pipeline cannot run
+on Linux, so the next run's `totalMs` median and the new fields are the evidence. The durable fix
+is a persistent PowerShell host, which would also remove the ~1.5s app-command executions; that is
+a refactor and deliberately not attempted here.
