@@ -555,7 +555,7 @@ Summary, oldest to newest:
 
   30. Thirtieth pass: added 12 core command verbs to the Deepgram `keyterm` list — `open`,
       `close`, `minimize`, `maximize`, `scroll`, `click`, `type`, `search`, `press`, `delete`,
-      `volume`, `mute` (40 keyterms / 54 tokens total, against a 500-token limit).
+      `volume`, `mute` (33 keyterms / 47 tokens total, against a 500-token limit).
 
       Scanned all 94 transcripts in the last two days that changed between StartOfTurn and
       EndOfTurn. Most changes are ordinary refinement (`okay`→`open`, `click on`→`click`), but
@@ -573,6 +573,54 @@ Summary, oldest to newest:
       Note this is a best-effort knob, not a fix: `pause` and `play` were *already* keyterms and
       were still misheard (`balls`/`body`/`well,`→pause). Worth judging from the next run's
       transcripts rather than assuming.
+
+  31. Thirty-first pass, from the Jev run of 2026-09-25 18:20 (session `sess_muhaddpf_tmoxje`).
+      This run had both STT changes live — `stt.connected` logged `numerals: "true"` and
+      `keytermCount: 33` — and both behaved: "2 plus 2" transcribed as digits rather than words,
+      and "Open Google Chrome" executed `activate_app` against `app:Google Chrome` instead of
+      navigating to google.com. The one-provider-call-per-utterance behavior also held.
+
+      **Fixed:** `type_text` failed to resolve when there was no verb-led dictated span. The log
+      shows Jev answering correctly and the resolver refusing:
+
+      ```
+      18:20:48.656 stt.turn           transcript="2 plus"
+      18:20:49.313 decision.response    intent=type_text  intentConfidence=0.73
+      18:20:49.590 pipeline.ignored     reason=resolution_failed
+      ```
+
+      `extractDictatedText` only matches a verb-led span (`type|enter|write|dictate` + content), so
+      an utterance that *is* the text yielded no payload. Once the decision layer has said "type
+      this", the whole utterance is the text, so `resolveCommand` now falls back to it. Verified:
+      "2 plus" → `type_text("2 plus")`, "5551234" → `type_text("5551234")`, and the verb-led forms
+      still strip the verb ("type hello world" → "hello world", "dictate in hello" → "hello").
+
+      **Not fixed, recorded deliberately — both are scope calls rather than defects:**
+
+      - *Insert Mode types a real command instead of running it.* At 18:21:38 "Open Google
+        Chrome" was dictated verbatim as text because a dictation session was active
+        (`dictation_direct_text`, reason `text_first`). This is Insert Mode working exactly as
+        designed (text-first by decision — see the 2026-09-25 "Make Insert Mode text-only" entry),
+        and re-saying it after "Stop typing." worked. The papercut is that there is no way to say
+        "open chrome" without first leaving dictation. Changing that is a mode-semantics decision,
+        so it is left alone.
+
+      - *Store/UWP apps have no process-owned window, so window targeting misses them.* The same
+        run reports `activeApp: "Application Frame Host"` at 18:21:44, 18:21:59 and 18:22:04 while
+        Calculator was focused (it read plain `"Calculator"` at 18:20:42, so the ownership is not
+        even stable across a session). Windows Store apps host the visible window under
+        `ApplicationFrameHost` rather than their own process, which means
+        `Get-Process -Name 'CalculatorApp' | Where MainWindowHandle -ne 0` in `activateApp`/`hideApp`
+        returns nothing. The practical effect: `activateApp` falls through to `Start-Process` and
+        opens a *second* instance instead of focusing the existing window, and `hideApp` silently
+        does nothing. This affects most of the inbox apps added in pass 26 (Calculator, Photos,
+        Settings, Maps, Store, Snipping Tool, Sticky Notes, Clock, Weather, Calendar). A real fix
+        means UWP app activation rather than process-name window lookup, which is well beyond this
+        pass — flagged here so it is not rediscovered from scratch.
+
+      Also minor: "Open YouTube Music" transcribed as "OpenUT Music" and was dropped as
+      `not_addressed`. `YouTube Music` is a keyterm and still garbled, which is consistent with
+      keyterm prompting being best-effort rather than a fix.
 
 ## Exact next task
 

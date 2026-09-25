@@ -159,8 +159,14 @@ export function resolveCommand(
     case "switch_previous_app":
       return { kind: intent };
     case "type_text": {
-      if (!payload.dictatedText) return null;
-      return { kind: intent, text: payload.dictatedText };
+      // `extractDictatedText` only recognizes a verb-led span ("type hello", "write hello"), so
+      // an utterance that *is* the text — "2 plus" spoken to Calculator, which Jev correctly
+      // labeled type_text — produced no payload and failed resolution even though the decision
+      // was right (observed 2026-09-25 18:20). Once the decision layer has said "type this", the
+      // whole utterance is the text, so fall back to it rather than refusing to act.
+      const text = payload.dictatedText ?? effectiveText.trim();
+      if (!text) return null;
+      return { kind: intent, text };
     }
     case "press_key": {
       const key = payload.keyName;
