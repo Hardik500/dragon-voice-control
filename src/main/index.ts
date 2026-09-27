@@ -1,4 +1,4 @@
-import { app, session, shell, systemPreferences, BrowserWindow, Tray } from "electron";
+import { app, session, shell, systemPreferences, BrowserWindow, Menu, Tray } from "electron";
 import { logger } from "../logging/logger";
 import { SettingsStore } from "./settings-store";
 import { BrowserBridge } from "../browser/server";
@@ -136,6 +136,15 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   logger.event("app.start", { platform: process.platform, arch: process.arch });
   app.dock?.hide();
+
+  // Electron installs a full File/Edit/View/Window/Help application menu by default. For a tray
+  // app whose only window is a settings pane, that bar is pure noise. macOS will not let a
+  // regular app have no menu bar at all, so this trims it to the smallest bar that stays usable.
+  //
+  // Edit is kept on purpose. On macOS the clipboard shortcuts are menu *roles*, not Chromium
+  // built-ins, so dropping this menu risks breaking Cmd+C/Cmd/V — and the settings window's
+  // main job is pasting API keys into text fields. That is not worth a marginally cleaner bar.
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }]));
 
   // The hidden mic-capture window needs getUserMedia; auto-approve only the
   // media permission for our own windows (there is no third-party content).

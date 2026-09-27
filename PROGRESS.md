@@ -1125,6 +1125,30 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       hosts. The decision logic and the shape of the promotion are checked; the live
       `gh release edit --draft=false` on this particular draft has not run.
 
+  45. Forty-fifth pass: trimmed the macOS application menu bar. Asked for the
+      `File Edit View Window Help` bar to be hidden. That bar was Electron's built-in default —
+      Dragon never called `setApplicationMenu`, so it got the full standard menu for free. For a
+      tray app (`app.dock?.hide()` already in place) whose only window is a settings pane, it is
+      pure noise.
+
+      Now set to `appMenu` + `editMenu`, which drops File, View, Window and Help.
+
+      Cannot go further, and the reason is a platform constraint rather than a choice: macOS will
+      not let a regular app have no application menu while it is frontmost, so the bar becomes
+      `🍎 Dragon   Edit` rather than disappearing. The only way to get no bar at all is a true
+      agent app (LSUIElement), which is not viable here — a window belonging to a non-Dock app
+      cannot take keyboard focus, so the settings window could not accept typed or pasted input.
+
+      Edit is kept deliberately rather than dropped for a cleaner bar. On macOS the clipboard
+      shortcuts are menu *roles*, not Chromium built-ins, so removing that menu risks breaking
+      Cmd+C/Cmd/V, and pasting API keys into the settings fields is that window's main job.
+      Consequence worth naming: the View menu is gone, so the Cmd+Alt+I devtools accelerator is
+      gone with it. Restore it by adding `{ role: "viewMenu" }`, or a single
+      `{ role: "toggleDevTools" }` item, to the same template.
+
+      Not verified: no GUI on this host, so the trimmed bar has not been seen. The roles are
+      confirmed present in Electron's typings and `typecheck` is clean.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
