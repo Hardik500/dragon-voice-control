@@ -32,7 +32,6 @@ const PKG_PATH = path.join(ROOT, "package.json");
 const RELEASE_DIR = path.join(ROOT, "release");
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
-const SHELL = IS_WIN;
 
 /** What each platform contributes to a release. */
 const PLATFORM = IS_WIN
@@ -46,15 +45,39 @@ function die(msg) {
   process.exit(1);
 }
 
+/**
+ * Windows needs a shell to run .cmd/.bat shims, but a shell concatenates arguments
+ * without escaping, so any argument containing a space is split in two. That is not
+ * theoretical: `git commit -m "release: v0.1.0"` becomes `git commit -m "release:" v0.1.0`
+ * and dies with "error: pathspec 'v0.1.0' did not match any file(s) known to git".
+ * Verified against real git, both ways.
+ *
+ * So: use a shell only for .cmd/.bat, and refuse to do it with a spaced argument rather
+ * than let it corrupt the call. Everything else -- git, gh, ditto, node.exe -- runs
+ * unshelled, where arguments are passed as an array and spaces are safe.
+ */
+function needsShell(cmd, args) {
+  if (!IS_WIN || !/\.(cmd|bat)$/i.test(cmd)) return false;
+  const spaced = args.filter((a) => /\s/.test(a));
+  if (spaced.length) {
+    throw new Error(
+      `Refusing to shell out to ${path.basename(cmd)} with a spaced argument, which the ` +
+      `shell would split: ${JSON.stringify(spaced)}\n` +
+      `  .cmd shims require a shell on Windows, so the argument has to be space-free.`
+    );
+  }
+  return true;
+}
+
 function run(cmd, args, label) {
   if (label) console.log(`  $ ${cmd} ${args.join(" ")}`);
-  const res = spawnSync(cmd, args, { stdio: "inherit", shell: SHELL, cwd: ROOT });
+  const res = spawnSync(cmd, args, { stdio: "inherit", shell: needsShell(cmd, args), cwd: ROOT });
   if (res.error) throw res.error;
   if (res.status !== 0) die(`${label || cmd} failed (exit ${res.status})`);
 }
 
 function capture(cmd, args) {
-  return execFileSync(cmd, args, { encoding: "utf8", shell: SHELL, cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync(cmd, args, { encoding: "utf8", shell: needsShell(cmd, args), cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 function git(...args) {

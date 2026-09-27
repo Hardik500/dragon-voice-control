@@ -25,7 +25,6 @@ const { spawnSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const RELEASE_DIR = path.join(ROOT, "release");
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
-const SHELL = process.platform === "win32";
 
 /** An Electron bundle is never this small; a floor like this catches a failed or
  *  truncated build without being brittle about the exact size. */
@@ -33,9 +32,27 @@ const MIN_ARTIFACT_BYTES = 20 * 1024 * 1024;
 
 const { version } = require(path.join(ROOT, "package.json"));
 
+/**
+ * Windows needs a shell to run .cmd/.bat shims (npm.cmd, electron-builder.cmd), but a shell
+ * concatenates arguments without escaping, so any argument containing a space is split in two.
+ * Refuse to do that rather than corrupt the call. Everything else runs unshelled, where
+ * arguments are passed as an array and spaces are safe. Same rule as scripts/release.js.
+ */
+function needsShell(cmd, args) {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(cmd)) return false;
+  const spaced = args.filter((a) => /\s/.test(a));
+  if (spaced.length) {
+    throw new Error(
+      `Refusing to shell out to ${path.basename(cmd)} with a spaced argument, which the ` +
+      `shell would split: ${JSON.stringify(spaced)}`
+    );
+  }
+  return true;
+}
+
 function run(cmd, args, label) {
   process.stdout.write(`\n▸ ${label}\n  $ ${cmd} ${args.join(" ")}\n\n`);
-  const res = spawnSync(cmd, args, { stdio: "inherit", shell: SHELL, cwd: ROOT });
+  const res = spawnSync(cmd, args, { stdio: "inherit", shell: needsShell(cmd, args), cwd: ROOT });
   if (res.error) throw res.error;
   if (res.status !== 0) throw new Error(`${label} failed (exit ${res.status})`);
 }

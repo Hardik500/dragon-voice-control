@@ -957,6 +957,38 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       visible because the scratch repo was wrong in a way that happened to match a real
       condition.
 
+  40. Fortieth pass: a Windows-only release-breaking bug, surfaced by a DeprecationWarning the
+      user pasted in. Worth recording how it was found, because the warning was the only evidence
+      and it was easy to dismiss as cosmetic.
+
+      `run()` and `capture()` passed `shell: true` on Windows so that `.cmd` shims would resolve.
+      A shell concatenates arguments without escaping, so any argument containing a space is split
+      in two. The version-bump commit is `git commit -m "release: v0.1.0"` — the message has a
+      space. On Windows that reached git as `git commit -m "release:" v0.1.0`, which exits 1 with
+      `error: pathspec 'v0.1.0' did not match any file(s) known to git`. Confirmed by running the
+      real command both ways in a scratch repo and reading back the recorded subject:
+      shell:true -> exit 1, subject still "init"; shell:false -> exit 0, subject "release: v0.1.0".
+      `gh release create ... --title "Dragon v0.1.0"` had the same defect, reaching gh as
+      `--title Dragon v0.1.0` ("no matches found for `v0.1.0`"). A dry run could never have caught
+      it, since it returns before the commit.
+
+      Fix: `needsShell(cmd, args)` allows a shell only for `.cmd`/`.bat`, and refuses loudly if
+      such a call is ever given a spaced argument, so the trap cannot be re-entered silently.
+      Everything else — git, gh, ditto, node.exe — runs unshelled, where arguments go through as
+      an array and spaces are safe. Applied to both `release.js` and `build-release.js`, which
+      carried the same blanket shell. `build-release.js`'s existing calls were all space-free, so
+      it was latent rather than live.
+
+      Verified: 23 checks, including all 14 real command invocations in release.js confirmed to
+      take `shell=false`, both `.cmd` shims confirmed to still get one, a spaced argument to a
+      `.cmd` confirmed to be refused, and the old behaviour confirmed to still fail. The DEP0190
+      warning itself is gone — re-run under `--throw-deprecation` for each preflight call, with a
+      control proving the test is not vacuous. The decision logic is untouched and re-checked.
+
+      My first attempt at proving this was worthless: I counted child-process argv entries with a
+      `printf` probe whose format string contained backslashes, which the shell ate, so the counts
+      were meaningless and one "failure" was an artifact. Replaced with the ground-truth test above.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
