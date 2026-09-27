@@ -1228,6 +1228,58 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       Start Menu entry benefits from a stable AppUserModelID. It was not part of the reported
       problem and cannot be verified here, so it is noted in DECISIONS.md rather than guessed at.
 
+  48. Forty-eighth pass: "when I saved the token and re-opened the app it didn't work, had to paste
+      it again". Persistence was never broken — the UI misrepresented it. Found by reading the
+      real file rather than reasoning: `%APPDATA%\Dragon\settings.json` on the user's machine
+      contained both `openRouterApiKey` and `deepgramApiKey`, written minutes earlier.
+
+      The cause is that secrets are deliberately never sent to the renderer
+      (`toRendererSafe` strips them), so on reopen both key fields render **empty**. The only
+      signal was a faint grey placeholder reading "saved — leave blank to keep". An empty box
+      reads as "not saved", so the conclusion drawn was correct given the evidence on screen and
+      wrong about the actual state. Fixed by making a saved key look saved:
+
+      - the field's *value* becomes a mask (`••••••••••••`) rather than the placeholder, so an
+        empty field now unambiguously means "no key"
+      - an explicit state line under each field: "Saved on this machine." / "No key saved yet."
+      - a **Clear** button per key, because blanking the field has never been able to express
+        "remove this" — `save()` skips empty values to mean "keep what's stored", so a saved key
+        was previously only clearable by hand-editing the JSON
+      - `save()` treats the mask as "keep what's stored" and any other typed value as a
+        replacement
+
+      Second, real bug found alongside it: `SettingsStore.persist()` caught every write error and
+      only logged it, so a failed write still produced "Saved." in the UI. That is what made this
+      class of problem invisible, and it could have turned a permissions problem into a silent
+      data-loss report. `persist()` now returns a result, `update()` records it on
+      `persistedLast`, the `settings:update` handler returns it, and the renderer says
+      **"NOT saved — the file could not be written. See the log."** rather than lying. The
+      `settings.updated` log event now carries `persisted` too, so this is diagnosable after the
+      fact.
+
+      Verified 17 checks against the **real compiled `SettingsStore`** from `dist/`, with
+      `electron` stubbed so `getPath()` points at a scratch directory — not a reimplementation:
+      a key saved then read back by a brand-new store instance survives and other fields survive
+      with it; the renderer payload contains `hasDeepgramKey: true` and still no key material; a
+      write forced to fail (a directory in the file's place) reports `persistedLast === false`,
+      which is exactly the case the old code reported as success; clearing a key works and stays
+      cleared across a reopen; and the mask is never mistaken for a real key in either direction.
+      One failure on the first pass was the test's own fault — section 3 destroys the file to force
+      a write failure, so section 4 started with no key; re-establishing state fixed it.
+
+      Not verified: the rendered appearance. There is no GUI on this host, so the mask, the state
+      line and the Clear button have not been seen.
+
+      Also worth recording: the user's guess that this might be fixed by the app being properly
+      installed is not right, and worth saying plainly. Settings live in `%APPDATA%\Dragon`,
+      which comes from Electron's `userData` path and is identical for a portable build and an
+      installed one. Installing changes nothing about persistence. The NSIS change in pass 47 is
+      independent of this fix.
+
+      **Security note:** reading `settings.json` to diagnose this printed the user's live
+      OpenRouter and Deepgram API keys into the session transcript. Both should be treated as
+      compromised and rotated. The right approach was to read only the key *names* and lengths.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

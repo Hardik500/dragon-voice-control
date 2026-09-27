@@ -22,6 +22,14 @@
   }
   .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .row label { margin-bottom: 0; }
+  /* A saved key must not look like an empty field. The stored secret is never sent to the
+     renderer, so a saved key is shown as a mask in the input itself plus an explicit line
+     of text -- an empty box reads as "not saved", which is exactly the wrong conclusion. */
+  .keyRow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .keyRow input { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+  .keyRow button.clear { flex: 0 0 auto; margin-right: 0; }
+  .keyState { font-size: 11px; margin: 0 0 12px; min-height: 14px; color: #7dd07d; }
+  .keyState.none { color: #888; }
   button {
     background: #3d5afe; color: white; border: none; border-radius: 6px; padding: 8px 12px;
     font-size: 13px; cursor: pointer; margin-right: 8px;
@@ -41,9 +49,17 @@
 
   <h2>API Keys</h2>
   <label for="openRouterApiKey">OpenRouter API key (used when Jev is selected)</label>
-  <input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" />
+  <div class="keyRow">
+    <input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" />
+    <button id="clearOpenRouterKey" type="button" class="secondary clear">Clear</button>
+  </div>
+  <div id="openRouterKeyState" class="keyState"></div>
   <label for="deepgramApiKey">Deepgram API key (used for streaming transcription)</label>
-  <input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" />
+  <div class="keyRow">
+    <input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" />
+    <button id="clearDeepgramKey" type="button" class="secondary clear">Clear</button>
+  </div>
+  <div id="deepgramKeyState" class="keyState"></div>
 
   <h2>Decision provider</h2>
   <label for="decisionProvider">Provider</label>

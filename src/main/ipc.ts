@@ -23,10 +23,10 @@ export function registerIpc(deps: IpcDeps) {
   ipcMain.handle("settings:update", (_e, partial: Partial<DragonSettings>) => {
     const previous = deps.settingsStore.get();
     const updated = deps.settingsStore.update(partial);
-    logger.event("settings.updated", { fields: Object.keys(partial) });
+    logger.event("settings.updated", { fields: Object.keys(partial), persisted: deps.settingsStore.persistedLast });
     const modeChanged = partial.activationMode != null && partial.activationMode !== previous.activationMode;
     deps.onSettingsChanged(updated, modeChanged ? partial.activationMode : undefined);
-    return toRendererSafe(updated);
+    return { ...toRendererSafe(updated), persisted: deps.settingsStore.persistedLast };
   });
 
   ipcMain.handle("decision-provider:check", async () => {

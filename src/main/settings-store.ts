@@ -46,15 +46,27 @@ export class SettingsStore {
 
   update(partial: Partial<DragonSettings>): DragonSettings {
     this.settings = { ...this.settings, ...partial };
-    this.persist();
+    this.lastPersistOk = this.persist();
     return this.settings;
   }
 
-  private persist() {
+  /** Whether the most recent update() actually reached disk. The Settings window reports this
+   *  instead of assuming success: a failed write used to be swallowed here, so the UI said
+   *  "Saved." while nothing had been written. */
+  get persistedLast(): boolean {
+    return this.lastPersistOk;
+  }
+
+  private lastPersistOk = true;
+
+  private persist(): boolean {
     try {
       fs.writeFileSync(this.filePath, JSON.stringify(this.settings, null, 2), "utf-8");
+      return true;
     } catch (err) {
+      this.lastPersistOk = false;
       logger.error("settings.persist", err);
+      return false;
     }
   }
 }

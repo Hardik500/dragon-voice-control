@@ -38,14 +38,45 @@ function escapeHtml(s: string): string {
   return div.innerHTML;
 }
 
+/** Stand-in for a stored secret. The real value is never sent to the renderer, so a saved key
+ *  is shown as this in the input. An empty field must mean "no key", otherwise reopening the
+ *  app looks identical to losing the key -- which is the bug this replaces. */
+const KEY_MASK = "••••••••••••";
+
+/** Render one API-key field: the mask (or nothing), the state line, and whether Clear applies. */
+function renderKeyField(
+  inputId: string,
+  stateId: string,
+  clearId: string,
+  saved: boolean,
+  emptyPlaceholder: string
+): void {
+  const input = byId<HTMLInputElement>(inputId);
+  const state = byId<HTMLDivElement>(stateId);
+  const clear = byId<HTMLButtonElement>(clearId);
+  input.placeholder = emptyPlaceholder;
+  input.value = saved ? KEY_MASK : "";
+  state.textContent = saved ? "Saved on this machine." : "No key saved yet.";
+  state.className = saved ? "keyState" : "keyState none";
+  clear.disabled = !saved;
+}
+
 async function load() {
   const settings = await window.dragonSettings.get();
-  byId<HTMLInputElement>("openRouterApiKey").placeholder = settings.hasOpenRouterKey
-    ? "•••••••• (saved — leave blank to keep)"
-    : "sk-or-...";
-  byId<HTMLInputElement>("deepgramApiKey").placeholder = settings.hasDeepgramKey
-    ? "•••••••• (saved — leave blank to keep)"
-    : "Deepgram key";
+  renderKeyField(
+    "openRouterApiKey",
+    "openRouterKeyState",
+    "clearOpenRouterKey",
+    settings.hasOpenRouterKey,
+    "sk-or-..."
+  );
+  renderKeyField(
+    "deepgramApiKey",
+    "deepgramKeyState",
+    "clearDeepgramKey",
+    settings.hasDeepgramKey,
+    "Deepgram key"
+  );
   byId<HTMLSelectElement>("activationMode").value = settings.activationMode;
   byId<HTMLSelectElement>("decisionProvider").value = settings.decisionProvider;
   byId<HTMLInputElement>("layaBaseUrl").value = settings.layaBaseUrl;
@@ -74,18 +105,34 @@ async function save() {
     voiceReplyEnabled: byId<HTMLInputElement>("voiceReplyEnabled").checked,
     logVerbosity: byId<HTMLSelectElement>("logVerbosity").value,
   };
-  const orKey = byId<HTMLInputElement>("openRouterApiKey").value;
-  const dgKey = byId<HTMLInputElement>("deepgramApiKey").value;
-  if (orKey.trim().length > 0) partial.openRouterApiKey = orKey.trim();
-  if (dgKey.trim().length > 0) partial.deepgramApiKey = dgKey.trim();
+  // The mask means "keep what is stored". Anything else the user typed is a real new value, so
+  // it replaces the stored one. An emptied field also keeps what is stored — that has always
+  // been the rule, and "Clear" is now the explicit way to actually remove a key.
+  const orKey = byId<HTMLInputElement>("openRouterApiKey").value.trim();
+  const dgKey = byId<HTMLInputElement>("deepgramApiKey").value.trim();
+  if (orKey.length > 0 && orKey !== KEY_MASK) partial.openRouterApiKey = orKey;
+  if (dgKey.length > 0 && dgKey !== KEY_MASK) partial.deepgramApiKey = dgKey;
 
-  await window.dragonSettings.update(partial);
-  byId<HTMLInputElement>("openRouterApiKey").value = "";
-  byId<HTMLInputElement>("deepgramApiKey").value = "";
+  const result = await window.dragonSettings.update(partial);
   const status = byId<HTMLDivElement>("statusLine");
-  status.textContent = "Saved.";
-  setTimeout(() => (status.textContent = ""), 2000);
+  if (result.persisted) {
+    status.textContent = "Saved.";
+  } else {
+    // Never claim success if the write failed. The error is in the log; saying "Saved." here is
+    // what made this class of bug invisible in the first place.
+    status.textContent = "NOT saved — the file could not be written. See the log.";
+  }
+  setTimeout(() => (status.textContent = ""), 4000);
   await load();
+}
+
+/** Remove a stored key outright, which blanking the field has never been able to express. */
+async function clearKey(inputId: string, stateId: string, clearId: string, field: "openRouterApiKey" | "deepgramApiKey") {
+  await window.dragonSettings.update({ [field]: "" });
+  byId<HTMLInputElement>(inputId).value = "";
+  byId<HTMLDivElement>(stateId).textContent = "No key saved yet.";
+  byId<HTMLDivElement>(stateId).className = "keyState none";
+  byId<HTMLButtonElement>(clearId).disabled = true;
 }
 
 async function refreshLayaServerStatus() {
@@ -119,6 +166,12 @@ window.addEventListener("DOMContentLoaded", () => {
   byId<HTMLButtonElement>("startLayaServerBtn").addEventListener("click", startLayaServer);
   byId<HTMLButtonElement>("stopLayaServerBtn").addEventListener("click", stopLayaServer);
   byId<HTMLButtonElement>("testProviderBtn").addEventListener("click", testDecisionProvider);
+  byId<HTMLButtonElement>("clearOpenRouterKey").addEventListener("click", () =>
+    clearKey("openRouterApiKey", "openRouterKeyState", "clearOpenRouterKey", "openRouterApiKey")
+  );
+  byId<HTMLButtonElement>("clearDeepgramKey").addEventListener("click", () =>
+    clearKey("deepgramApiKey", "deepgramKeyState", "clearDeepgramKey", "deepgramApiKey")
+  );
   byId<HTMLButtonElement>("openDashboardBtn").addEventListener("click", () => window.dragonSettings.openDashboard());
   byId<HTMLButtonElement>("openLogsBtn").addEventListener("click", () => window.dragonSettings.openLogs());
   byId<HTMLButtonElement>("clearHistoryBtn").addEventListener("click", async () => {
