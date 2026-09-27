@@ -1343,6 +1343,46 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       packaging run, which needs `app-builder` and therefore a Windows or macOS host. The fix is
       code-confirmed, not execution-confirmed.
 
+  51. Fifty-first pass: `publish: "never"` broke the build with "Cannot find module
+      'electron-publisher-never'". My pass-50 fix was wrong, and wrong in an instructive way.
+
+      I had read `PublishManager.isPublish = ... && publishOptions.publish !== "never" && ...` and
+      concluded that `"never"` was the config-file opt-out. That line is real, but it checks
+      `publishOptions.publish` *after* config resolution, and it is the value the **command-line**
+      `--publish never` flag sets. In the config file, a string at `publish` is taken as a
+      **provider name**, so electron-builder dutifully tried to `require("electron-publisher-never")`.
+      I read one line, confirmed it said "never", and stopped — without reading what happens
+      *before* that line.
+
+      Reading the actual resolution path settles it. `getPublishConfigs` walks
+      target-specific -> platform-specific -> top level, and returns "no publish" on a **strict
+      `=== null`** at each level:
+
+        if (targetSpecificOptions != null) { publishers = targetSpecificOptions.publish;
+                                             if (publishers === null) return null; }
+        if (publishers == null) { publishers = platformSpecificBuildOptions.publish;
+                                  if (publishers === null) return null; }
+        if (publishers == null) { publishers = config.publish;
+                                  if (publishers === null) return null; }
+
+      So the value is an explicit YAML `null`, and `null` and *absent* are genuinely different:
+      absent falls through to auto-detection from the git remote, which is the original bug.
+      Changed to `publish: null`, with a comment recording why the obvious spellings are wrong.
+
+      Verified 9 checks, including a reproduction of the cascade proving all three cases: no
+      publish key anywhere -> auto-detect and a token demand; `publish: "never"` -> tries to load a
+      provider module named "never" (the crash just seen); `publish: null` -> stops. Plus
+      `validateConfiguration()` still passes and the rest of the config is unchanged.
+
+      The lesson worth keeping from passes 47-51: the electron-builder config has now produced
+      three consecutive defects that a *schema* check would have called valid — `nsis` nested
+      under `win:`, and both wrong `publish` values. The schema validates shape, not semantics.
+      Every one of these needed reading the implementation, and twice the mistake was reading a
+      single line and stopping.
+
+      Not verified: that the build now completes. As before, the publish resolution runs in
+      `afterPack`, which needs a real NSIS packaging run and therefore a Windows or macOS host.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

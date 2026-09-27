@@ -16,9 +16,14 @@ extraResources: []
 # Never let electron-builder publish. With no publish key it infers GitHub options from the git
 # remote, decides it should publish, and then dies with "GitHub Personal Access Token is not set"
 # -- after successfully building the installer, which makes it look like a packaging failure.
-# "never" sets PublishManager.isPublish = false, so the GitHub publisher is never constructed and
-# no token is ever needed. scripts/release.js owns publishing: it versions, tags, and calls `gh`.
-publish: "never"
+# scripts/release.js owns publishing: it versions, tags, and calls `gh`.
+#
+# The value must be an explicit YAML null. PublishManager.getPublishConfigs walks
+# target -> platform -> top level and returns "no publish" on a strict `=== null`, so null and
+# absent are NOT equivalent: absent falls through to auto-detection. A string is worse -- "never"
+# is the value of the *command-line* --publish flag, and in the config file it is taken as a
+# provider name, producing "Cannot find module 'electron-publisher-never'".
+publish: null
 mac:
   target:
     # A .dmg is the macOS distribution ritual: open the image, drag Dragon into
