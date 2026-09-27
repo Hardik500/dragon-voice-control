@@ -95,7 +95,15 @@ class Logger {
 
   error(stage: string, err: unknown, data: Record<string, unknown> = {}) {
     const message = err instanceof Error ? err.message : String(err);
-    this.event(stage, { ...data, error: message }, {});
+    // Keep the code as well as the message. Several Node errors share a message across
+    // different codes, and TLS in particular is unreadable without it: Node's
+    // UNABLE_TO_VERIFY_LEAF_SIGNATURE is reported only as "unable to verify the first
+    // certificate", which does not say whether the chain was incomplete, self-signed, or
+    // expired. Only `code` and `name` are copied -- never the stack, which can carry request
+    // detail, and never anything the caller passes in `data`.
+    const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : undefined;
+    const name = typeof (err as { name?: unknown })?.name === "string" ? (err as { name: string }).name : undefined;
+    this.event(stage, { ...data, error: message, ...(code ? { errorCode: code } : {}), ...(name ? { errorName: name } : {}) }, {});
   }
 }
 

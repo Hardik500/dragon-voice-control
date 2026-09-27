@@ -1383,6 +1383,46 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       Not verified: that the build now completes. As before, the publish resolution runs in
       `afterPack`, which needs a real NSIS packaging run and therefore a Windows or macOS host.
 
+  52. Fifty-second pass: the Windows STT failure. Reported as "unable to verify first certificate,
+      and then none of the voice actions work".
+
+      **Not fixed — instrumented instead.** Two of my hypotheses in this thread were wrong before
+      this one (the TLS-intercepting proxy, and `publish: "never"`), so the pattern here was to
+      measure rather than guess. What is established:
+
+      - The certificate is genuine. `api.deepgram.com` presents a Let's Encrypt YR1 leaf, the
+        hostname resolves to a **single** IP (208.184.56.201), and that address serves a valid
+        chain. Ruled out: interception, and a misconfigured CDN edge.
+      - The user's own scoop Node verifies it. Their Electron 33.4.11 / Node 20.18.3 verifies it
+        via both `tls.connect` and `https.get`. So it is not a Windows certificate-store problem
+        and not a missing corporate root.
+      - The same Electron on this host completes **8 of 8** sequential `wss://` connections to the
+        exact Dragon URL. So the failure does not reproduce here.
+      - **The first connect succeeds; the reconnect fails.** The 09-27 log reads
+        `stt.connected` -> `stt.session_connected` -> `stt.closed 1006` after ~1.8s ->
+        `stt.socket_error`. The reconnect path is the identical `startStreaming()` call, so nothing
+        about the request differs. A third session failed on its *first* connect, 30s after the
+        previous process quit, which does not fit a purely reconnect-shaped theory.
+
+      The blocking gap: `logger.error()` recorded only `err.message` and **discarded `err.code`**,
+      and the message alone is ambiguous. Node's `UNABLE_TO_VERIFY_LEAF_SIGNATURE` is reported
+      only as "unable to verify the first certificate" — which does not distinguish an incomplete
+      chain from an untrusted issuer from a self-signed leaf. The leading theory (TLS session
+      resumption sending an abbreviated handshake that omits the intermediate) fits "first connect
+      fine, immediate reconnect fails" well, but it is a theory, and adding `agent: false` on the
+      strength of it would be exactly the guessing that produced the last two wrong answers.
+
+      So the only change is instrumentation: `logger.error` now also records `errorCode` and
+      `errorName`, and deliberately does **not** copy the stack (which can carry request detail) or
+      anything from `data`. Verified against the compiled logger with 11 checks, including that
+      two different codes sharing one message are now distinguishable, that a non-`Error` input
+      gains no spurious keys, and that a non-string `code` is ignored rather than written.
+
+      Next: reproduce once with the new build and read `errorCode` from the log. That single value
+      discriminates every remaining theory. Two of this pass's own checks were wrong first — it
+      asserted a plain `Error` had no `name` (every `Error` does), and grepped for the word
+      "stack" which appears in the new comment explaining why the stack is not copied.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
