@@ -131,13 +131,10 @@ Needed for click, type, scroll, and tab commands:
 |---|---|
 | `Control+Alt+D` (`Alt+Space` on macOS) | Toggle listening (push-to-talk **toggles** — press again to stop) |
 | `Control+Alt+I` | Toggle Insert Mode without touching the mic |
-| `Control+Alt+Shift+W` | Toggle Workflow Mode — one sequential step per utterance |
 | `Control+Alt+Escape` (`Alt+Escape` on macOS) | Emergency stop: abort anything in flight and clear modes |
 
 **Activation mode** is either push-to-talk (above) or always-listening, which filters out speech
-that wasn't addressed to Dragon. Push-to-talk is more predictable; always-listening is more
-fluid. Workflow Mode takes constrained multi-step phrases — *"open Notepad, then open Chrome,
-then open Cursor"* — but is not a general planner.
+that wasn't addressed to Dragon. Push-to-talk is more predictable; always-listening is more fluid.
 
 ## How it works
 
@@ -179,7 +176,7 @@ a missing alias can't fail silently at runtime.
 | **Decision provider** | `Jev via OpenRouter` (default) or `Laya via local server` |
 | **API keys** | Masked after saving; leave blank on Save to keep the existing key |
 | **Activation mode** | Push to talk, or always listening |
-| **Shortcuts** | PTT, emergency stop, Insert Mode, Workflow Mode — all rebindable |
+| **Shortcuts** | PTT, emergency stop, Insert Mode — all rebindable |
 | **Speak short replies** | Spoken acknowledgements (toggle off when recording) |
 | **Debug log verbosity** | `normal` drops noisy interim STT events; `verbose` keeps them |
 
