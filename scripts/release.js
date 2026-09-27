@@ -239,8 +239,15 @@ function main() {
   }
 
   // --- push main, then build (so the tag lands on the right commit) ----
-  const ahead = git("rev-list", "--count", "origin/main..HEAD");
-  if (Number(ahead) > 0) {
+  // If the count cannot be read (no origin/main ref yet), push anyway: that is a no-op
+  // when already up to date, and it either fast-forwards or fails with git's own message.
+  // Aborting here would fail a release over a ref that may not exist yet.
+  let ahead = null;
+  try { ahead = Number(git("rev-list", "--count", "origin/main..HEAD")); } catch { /* unknown */ }
+  if (ahead === null) {
+    console.log("  origin/main not resolvable locally — pushing anyway");
+    run("git", ["push", "origin", "main"], null);
+  } else if (ahead > 0) {
     console.log(`  pushing ${ahead} commit(s) to main`);
     run("git", ["push", "origin", "main"], null);
   }

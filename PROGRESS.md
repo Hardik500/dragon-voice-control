@@ -930,6 +930,33 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       and the unreadable-assets path. Still untested end to end: the live `gh release create` /
       `upload` calls and both platform builds.
 
+  39. Thirty-ninth pass: a full command-surface audit, because the release script's bugs have all
+      come from commands that were never executed rather than from the decision logic.
+
+      Three scripts, ~80 checks, all run rather than reasoned about. npm scripts: 6/6 pass
+      (clean, build:main, build:renderer, build, typecheck, icons), with `start`/`dev` skipped as
+      GUI-only. Packaging inputs: 16/16 — every path `electron-builder.yml` references exists
+      after a build (both icons, all four `files` globs matching 62/8/4/5 files), the yml
+      `artifactName` templates match the filenames the scripts predict, the declared archs match
+      what release.js looks for, and the win/mac asset regexes do not cross-match. Guards: 36/36,
+      each refusal executed and its exit code checked, including that the mac refusal names the
+      Rosetta failure mode and the wine refusal names rcedit. README: 12/12 — every documented
+      `npm run` exists, no references to the agent working docs, no Workflow Mode. Links: the
+      demo, screenshot, Deepgram console and OpenRouter keys all return 200.
+
+      One real bug found, in the ahead-of-main check. `git rev-list --count origin/main..HEAD`
+      throws when the remote-tracking ref does not resolve, and the throw escaped to the top-level
+      handler and aborted the whole release. It now falls back to pushing anyway, which is a no-op
+      when already up to date and otherwise fast-forwards or fails with git's own message —
+      aborting a release over a ref that may not exist yet is the wrong trade.
+
+      Two of the five original failures were bugs in the audit script itself (a grep string that
+      did not match the real wording, and a scratch repo whose `origin/main` had never been
+      pushed). Worth stating plainly: the first version of this audit reported 5 failures, 2 of
+      which were its own mistakes. The git one was not — it was the real bug, and it was only
+      visible because the scratch repo was wrong in a way that happened to match a real
+      condition.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
