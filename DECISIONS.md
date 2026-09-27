@@ -1049,3 +1049,41 @@ per-turn expense survived several passes. **None of this is measured yet**: the 
 on Linux, so the next run's `totalMs` median and the new fields are the evidence. The durable fix
 is a persistent PowerShell host, which would also remove the ~1.5s app-command executions; that is
 a refactor and deliberately not attempted here.
+
+## 2026-09-27 — Ship a real installer: NSIS on Windows, DMG on macOS
+
+**Decision:** Replace the portable-file distribution with an actual install model.
+`electron-builder.yml` moves `win.target` from `portable` to `nsis` (one-click,
+`perMachine: false`) and `mac.target` from `dir` to `dmg`. Windows artifacts become
+`Dragon-${version}-${arch}-Setup.exe`, macOS becomes `Dragon-${version}-${arch}.dmg`.
+
+**Reason:** The user asked for Dragon to install onto the system rather than run as a loose file,
+which is a fair call for a tray app launched many times a day — a Start Menu entry and an
+Add/Remove Programs entry are worth having. Worth recording that the original choice was thinly
+documented: `electron-builder.yml` claimed "Portable first, per DECISIONS.md/plan" but no dated
+decision entry ever recorded that reasoning, so this reverses a config default more than it
+overturns a considered decision.
+
+`perMachine: false` is the important part. An unsigned installer already triggers SmartScreen;
+installing per-machine would add a UAC elevation prompt on top, so a recipient would face two
+trust asks before an unsigned binary runs. Per-user installation needs no admin at all. On macOS
+there is no equivalent choice — a `.dmg` is how Mac software is distributed, and "installing" means
+dragging into Applications.
+
+**Consequences:** `scripts/release.js` no longer hand-zips the macOS bundle, which retires the
+`ditto`-vs-`zip` executable-bit trap documented in earlier passes — a plain `zip` drops the exec
+bit and produced an app that would not launch. The cycle-detection regex for macOS changed from
+`\.app\.zip$` to `\.dmg$`. `scripts/build-release.js` gained two stronger artifact checks: the
+Windows installer name always ends in `.exe` regardless of what rcedit did, so the verifier now
+also requires `release\win-unpacked\Dragon.exe` to exist — that is the executable the installer
+actually places, and it is the file the old `signAndEditExecutable: false` bug broke. The macOS
+check reads the 512-byte `koly` disk-image trailer at the end of the file, which is the closest
+thing to "is this really a dmg" that does not require a Mac to mount it.
+
+**Unverified:** the Windows install has never been produced. NSIS packaging adds surface that
+cannot be exercised from this Linux host, and the previous Windows build already failed once on a
+Windows-only issue (7-Zip needing `SeCreateSymbolicLinkPrivilege` to unpack `winCodeSign`). Expect
+the first `npm run package:win` to be a genuine test rather than a formality. Note also that
+`app.setAppUserModelId()` is now more relevant than it was — a Start Menu entry benefits from a
+stable AppUserModelID — but it is deliberately not bundled here, since it was not part of the
+reported problem and cannot be verified from this host.

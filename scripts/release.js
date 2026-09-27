@@ -39,7 +39,7 @@ const IS_MAC = process.platform === "darwin";
 const PLATFORM = IS_WIN
   ? { name: "Windows", asset: /\.exe$/i }
   : IS_MAC
-    ? { name: "macOS", asset: /\.app\.zip$/i }
+    ? { name: "macOS", asset: /\.dmg$/i }
     : null;
 
 function die(msg) {
@@ -55,7 +55,7 @@ function die(msg) {
  * Verified against real git, both ways.
  *
  * So: use a shell only for .cmd/.bat, and refuse to do it with a spaced argument rather
- * than let it corrupt the call. Everything else -- git, gh, ditto, node.exe -- runs
+ * than let it corrupt the call. Everything else -- git, gh, node.exe -- runs
  * unshelled, where arguments are passed as an array and spaces are safe.
  */
 function needsShell(cmd, args) {
@@ -170,10 +170,12 @@ function defaultNotes(version) {
   return [
     `Dragon v${version}. Personal alpha — unsigned, no automated tests, expect bugs.`,
     "",
-    "**macOS** (Apple Silicon) — right-click Dragon.app → Open on first launch to clear",
-    "Gatekeeper. Unsigned and un-notarized, so it cannot be distributed through the App Store.",
+    "**macOS** (Apple Silicon) — open the .dmg and drag Dragon into Applications, then",
+    "right-click it → Open on first launch to clear Gatekeeper. Unsigned and un-notarized, so it",
+    "cannot be distributed through the App Store.",
     "",
-    "**Windows** (x64) — one portable file, nothing installed. SmartScreen will say",
+    "**Windows** (x64) — run the installer. It installs into your user profile, so it never asks",
+    "for admin, and adds a Start Menu entry plus an uninstaller. SmartScreen will say",
     '"Windows protected your PC" → More info → Run anyway. A new download has no reputation,',
     "so expect that prompt every time.",
     "",
@@ -181,19 +183,8 @@ function defaultNotes(version) {
     "landed on Windows; macOS was last verified several commits earlier.",
     "",
     "Needs a Deepgram key and an OpenRouter key with System One access, pasted into Settings on",
-    "first launch. There is no installer and no auto-update — grab a new build from here.",
+    "first launch. There is no auto-update — grab a new build from here.",
   ].join("\n");
-}
-
-/** macOS .app bundles are directories, so they must be zipped before upload — and a plain
- *  `zip` drops the executable bit, producing an app that will not launch. `ditto` is Apple's
- *  tool for exactly this. */
-function packageMac(version) {
-  const appDir = path.join(RELEASE_DIR, `Dragon-${version}-arm64.app`);
-  if (!fs.existsSync(appDir)) die(`Expected ${appDir} to exist after the mac build.`);
-  const zip = path.join(RELEASE_DIR, `Dragon-${version}-arm64.app.zip`);
-  run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appDir, zip], "Zipping the .app (ditto preserves the exec bit)");
-  return zip;
 }
 
 function main() {
@@ -297,9 +288,12 @@ function main() {
   console.log("");
   run(process.execPath, [path.join(__dirname, "build-release.js"), IS_WIN ? "win" : "mac"], `Building ${PLATFORM.name}`);
 
-  const asset = IS_WIN
-    ? path.join(RELEASE_DIR, `Dragon-${version}-x64.exe`)
-    : packageMac(version);
+  // Both platforms now produce a single installable artifact directly: an NSIS installer on
+  // Windows, a .dmg on macOS. Nothing is zipped by hand any more, which also retires the
+  // ditto-vs-zip executable-bit trap that a hand-rolled .app zip used to walk into.
+  const asset = path.join(RELEASE_DIR, IS_WIN
+    ? `Dragon-${version}-x64-Setup.exe`
+    : `Dragon-${version}-arm64.dmg`);
   if (!fs.existsSync(asset)) die(`Expected artifact missing: ${asset}`);
 
   // --- create or join --------------------------------------------------

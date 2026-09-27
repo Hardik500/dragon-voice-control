@@ -1185,6 +1185,49 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       taskbar button while the app is running, not after quitting). Both are noted rather than
       guessed at, since neither can be verified from this host.
 
+  47. Forty-seventh pass: replaced the portable-file distribution with a real installer, at the
+      user's request — "why is the installation not working like a setup, it should get installed
+      on to the system". `win.target` portable -> nsis (one-click, per-user), `mac.target` dir ->
+      dmg. Recorded in DECISIONS.md with the reasoning, including the admission that the original
+      "portable first" choice was never actually written down as a decision despite the yml
+      comment claiming it was.
+
+      Per-user rather than per-machine is the load-bearing choice. An unsigned installer already
+      draws a SmartScreen warning; a per-machine install adds a UAC elevation prompt on top, so the
+      recipient would meet two trust asks before an unsigned binary runs. Per-user needs no admin.
+
+      Two knock-on improvements fell out of it rather than being bolted on:
+
+      - The macOS hand-zip is gone, which **retires the ditto-vs-zip executable-bit trap** that
+        earlier passes documented at length. Plain `zip` dropped the exec bit and produced an app
+        that would not launch; a `.dmg` sidesteps that class of bug entirely, so the whole
+        `packageMac()` function and the `ditto` shell-out are deleted.
+      - The build verifier got **stronger**, because the old check became weaker. An NSIS
+        installer's own filename always ends in `.exe` no matter what rcedit did to the executable
+        inside it, so "the artifact ends in .exe" now proves nothing. The verifier additionally
+        requires `release\win-unpacked\Dragon.exe` — the file the installer actually places, and
+        the exact one the old `signAndEditExecutable: false` bug produced without an extension.
+        The macOS check reads the 512-byte `koly` disk-image trailer, the closest thing to "is
+        this really a dmg" that does not need a Mac to mount it.
+
+      Verified 20 groups: config keys present and old targets gone; **electron-builder itself
+      accepts the nsis/dmg config** (probed with a real `--win --dir` invocation, not just a
+      regex); release.js points at both new artifacts and no longer shells out to ditto; the
+      win/mac patterns still do not cross-match against the *new* filenames; the verifier expects
+      both new names and has both new checks; the docs no longer promise a portable file; and the
+      cycle decision logic still converges end to end with the `.dmg` pattern. The `koly` predicate
+      was additionally exercised against a synthetic valid trailer and a junk file. Its one
+      false-pass case — a file smaller than 512 bytes — is unreachable, since the 20 MB size check
+      runs first. typecheck clean.
+
+      Not verified: **the Windows installer has never been produced.** NSIS packaging cannot be
+      exercised from this host, and the previous Windows build already failed once on a
+      Windows-only issue. The next `npm run package:win` is a real test, not a formality.
+
+      Not bundled, deliberately: `app.setAppUserModelId()`, now genuinely more relevant since a
+      Start Menu entry benefits from a stable AppUserModelID. It was not part of the reported
+      problem and cannot be verified here, so it is noted in DECISIONS.md rather than guessed at.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

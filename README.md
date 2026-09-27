@@ -236,19 +236,32 @@ Optional flags, none of which you need for a normal release: `--dry-run` (print 
 nothing), `--minor` / `--major` (bump style), `--force-new` (cut a version anyway),
 `--notes-file NOTES.md` (override the default notes).
 
-A macOS `.app` is a directory, so the script zips it with `ditto` rather than `zip` — plain `zip`
-drops the executable bit and the recipient gets an app that won't launch.
+Both platforms now produce a single installable artifact directly, so nothing is zipped by hand.
+
+## Installing
+
+**Windows** — run `Dragon-<version>-x64-Setup.exe`. One click, installs into your user profile, and
+**never asks for admin** — a UAC prompt stacked on the SmartScreen warning would be two trust asks
+before an unsigned binary runs. You get a Start Menu entry, a desktop shortcut, and a proper
+uninstaller under Add/Remove Programs.
+
+**macOS** — open `Dragon-<version>-arm64.dmg` and drag Dragon into Applications, the way every Mac
+app installs. Then right-click it → Open on first launch to clear Gatekeeper.
 
 ## Packaging an unsigned build
 
 ```bash
-npm run package:win   # release/Dragon-<version>-x64.exe   (single portable file)
-npm run package:mac   # release/Dragon-<version>-arm64.app
+npm run package:win   # release/Dragon-<version>-x64-Setup.exe  (NSIS installer)
+npm run package:mac   # release/Dragon-<version>-arm64.dmg      (disk image)
 ```
 
 Both commands build the TypeScript, package it, then **verify the artifact actually landed**
 — electron-builder can exit 0 and still leave you with something missing, truncated, or not
-launchable, so the script checks the file, its size, and its format before reporting success.
+launchable, so the script checks the file, its size, and its format before reporting success. For
+Windows it also checks `release\win-unpacked\Dragon.exe` exists, because the installer's own name
+always ends in `.exe` no matter what happened to the executable inside it. For macOS it checks the
+`koly` disk-image trailer, which is the closest thing to "is this really a dmg" that doesn't need
+a Mac to mount it.
 
 **Where to run them.** A Windows build needs a Windows or macOS host, or wine on Linux. A macOS
 build **must** be made on a Mac: from Linux or Windows, electron-builder emits a bundle for the

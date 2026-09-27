@@ -15,7 +15,9 @@ files:
 extraResources: []
 mac:
   target:
-    - target: dir
+    # A .dmg is the macOS distribution ritual: open the image, drag Dragon into
+    # Applications. There is no "setup program" on macOS and there does not need to be one.
+    - target: dmg
       arch:
         - arm64
   category: public.app-category.productivity
@@ -30,13 +32,22 @@ mac:
     NSMicrophoneUsageDescription: "Dragon needs the microphone to listen for voice commands."
 win:
   target:
-    # Portable first, per DECISIONS.md/plan: a single unsigned .exe, no installer, no
-    # SmartScreen-reputation concerns beyond the one-time "Windows protected your PC" bypass.
-    - target: portable
+    # A real installer rather than a portable file: Dragon is a tray app launched many times a
+    # day, so a Start Menu entry and an Add/Remove Programs entry are worth having. oneClick
+    # with perMachine:false installs into the user profile and never asks for admin -- the right
+    # trade for an unsigned binary, since a UAC prompt stacked on the SmartScreen warning is two
+    # trust asks before anything runs.
+    - target: nsis
       arch:
         - x64
-  artifactName: Dragon-${version}-${arch}.exe
+  artifactName: Dragon-${version}-${arch}-Setup.exe
   icon: assets/app-icon.ico
+  nsis:
+    oneClick: true
+    perMachine: false
+    allowToChangeInstallationDirectory: false
+    createStartMenuShortcut: true
+    createDesktopShortcut: true
   # Personal, unsigned local alpha build: no code signing. Deliberately NOT setting
   # `signAndEditExecutable: false` here -- that flag does not just skip signing, it also
   # skips rcedit, which is what appends the .exe extension and stamps the icon/metadata.

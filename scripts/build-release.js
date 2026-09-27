@@ -126,64 +126,66 @@ function humanSize(bytes) {
  *  trusting the exit code. Throws with a specific reason so a broken build is
  *  never reported as a success. */
 function verify(target) {
-  const suffix = target === "win" ? ".exe" : ".app";
-  const expected = `Dragon-${version}-${target === "win" ? "x64" : "arm64"}${suffix}`;
+  const expected = target === "win"
+    ? `Dragon-${version}-x64-Setup.exe`
+    : `Dragon-${version}-arm64.dmg`;
+  const suffix = target === "win" ? ".exe" : ".dmg";
   const entries = fs.existsSync(RELEASE_DIR) ? fs.readdirSync(RELEASE_DIR) : [];
   const found = entries.find((n) => n === expected)
     ?? entries.find((n) => n.startsWith("Dragon-") && n.endsWith(suffix));
   if (!found) {
     // Call out the extensionless case specifically: electron-builder can exit 0 and hand
     // back a valid PE with no .exe on it when the executable-editing step is disabled, and
-    // that file will not launch on double-click. Matched by suffix, not by "has a dot" --
-    // the version alone puts dots in "Dragon-0.1.0-x64".
-    const extensionless = entries.find(
-      (n) => n.startsWith("Dragon-") && !n.endsWith(".exe") && !n.endsWith(".app")
-    );
+    // the installer would then package an app Windows will not launch. Matched by suffix,
+    // not by "has a dot" -- the version alone puts dots in "Dragon-0.1.0-x64".
+    const extensionless = entries.find((n) => n.startsWith("Dragon-") && !/\.(exe|dmg|app)$/.test(n));
     throw new Error(extensionless
       ? `Built ${extensionless}, but it has no .exe extension, so Windows will not launch it on ` +
         `double-click. That happens when signAndEditExecutable is disabled in electron-builder.yml.`
-      : `electron-builder exited 0 but produced no Dragon artifact in release/.`);
+      : `electron-builder exited 0 but produced no ${expected} in release/.`);
   }
+
   const full = path.join(RELEASE_DIR, found);
+  const stat = fs.statSync(full);
+  if (!stat.isFile()) throw new Error(`${found} is not a file.`);
+  if (stat.size < MIN_ARTIFACT_BYTES) {
+    throw new Error(`${found} is only ${humanSize(stat.size)} — that is far too small for a bundled ` +
+      `${target === "win" ? "installer" : "disk image"}, so the build is truncated.`);
+  }
+
+  const readMagic = (offset, length) => {
+    const fd = fs.openSync(full, "r");
+    const buf = Buffer.alloc(length);
+    fs.readSync(fd, buf, 0, length, offset);
+    fs.closeSync(fd);
+    return buf;
+  };
 
   if (target === "win") {
-    const stat = fs.statSync(full);
-    if (!stat.isFile()) throw new Error(`${found} is not a file.`);
-    if (stat.size < MIN_ARTIFACT_BYTES) {
-      throw new Error(`${found} is only ${humanSize(stat.size)} — that is far too small for a bundled app, so the build is truncated.`);
-    }
     // A Windows PE executable starts with "MZ".
-    const fd = fs.openSync(full, "r");
-    const magic = Buffer.alloc(2);
-    fs.readSync(fd, magic, 0, 2, 0);
-    fs.closeSync(fd);
-    if (magic.toString("latin1") !== "MZ") {
+    if (readMagic(0, 2).toString("latin1") !== "MZ") {
       throw new Error(`${found} does not start with the PE "MZ" header, so it is not a Windows executable.`);
+    }
+    // The installer's own name always ends in .exe whatever rcedit did, so checking it proves
+    // nothing about the app inside. Check the executable the installer will actually place.
+    const appExe = path.join(RELEASE_DIR, "win-unpacked", "Dragon.exe");
+    if (!fs.existsSync(appExe)) {
+      const bare = path.join(RELEASE_DIR, "win-unpacked", "Dragon");
+      throw new Error(fs.existsSync(bare)
+        ? `win-unpacked\\Dragon has no .exe extension, so the installed app will not launch on ` +
+          `double-click. That happens when signAndEditExecutable is disabled in electron-builder.yml.`
+        : `No Dragon.exe in win-unpacked\\, so the installer would package an app with no executable.`);
     }
     return { file: found, size: humanSize(stat.size) };
   }
 
-  // macOS "dir" target produces an .app bundle directory.
-  const infoPlist = path.join(full, "Contents", "Info.plist");
-  const macOsDir = path.join(full, "Contents", "MacOS");
-  if (!fs.existsSync(infoPlist)) throw new Error(`${found} has no Contents/Info.plist, so it is not an app bundle.`);
-  if (!fs.existsSync(macOsDir) || fs.readdirSync(macOsDir).length === 0) {
-    throw new Error(`${found} has an empty Contents/MacOS, so the bundle has no executable.`);
+  // A .dmg is a disk image: a 512-byte trailer beginning "koly" sits at the very end of the
+  // file. Checking it is the closest thing to "is this really a dmg" that does not need macOS
+  // to mount it.
+  if (readMagic(Math.max(0, stat.size - 512), 4).toString("latin1") !== "koly") {
+    throw new Error(`${found} has no "koly" disk-image trailer, so it is not a valid .dmg.`);
   }
-  let size = 0;
-  const stack = [full];
-  while (stack.length) {
-    const cur = stack.pop();
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const p = path.join(cur, entry.name);
-      if (entry.isDirectory()) stack.push(p);
-      else size += fs.statSync(p).size;
-    }
-  }
-  if (size < MIN_ARTIFACT_BYTES) {
-    throw new Error(`${found} totals only ${humanSize(size)} — that is far too small for a bundled app, so the build is truncated.`);
-  }
-  return { file: found, size: humanSize(size) };
+  return { file: found, size: humanSize(stat.size) };
 }
 
 function report(target, result) {
@@ -195,9 +197,11 @@ function report(target, result) {
   console.log("\n  Unsigned, as intended. What the person you send it to will hit:");
   if (target === "win") {
     console.log("    • SmartScreen: 'Windows protected your PC' → More info → Run anyway.");
-    console.log("    • One file, no installer. Nothing is written outside where they put it.");
+    console.log("    • One-click installer into the user profile. Never asks for admin.");
+    console.log("    • Adds a Start Menu entry, a desktop shortcut, and an uninstaller.");
   } else {
-    console.log("    • Gatekeeper: right-click the .app → Open, and confirm, on first launch only.");
+    console.log("    • Open the .dmg and drag Dragon into Applications.");
+    console.log("    • Gatekeeper: right-click Dragon.app → Open, and confirm, on first launch only.");
     console.log("    • Unsigned and un-notarized, so it cannot be distributed through the App Store.");
   }
   console.log("\n  Not yet run on its target OS. Verify it before telling anyone it works:\n");
