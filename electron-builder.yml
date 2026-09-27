@@ -2,6 +2,10 @@ appId: com.dragon.alpha
 productName: Dragon
 directories:
   output: release
+# Deterministic, space-free artifact names: Dragon-<version>-<arch>.exe / .app.
+# electron-builder's default is "Dragon 0.1.0.exe", and a space in a filename you
+# are about to share and have people type is not worth carrying.
+artifactName: Dragon-${version}-${arch}
 files:
   - dist/**/*
   - dist-renderer/**/*
@@ -31,7 +35,12 @@ win:
     - target: portable
       arch:
         - x64
+  artifactName: Dragon-${version}-${arch}.exe
   icon: assets/app-icon.ico
-  # Personal, unsigned local alpha build: no code signing. Unsigned .exe triggers Windows
-  # SmartScreen on first run ("More info" -> "Run anyway"); see README.md.
-  signAndEditExecutable: false
+  # Personal, unsigned local alpha build: no code signing. Deliberately NOT setting
+  # `signAndEditExecutable: false` here -- that flag does not just skip signing, it also
+  # skips rcedit, which is what appends the .exe extension and stamps the icon/metadata.
+  # Turning it off produced "Dragon-0.1.0-x64", a valid PE that Windows will not launch on
+  # double-click, carrying Electron's default icon. Being unsigned needs no flag at all:
+  # electron-builder skips signing on its own when it finds no certificate (it logs
+  # "no signing info identified, signing is skipped"). See scripts/build-release.js.

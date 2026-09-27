@@ -210,14 +210,25 @@ redacted and audio is never logged.
 ## Packaging an unsigned build
 
 ```bash
-npm run package:mac   # release/mac-arm64/Dragon.app
-npm run package:win   # release/Dragon 0.1.0.exe  (single portable file)
+npm run package:win   # release/Dragon-<version>-x64.exe   (single portable file)
+npm run package:mac   # release/Dragon-<version>-arm64.app
 ```
 
-Both are unsigned. macOS: right-click the `.app` → **Open** on first launch to clear Gatekeeper
-(or `xattr -dr com.apple.quarantine release/mac-arm64/Dragon.app`). Windows: accept the
-**SmartScreen** prompt via *More info → Run anyway*. Neither packaged build has been run on its
-target OS yet, so prefer `npm start` until one has been.
+Both commands build the TypeScript, package it, then **verify the artifact actually landed**
+— electron-builder can exit 0 and still leave you with something missing, truncated, or not
+launchable, so the script checks the file, its size, and its format before reporting success.
+
+**Where to run them.** A Windows build needs a Windows or macOS host, or wine on Linux. A macOS
+build **must** be made on a Mac: from Linux or Windows, electron-builder emits a bundle for the
+*host's* CPU architecture rather than the configured one, so an "arm64" build on an x64 host
+silently ships an x64 app that needs Rosetta. The script refuses that combination rather than
+handing you a mislabelled artifact. Building a Linux target is deliberately not supported — the
+app hard-errors off macOS and Windows.
+
+Both builds are unsigned. macOS: right-click the `.app` → **Open** on first launch to clear
+Gatekeeper (or `xattr -dr com.apple.quarantine <path>.app`). Windows: accept the **SmartScreen**
+prompt via *More info → Run anyway*. Neither packaged build has been run on its target OS yet, so
+verify it before telling anyone it works.
 
 ## Known limitations
 

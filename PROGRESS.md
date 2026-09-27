@@ -829,6 +829,46 @@ location ("open downloads"). Repeat one direct command in each activation mode.
 `pipeline.ignored` for drops, and `pipeline.execution` for the latency split
 (`sttTurnMs` / `activeAppMs` / `snapshotMs` / `jevMs` / `executionMs` / `totalMs`).
 
+  36. Thirty-sixth pass: release builds. Replaced the two ad-hoc `package:*` npm scripts with
+      `scripts/build-release.js`, which adds the logic a raw `electron-builder` call was missing.
+
+      **Two real defects in the previous config, both found by building rather than reading.**
+      `package:mac` promised `--arm64` but on this x64 Linux host electron-builder emitted a
+      `darwin-x64` bundle — an artifact that looks successful and targets the wrong CPU, needing
+      Rosetta on Apple Silicon. And `win.signAndEditExecutable: false`, added to avoid "code
+      signing", also skips rcedit, which is what appends the `.exe` extension and stamps the
+      icon. Removing it produced `Dragon-0.1.0-x64`: a valid 74 MB PE32 file that **Windows will
+      not launch on double-click**, carrying Electron's default icon. Being unsigned needs no flag
+      at all — electron-builder skips signing on its own when it finds no certificate, and logs
+      `no signing info identified, signing is skipped`.
+
+      What the script does:
+      - **Gates the target.** `mac` refuses to run off a Mac, explaining the wrong-architecture
+        trap. A Windows build on Linux preflights for `wine` (rcedit is a Windows binary) and
+        fails in ~0.1 s with the fix, instead of three minutes of work into a stack trace. No
+        Linux target: `automation/index.ts` hard-errors off macOS/Windows, so such a bundle
+        could not run.
+      - **One source of truth for targets.** Nothing target-shaped is passed on the command line;
+        `electron-builder.yml` alone declares target, arch, icon and signing, so the two cannot
+        drift — which is how the `--arm64` promise survived next to an x64 artifact.
+      - **Verifies the artifact** before reporting success: exists, plausible size, `MZ` PE
+        header for Windows, `Contents/Info.plist` plus a non-empty `Contents/MacOS` for a `.app`,
+        and a `.exe` extension check that names `signAndEditExecutable` as the cause when
+        missing.
+      - **Reports what the recipient will hit** (SmartScreen / Gatekeeper) and a short list of
+        commands to verify the build on its target OS.
+      - `artifactName` is now `Dragon-<version>-<arch>`, dropping the space in electron-builder's
+        default `Dragon 0.1.0.exe`.
+
+      Verified here: `typecheck`/`build` clean; mac gating, no-default-target and bogus-target
+      errors all exit 1 with actionable messages; the Linux-wine preflight exits 1 in 0.09 s
+      without creating `release/`; the extensionless-artifact detector correctly flags the
+      `Dragon-0.1.0-x64` file the old config produced. **A completed Windows portable build was
+      not produced here** — it needs wine, and no wine is installed on this sandbox. Everything
+      up to the wine step ran (the unpacked `win-unpacked/Dragon.exe` was produced and its asar
+      integrity resource updated), but the final `.exe` is unverified and must be built on
+      Windows. The mac path is likewise unrunnable here and is unchanged apart from naming.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

@@ -12,8 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
-    "package:mac": "npm run build && electron-builder --mac --arm64 --dir",
-    "package:win": "npm run build && electron-builder --win portable --x64",
+    "package:mac": "node scripts/build-release.js mac",
+    "package:win": "node scripts/build-release.js win",
     "icons": "node scripts/make-icons.js"
   },
   "author": "",
