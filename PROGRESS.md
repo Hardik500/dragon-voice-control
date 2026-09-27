@@ -1312,6 +1312,37 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       test that passes for the wrong reason is worse than no test, so the harness now also asserts
       the control is valid YAML and differs *only* by the nesting.
 
+  50. Fiftieth pass: the Windows NSIS installer **built successfully** and then failed on
+      "GitHub Personal Access Token is not set" — after packaging, uninstaller, blockmap, and
+      signing attempts, so it read as a packaging failure when the packaging was fine.
+
+      Cause: with no `publish` key, electron-builder infers GitHub options from the git remote
+      (`git@github.com:Hardik500/dragon-voice-control.git`; there is no `repository` field in
+      package.json for it to use instead), decides it should publish, and constructs a
+      `GitHubPublisher` — whose **constructor** throws without a token. It never needed to publish
+      at all: `scripts/release.js` owns versioning, tagging and `gh release create`.
+
+      Fixed with `publish: "never"` at the top level. Traced through the code rather than assumed:
+      `PublishManager.isPublish = publishPolicy != null && publishOptions.publish !== "never" && ...`
+      so `"never"` makes it false, the GitHub publisher is never constructed, and no token is ever
+      demanded. The config still passes electron-builder's own `validateConfiguration()`.
+
+      Worth noting the schema cannot answer this question: `publish: "never"`, `publish: never`,
+      `publish: null`, a generic provider, and a github provider all *validate* identically. Only
+      the code distinguishes them. Testing the schema would have "passed" every wrong answer.
+
+      Second, latent bug this surfaced: NSIS writes a `Dragon-...-Setup.exe.blockmap` sidecar, and
+      the build verifier's "extensionless artifact" heuristic tested
+      `!endsWith(".exe"|".dmg"|".app")` — so a legitimate `.blockmap` would have been reported as
+      the old `signAndEditExecutable` bug, sending whoever hit a real build failure down the wrong
+      path entirely. Sidecar suffixes are now excluded, verified by extracting the actual regex
+      from the shipped `build-release.js` and running it over seven filenames, so the test
+      exercises the shipped predicate rather than a hand-copied one.
+
+      Not verified: that the build now completes. The token check happens only after a full NSIS
+      packaging run, which needs `app-builder` and therefore a Windows or macOS host. The fix is
+      code-confirmed, not execution-confirmed.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

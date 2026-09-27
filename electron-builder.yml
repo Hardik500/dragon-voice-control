@@ -13,6 +13,12 @@ files:
   - assets/**/*
   - package.json
 extraResources: []
+# Never let electron-builder publish. With no publish key it infers GitHub options from the git
+# remote, decides it should publish, and then dies with "GitHub Personal Access Token is not set"
+# -- after successfully building the installer, which makes it look like a packaging failure.
+# "never" sets PublishManager.isPublish = false, so the GitHub publisher is never constructed and
+# no token is ever needed. scripts/release.js owns publishing: it versions, tags, and calls `gh`.
+publish: "never"
 mac:
   target:
     # A .dmg is the macOS distribution ritual: open the image, drag Dragon into

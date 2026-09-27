@@ -137,8 +137,11 @@ function verify(target) {
     // Call out the extensionless case specifically: electron-builder can exit 0 and hand
     // back a valid PE with no .exe on it when the executable-editing step is disabled, and
     // the installer would then package an app Windows will not launch. Matched by suffix,
-    // not by "has a dot" -- the version alone puts dots in "Dragon-0.1.0-x64".
-    const extensionless = entries.find((n) => n.startsWith("Dragon-") && !/\.(exe|dmg|app)$/.test(n));
+    // not by "has a dot" -- the version alone puts dots in "Dragon-0.1.0-x64". Sidecars the
+    // packager legitimately leaves behind (.blockmap, .yml) must not be mistaken for it.
+    const extensionless = entries.find(
+      (n) => n.startsWith("Dragon-") && !/\.(exe|dmg|app|blockmap|ya?ml|json)$/i.test(n)
+    );
     throw new Error(extensionless
       ? `Built ${extensionless}, but it has no .exe extension, so Windows will not launch it on ` +
         `double-click. That happens when signAndEditExecutable is disabled in electron-builder.yml.`
