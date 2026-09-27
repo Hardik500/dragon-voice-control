@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-renderer/
 release/
+.release-notes.tmp.md
 *.log
 .DS_Store
 .env

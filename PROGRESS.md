@@ -869,6 +869,41 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       integrity resource updated), but the final `.exe` is unverified and must be built on
       Windows. The mac path is likewise unrunnable here and is unchanged apart from naming.
 
+  37. Thirty-seventh pass: `scripts/release.js` (`npm run release`), which turns "build on two
+      machines, one release" into a single convergent flow. A release *cycle* is one version number
+      that both platforms join rather than one release per platform.
+
+      The load-bearing decision is **commits since the latest tag**, not which artifacts are
+      attached. That distinction was found by testing, not reasoning: the first cut keyed the
+      decision on artifact presence, and running that logic against a *complete* release returned
+      "nothing to do" — so a finished release could never be superseded and the automation could
+      only ever produce one version. Commit count separates "the other machine added its build"
+      (attach, no new version) from "there is unreleased work" (bump), and makes a re-run with
+      nothing new a no-op instead of version churn.
+
+      Behaviour, all verified by importing the pure `decideCycle()` on Linux (21 checks): nothing
+      published -> create at the `package.json` version; other platform's build present and nothing
+      new committed -> attach to that release without bumping; own build present and nothing new ->
+      no-op; unreleased commits -> bump patch/minor/major and create; a previous release missing
+      this platform's build -> finish that release rather than supersede it. A single-platform repo
+      bumps exactly once and then settles across repeated runs. `--force-new` overrides all of it.
+
+      The same harness caught `bump("0.1.99")` producing `0.1.100`; it now rolls over to `0.2.0`.
+
+      Also handles what a naive `gh release create` gets wrong: on macOS a `.app` is a directory and
+      must be zipped, and a plain `zip` drops the executable bit so the recipient's app will not
+      launch — the script uses `ditto -c -k --sequesterRsrc --keepParent`. It syncs the
+      `package.json` version to the release version before building so the artifact name matches
+      the tag, pushes main so the tag lands on the right commit, defaults to release notes stating
+      the unsigned caveats for both platforms, and supports `--draft`, `--dry-run`, `--minor`,
+      `--major`, `--force-new` and `--notes-file`. It refuses to run off Windows or macOS, off
+      `main`, with a dirty tree, or with unknown flags.
+
+      Untested end to end: both platform paths need their own host and no release exists yet, so
+      the live `gh release create` / `gh release upload` calls have never run. The decision logic,
+      the guards and the argument parsing are verified; the first real
+      `npm run release -- --draft` is the remaining unknown.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

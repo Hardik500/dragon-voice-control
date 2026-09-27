@@ -207,6 +207,37 @@ redacted and audio is never logged.
 | Windows: "not supported on Windows yet" | Known parity gap for exact volume %. Use `volume up`/`down` |
 | macOS: "not allowed to send keystrokes" | Grant Accessibility permission, then restart Dragon |
 
+## Publishing a release
+
+```bash
+npm run release              # publish for whichever platform you're on
+npm run release -- --dry-run # print the plan, change nothing
+```
+
+You build Windows and macOS on separate machines, so **run this once on each**. It converges on a
+single version rather than forking one release per platform — a release *cycle* is one version that
+both platforms join:
+
+| Situation | What it does |
+|---|---|
+| Nothing published yet | Creates the release at the `package.json` version |
+| Latest release has the other platform's build, nothing new committed | **Attaches** its build to that release, no new version |
+| Latest release has your build, nothing new committed | Does nothing — you're up to date |
+| Unreleased commits exist | **Bumps** the patch version and creates a new release |
+| A previous release is missing your build | Finishes that release instead of superseding it |
+
+The signal for "is there unreleased work" is **commits since the latest tag**, not which artifacts
+are attached. That's what makes re-running harmless: a second run with nothing new does nothing
+instead of churning versions, and a single-platform repo bumps once and then settles.
+
+It builds, verifies the artifact, commits the version bump, tags, and publishes via the GitHub CLI.
+Flags: `--draft` (stage it for review), `--minor` / `--major` (bump style), `--force-new` (cut a
+version anyway), `--notes-file NOTES.md` (the default notes cover both platforms and the unsigned
+caveats).
+
+A macOS `.app` is a directory, so the script zips it with `ditto` rather than `zip` — plain `zip`
+drops the executable bit and the recipient gets an app that won't launch.
+
 ## Packaging an unsigned build
 
 ```bash
