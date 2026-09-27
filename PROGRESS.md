@@ -904,6 +904,32 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       the guards and the argument parsing are verified; the first real
       `npm run release -- --draft` is the remaining unknown.
 
+  38. Thirty-eighth pass: two bugs in `scripts/release.js`, both found by running it rather than
+      reading it, and the second one would have been invisible without checking.
+
+      `gh release list` has no `assets` field — only `gh release view` does — so the first
+      `--dry-run` died on `Unknown JSON field: "assets"`. Split into two calls: the list supplies
+      `tagName`/`isDraft`, the view supplies the asset names. Confirmed against gh 2.87.2 that
+      `release view --json assets` accepts the field, and that a bogus field on the same command is
+      still rejected — otherwise "accepted" would have proved nothing. `gh release list` includes
+      drafts unless you pass `--exclude-drafts`, which is what lets the second platform join a
+      release the first one staged with `--draft`.
+
+      The quieter one: the code stripped the leading `v` off the tag for version maths and then
+      handed that stripped string to `git rev-list 0.1.0..HEAD`, which is not a valid ref. The
+      call threw, was caught, and fell back to "0 commits since the tag" — on *every* run. Since
+      commit count is the signal that triggers a bump, the script would have reported "nothing to
+      do" forever and never produced a second version. Proven in a scratch repo: `0.1.0..HEAD`
+      fails with "ambiguous argument", `v0.1.0..HEAD` returns 2. The release object now carries
+      both the bare version and the real git ref.
+
+      Also hardened around that lookup: an unresolvable tag now says so (expected for a draft,
+      which has no tag until published) and points at `--force-new`; unreadable assets print a
+      note and degrade to attaching to the existing release, which is the safe direction because it
+      can never bump spuriously. The decision logic is re-verified, 31 checks, now covering drafts
+      and the unreadable-assets path. Still untested end to end: the live `gh release create` /
+      `upload` calls and both platform builds.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

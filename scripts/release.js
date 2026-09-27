@@ -76,13 +76,28 @@ function bump(v, kind) {
   return `${maj}.${min}.${pat + 1}`;
 }
 
+/** Read a release's attached asset names, or null if they cannot be read. `gh release list`
+ *  does not expose assets at all — only `gh release view` does — so this is a second call. */
+function assetNames(tag) {
+  try {
+    const out = capture("gh", ["release", "view", tag, "--json", "assets"]);
+    const rel = JSON.parse(out || "{}");
+    return (rel.assets || []).map((a) => a.name);
+  } catch {
+    return null;
+  }
+}
+
 function latestRelease() {
-  const out = capture("gh", ["release", "list", "--limit", "1", "--json", "tagName,assets,isDraft"]);
+  // Drafts are included by default, which is what lets the second platform join a
+  // release the first one staged with --draft.
+  const out = capture("gh", ["release", "list", "--limit", "1", "--json", "tagName,isDraft"]);
   const list = JSON.parse(out || "[]");
   if (!list.length) return null;
   const rel = list[0];
-  const names = (rel.assets || []).map((a) => a.name);
-  return { tag: rel.tagName.replace(/^v/, ""), names, isDraft: rel.isDraft };
+  // `tag` is the bare version (for bumping and artifact names); `ref` is the real git
+  // tag, which carries the leading "v" and is what git needs.
+  return { tag: rel.tagName.replace(/^v/, ""), ref: rel.tagName, names: assetNames(rel.tagName), isDraft: rel.isDraft };
 }
 
 /**
@@ -101,7 +116,9 @@ function latestRelease() {
  *   unreleased work                               -> 'create', bumped
  */
 function decideCycle(latest, myAssetPattern, kind, pkgVersion, forceNew, commitsSinceTag) {
-  const mine = (rel) => !!rel && rel.names.some((n) => myAssetPattern.test(n));
+  // `names` is null when the assets could not be read. Treating that as "I have no artifact"
+  // degrades to attaching to the existing release, which never bumps spuriously.
+  const mine = (rel) => !!rel && !!rel.names && rel.names.some((n) => myAssetPattern.test(n));
   const unreleased = forceNew || !latest || commitsSinceTag > 0;
 
   if (!unreleased) {
@@ -173,12 +190,22 @@ function main() {
   const latest = latestRelease();
 
   // Commits since the latest tag are what say whether there is unreleased work. The tag may
-  // not exist in a fresh clone, so fetch tags before counting.
+  // not exist locally (fresh clone, or a draft release, which has no tag until it is
+  // published), so fetch tags first and treat an unresolvable tag as "count unknown".
   let commitsSinceTag = 0;
   if (latest) {
     try { capture("git", ["fetch", "--tags", "--quiet"]); } catch { /* non-fatal */ }
-    try { commitsSinceTag = Number(git("rev-list", "--count", `${latest.tag}..HEAD`)); }
-    catch { commitsSinceTag = 0; }
+    try {
+      commitsSinceTag = Number(git("rev-list", "--count", `${latest.ref}..HEAD`));
+    } catch {
+      commitsSinceTag = 0;
+      console.log(`\n  Note: tag ${latest.ref} isn't in this clone${latest.isDraft ? " (expected for a draft)" : ""}.`);
+      console.log(`  Assuming nothing has been committed since it. Use --force-new to cut a version anyway.`);
+    }
+  }
+  if (latest && latest.names === null) {
+    console.log(`\n  Note: couldn't read the assets on ${latest.ref}.`);
+    console.log(`  Attaching to it rather than bumping, which is the safe direction.`);
   }
 
   // --- decide the cycle ------------------------------------------------
