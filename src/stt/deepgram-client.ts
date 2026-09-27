@@ -99,7 +99,13 @@ export class DeepgramFluxConnection {
       });
       for (const keyterm of STT_KEYTERMS) params.append("keyterm", keyterm);
       const url = `wss://api.deepgram.com/v2/listen?${params.toString()}`;
-      this.ws = new WebSocket(url, { headers: { Authorization: `Token ${this.apiKey}` } });
+      const ws = new WebSocket(url, { headers: { Authorization: `Token ${this.apiKey}` } });
+      this.ws = ws;
+      // A reconnect replaces this.ws while the previous socket may still be tearing down, and
+      // that socket keeps its handlers. Without this guard a late error or close from a
+      // superseded socket is logged and acted on as though it were the live one -- which shows
+      // up as an STT failure for a connection that is actually fine.
+      const isCurrent = () => this.ws === ws;
 
       this.ws.on("open", () => {
         this.opened = true;
@@ -173,13 +179,21 @@ export class DeepgramFluxConnection {
         }
       });
 
-      this.ws.on("error", (err) => {
+      ws.on("error", (err) => {
+        if (!isCurrent()) {
+          logger.event("stt.superseded_socket_error", { error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
         logger.error("stt.socket_error", err);
         if (!this.opened) reject(err);
         this.onError(err instanceof Error ? err : new Error(String(err)));
       });
 
-      this.ws.on("close", (code, reason) => {
+      ws.on("close", (code, reason) => {
+        if (!isCurrent()) {
+          logger.event("stt.superseded_socket_closed", { code, hadOpened: this.opened });
+          return;
+        }
         logger.event("stt.closed", { code, reason: reason?.toString(), hadOpened: this.opened });
         this.onClose(this.opened);
       });

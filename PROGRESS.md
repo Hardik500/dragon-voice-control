@@ -1423,6 +1423,43 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       asserted a plain `Error` had no `name` (every `Error` does), and grepped for the word
       "stack" which appears in the new comment explaining why the stack is not copied.
 
+  53. Fifty-third pass: "the built app is not working while dev is working". Recorded as **not yet
+      reproduced**, and deliberately not "fixed", because the premise does not yet survive scrutiny.
+
+      First caveat, stated plainly: the failures were at 08:31, 09:03 and 09:04, and the successes
+      at 09:14 and 09:16. **Nothing in the logs recorded which of those were the installed build and
+      which were `npm start`** — `app.start` logged only platform and arch. So "dev works, built
+      doesn't" rests on five samples of an intermittent fault with the key variable unrecorded. It
+      could be three coincidences. It could also be exactly as described. Right now nobody knows,
+      and the cheapest fix is to stop needing to know.
+
+      Searched for a mechanism and found none: no `isPackaged` branch anywhere in `src/`, no
+      TLS-related environment variable read (the only `process.env` uses are Chrome paths,
+      USERPROFILE, Laya paths and an OPENROUTER/DEEPGRAM dev prefill), and `ws` plainly loads in
+      the packaged app because some sessions connected fine. There is no code path that *should*
+      behave differently.
+
+      Two changes, both of which are real regardless of how the above resolves:
+
+      - **A superseded socket could report as the live one.** `connect()` reassigns `this.ws`, but
+        the previous socket keeps its handlers, and every one of them read `this` — so a late
+        `error` or `close` from a torn-down socket was logged as `stt.socket_error` / `stt.closed`
+        and pushed into `onError` / `onClose`, triggering a reconnect for a connection that was
+        fine. That is precisely the shape of the observed log: a close, then a TLS error, then a
+        failed reconnect. Handlers are now bound to the socket they were created for via
+        `isCurrent()`, and a superseded event is logged under `stt.superseded_socket_*` instead so
+        it stays visible rather than being silently dropped. Verified against the **compiled**
+        `DeepgramFluxConnection` with a fake WebSocket: a superseded socket's error neither logs as
+        `stt.socket_error` nor reaches the error callback nor triggers a reconnect, while the live
+        socket still does all three. 14 checks.
+      - **`app.start` now records `packaged`, `electron` and `node`.** A log that does not say
+        which build produced it cannot answer a question about which build misbehaves, and this
+        cost a full round of back-and-forth to establish by hand.
+
+      Not established: that the packaged build is the variable. Next run of either build now says
+      so in its own first log line, and any TLS failure carries `errorCode` (pass 52). Alternating
+      installed / dev runs would then settle it without further guessing.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

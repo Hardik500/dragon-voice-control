@@ -134,7 +134,16 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
-  logger.event("app.start", { platform: process.platform, arch: process.arch });
+  logger.event("app.start", {
+    platform: process.platform,
+    arch: process.arch,
+    // Packaged vs dev changes the execution environment (asar, launch path, inherited env),
+    // and a fault that only appears in one of them is impossible to diagnose from a log that
+    // does not say which it was. Recorded so no future session has to be reconstructed by hand.
+    packaged: app.isPackaged,
+    electron: process.versions.electron,
+    node: process.versions.node,
+  });
   app.dock?.hide();
 
   // Electron installs a full File/Edit/View/Window/Help application menu by default. For a tray
