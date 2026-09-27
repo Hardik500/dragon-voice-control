@@ -1059,6 +1059,41 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       from a `.cmd` call, and `needsShell()` refuses any spaced argument to one, so there is no
       way for it to corrupt a command. Both live calls pass only space-free arguments.
 
+  43. Forty-third pass: removed draft mode from the release script. The user's objection was that
+      staging a draft and then remembering to promote it is manual work the script should be doing.
+      Correct — the script should not need a human to remember a second command.
+
+      `--draft` is gone. `gh release create` now always publishes. Publishing immediately is the
+      safe direction, not the risky one: `gh release upload` attaches to a live release exactly as
+      happily as to a draft, so the second platform can still join days later. Drafting would mean
+      the release sits invisible until the Mac's machine happens to run, and if that machine never
+      runs, nothing is ever published at all.
+
+      One problem that created: v0.1.0 is *currently* a draft, created before this change, and
+      nothing would ever have promoted it. So the join path now promotes any draft it finds
+      (`gh release edit <tag> --draft=false`) after attaching. Nothing creates drafts any more,
+      but a pre-existing one is joined and published rather than silently superseded. That makes
+      the invariant simple: after any successful run, the release is public.
+
+      The default release notes were rewritten to stop asserting that a specific build is
+      attached. They previously described both platforms as if both were always present, which
+      was untrue in exactly the window this change creates — published by one machine, the other
+      not attached yet. The per-platform caveats are now stated unconditionally, because they hold
+      either way, and the release page's own attachment list is the source of truth for what is
+      actually there.
+
+      Verified 11 checks: `--draft` rejected as an unknown argument and exits non-zero; the five
+      optional flags survive; `gh release create` provably never receives `--draft`; the only
+      `--draft` token left in the file is the `edit --draft=false` promotion; the join path both
+      uploads and promotes; the notes claim no specific file; and the README no longer documents a
+      manual promote step. Two of the audit's own checks were wrong first (a regex that could not
+      match the flag array, and a `--draft` grep that missed `--draft=false`); fixing them turned up
+      a genuinely stale comment referencing the removed flag. typecheck clean.
+
+      Not verified: no run has exercised the new publish-immediately path. The existing v0.1.0
+      draft is promoted by the next run, which will be the Mac's — that run is the first real test
+      of both the join path and the promotion.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

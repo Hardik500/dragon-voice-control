@@ -16,12 +16,14 @@
 // only ever builds one platform.
 //
 // Usage:
-//   node scripts/release.js                 # publish for the current platform
+//   node scripts/release.js                 # publish for the current platform, always
 //   node scripts/release.js --dry-run       # print the plan, change nothing
-//   node scripts/release.js --draft         # stage as a GitHub draft release
 //   node scripts/release.js --minor         # bump 0.1.1 -> 0.2.0
 //   node scripts/release.js --notes-file NOTES.md
 //   node scripts/release.js --force-new     # new cycle even if the last is incomplete
+//
+// There is no draft mode. A release is published the moment it is created, and the
+// other platform attaches to it whenever its machine runs this.
 
 const fs = require("fs");
 const path = require("path");
@@ -112,8 +114,8 @@ function assetNames(tag) {
 }
 
 function latestRelease() {
-  // Drafts are included by default, which is what lets the second platform join a
-  // release the first one staged with --draft.
+  // Drafts are included by default. Nothing creates one any more, but a release staged before
+  // that changed must still be found and joined rather than silently superseded.
   const out = capture("gh", ["release", "list", "--limit", "1", "--json", "tagName,isDraft"]);
   const list = JSON.parse(out || "[]");
   if (!list.length) return null;
@@ -157,14 +159,21 @@ function decideCycle(latest, myAssetPattern, kind, pkgVersion, forceNew, commits
   return { action: "create", version: latest ? bump(latest.tag, kind) : pkgVersion };
 }
 
+/**
+ * Notes for a release that is published the moment this machine creates it — which may be
+ * before the other platform has attached its build. So nothing here may assert that a
+ * particular file is present. The per-platform caveats are stated unconditionally, because
+ * they are true either way, and the attachment list on the release page is the source of
+ * truth for what is actually there.
+ */
 function defaultNotes(version) {
   return [
     `Dragon v${version}. Personal alpha — unsigned, no automated tests, expect bugs.`,
     "",
-    "**macOS** — Apple Silicon. Right-click Dragon.app → Open on first launch to clear Gatekeeper.",
-    "Unsigned and un-notarized, so it cannot be distributed through the App Store.",
+    "**macOS** (Apple Silicon) — right-click Dragon.app → Open on first launch to clear",
+    "Gatekeeper. Unsigned and un-notarized, so it cannot be distributed through the App Store.",
     "",
-    "**Windows** — x64, single portable file, nothing installed. SmartScreen will say",
+    "**Windows** (x64) — one portable file, nothing installed. SmartScreen will say",
     '"Windows protected your PC" → More info → Run anyway. A new download has no reputation,',
     "so expect that prompt every time.",
     "",
@@ -190,13 +199,12 @@ function packageMac(version) {
 function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
-  const draft = args.includes("--draft");
   const forceNew = args.includes("--force-new");
   const kind = args.includes("--major") ? "major" : args.includes("--minor") ? "minor" : "patch";
   const nfIdx = args.indexOf("--notes-file");
   const notesFile = nfIdx >= 0 ? args[nfIdx + 1] : null;
   const unknown = args.filter((a) =>
-    !["--dry-run", "--draft", "--force-new", "--major", "--minor", "--notes-file"].includes(a) && a !== notesFile);
+    !["--dry-run", "--force-new", "--major", "--minor", "--notes-file"].includes(a) && a !== notesFile);
   if (unknown.length) die(`Unknown argument(s): ${unknown.join(", ")}`);
   if (!PLATFORM) die("Dragon ships for macOS and Windows only. Run this on one of those.");
 
@@ -284,23 +292,31 @@ function main() {
   if (!fs.existsSync(asset)) die(`Expected artifact missing: ${asset}`);
 
   // --- create or join --------------------------------------------------
+  // Always published. A draft would mean the release sits invisible until somebody remembers to
+  // promote it, and the thing that would be waiting is usually the other platform's machine
+  // arriving hours or days later. Publishing now is the safe direction: `gh release upload`
+  // attaches to a live release just as happily, so the second platform can still join it.
   const tag = `v${version}`;
   if (action === "create") {
-    const create = ["release", "create", tag, asset, "--title", `Dragon ${tag}`, "--notes-file", notesPath];
-    if (draft) create.push("--draft");
-    run("gh", create, null);
+    run("gh", ["release", "create", tag, asset, "--title", `Dragon ${tag}`, "--notes-file", notesPath], null);
   } else {
     console.log(`  v${version} already exists — attaching the ${PLATFORM.name} artifact.`);
     run("gh", ["release", "upload", tag, asset, "--clobber"], null);
+    // Nothing creates drafts any more, but one may exist from an older run. Promote it here
+    // rather than leave a release that only exists to whoever remembers to look for it.
+    if (latest && latest.isDraft) {
+      console.log("  it was a draft — publishing it now so nobody has to remember to.");
+      run("gh", ["release", "edit", tag, "--draft=false"], null);
+    }
   }
 
   fs.unlinkSync(notesPath);
 
   console.log("\n" + "─".repeat(64));
-  console.log(`  ${action === "create" ? "Created" : "Updated"} ${tag} with the ${PLATFORM.name} artifact.`);
-  if (action === "create" && !draft) {
-    const other = IS_WIN ? "macOS" : "Windows";
-    console.log(`  ${other} is not in it yet — run this same script on a ${other} machine and it will join this release.`);
+  console.log(`  ${action === "create" ? "Published" : "Added to"} ${tag} — ${PLATFORM.name} build attached.`);
+  const other = IS_WIN ? "macOS" : "Windows";
+  if (action === "create") {
+    console.log(`  ${other} is not attached yet. Run this same command on a ${other} machine and it will join this release.`);
   }
   console.log(`  https://github.com/Hardik500/dragon-voice-control/releases/tag/${tag}`);
   console.log("─".repeat(64) + "\n");
