@@ -989,6 +989,45 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       `printf` probe whose format string contained backslashes, which the shell ate, so the counts
       were meaningless and one "failure" was an artifact. Replaced with the ground-truth test above.
 
+  41. Forty-first pass: the first real Windows build attempt, and the first Windows-only blocker.
+      Blocked, not broken — it is a machine setting, not a code fault.
+
+      `npm run release -- --draft` on Windows: TypeScript compiled, `electron-updating asar
+      integrity` ran, `appOutDir=release\win-unpacked` was produced, and then electron-builder
+      failed downloading and unpacking `winCodeSign-2.6.0.7z`. It retried three times, re-fetching
+      the same 5.6 MB and failing identically each time (~3 minutes wasted).
+
+      Cause: the archive contains two macOS dylib symlinks
+      (`darwin/10.12/lib/libcrypto.dylib` and `libssl.dylib`). 7-Zip must recreate them as
+      Windows symlinks, which needs `SeCreateSymbolicLinkPrivilege`; without it, 7z exits 2 and
+      fails the entire extraction over those two entries. The log names them explicitly:
+      "Cannot create symbolic link : A required privilege is not held by the client."
+
+      This cannot be coded around. electron-builder needs `winCodeSign` for `rcedit`, which is
+      precisely what appends the `.exe` extension and stamps the icon — the thing
+      `signAndEditExecutable: false` used to disable, and the reason `Dragon-0.1.0-x64` came out
+      extensionless and unlaunchable. There is no flag to skip symlink recreation, and the darwin
+      entries are irrelevant to a Windows build yet fatal to unpacking one.
+
+      Fix is on the machine, in order of least friction:
+        1. clear the four partial extractions electron-builder left behind:
+           `rmdir /s /q "%LOCALAPPDATA%\electron-builder\Cache\winCodeSign"`
+        2. grant symlink creation, either by enabling Developer Mode
+           (Settings > System > For developers, or one elevated command:
+           `reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD
+            /f /v AllowDevelopmentWithoutDevLicense /d 1`)
+           or by running the release once from an Administrator terminal.
+      Then re-run `npm run release -- --draft`.
+
+      Not verified: the fix itself, and the build past this point. The `.exe` still has never been
+      produced. I could not independently enumerate the archive to confirm the symlink entries —
+      7z is not installed here and the archive header is solid/compressed — so the specifics rest
+      on the build log, which does name both failing paths explicitly.
+
+      One piece of good news, stated carefully: this is the first run to get past TypeScript
+      compilation and into electron-builder's Windows packaging path, so everything before this
+      point is confirmed working on the actual target OS.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
