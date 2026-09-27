@@ -1028,6 +1028,37 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       compilation and into electron-builder's Windows packaging path, so everything before this
       point is confirmed working on the actual target OS.
 
+  42. Forty-second pass: the first verified Windows build, and the first release. The
+      `signAndEditExecutable` reasoning is now confirmed by observation rather than inspection.
+
+      After Developer Mode was enabled, the Windows build completed:
+      `Dragon-0.1.0-x64.exe`, 70.9 MB, uploaded to a draft `v0.1.0` with sha256 recorded by
+      GitHub. Downloaded the first 2 KB of the published asset via a range request and checked
+      the headers rather than trusting the filename: `MZ` at offset 0, PE header offset 216
+      (0xD8), and `50 45 00 00` — the `PE\0\0` signature — at that offset. It is a genuine
+      Windows PE. This is the artifact that used to come out as `Dragon-0.1.0-x64` with no
+      extension and Electron's default icon.
+
+      Not verified: that the icon was actually stamped. Icons live in the PE resource
+      directory, well past the 2 KB fetched. rcedit appends the extension and stamps the icon
+      in one pass, so the extension's presence is strong evidence it ran, but that is inference
+      rather than measurement. Also unverified: that the app launches and works.
+
+      The `https://.../releases/tag/untagged-3acd4793f44506ae77d3` URL in the build output is
+      not a second release and not a bug. `gh release list` returns exactly one release, the
+      draft `v0.1.0`, with exactly one asset. GitHub addresses a draft by an `untagged-<sha>`
+      placeholder because a draft has no real tag until it is published; the
+      `.../releases/tag/v0.1.0` URL printed by the release script resolves correctly after
+      `gh release edit v0.1.0 --draft=false`.
+
+      Correction to pass 40: DEP0190 is not fully gone. It still fires, from the two `.cmd`
+      shims — `npm.cmd run build` and `electron-builder.cmd --win` — because Windows requires
+      a shell to execute `.cmd` files at all (the CVE-2024-27980 fix makes Node refuse them
+      otherwise). Pass 40 tested only the gh and git calls, which no longer use a shell, and I
+      over-generalised that into "the warning is gone". It is now cosmetic: it can only come
+      from a `.cmd` call, and `needsShell()` refuses any spaced argument to one, so there is no
+      way for it to corrupt a command. Both live calls pass only space-free arguments.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
