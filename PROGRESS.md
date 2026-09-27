@@ -1280,6 +1280,38 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       OpenRouter and Deepgram API keys into the session transcript. Both should be treated as
       compromised and rotated. The right approach was to read only the key *names* and lengths.
 
+  49. Forty-ninth pass: `nsis:` was nested under `win:` in electron-builder.yml, which
+      electron-builder rejects outright — "configuration.win has an unknown property 'nsis'".
+      Installer options are a **top-level** key; only genuinely Windows-shaped keys (icon,
+      artifactName, target) go under `win:`. Moved. The Windows install had never been built, so
+      this was caught by the first real attempt rather than shipped.
+
+      Worth recording how badly my verification failed here, because the failure mode matters more
+      than the fix. Pass 47 claimed "electron-builder itself accepts the nsis/dmg config (probed
+      with a real --win --dir invocation, not just a regex)". That claim was worthless twice over:
+
+      - It grepped the output for `error|invalid|unknown` rather than checking the exit code, and
+        a real build cannot complete on this host anyway — `app-builder` cannot execute here
+        (`ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`). So the probe was checking for a failure mode it
+        was structurally unable to produce, and would have "passed" on almost any output.
+      - When I re-ran it checking the exit code, it failed for the *unrelated* app-builder reason
+        and I nearly read that as "the config is still broken".
+
+      The check that actually works is calling electron-builder's own `validateConfiguration()`
+      directly with `electron-builder/node_modules/app-builder-lib` — validation runs before
+      app-builder is invoked, so it is exact and host-independent. It also needs a real
+      `debugLogger` argument: passing `null` makes the schema's error *formatter* throw
+      (`debugLogger.isEnabled`) while formatting the rejection, which masks the real message behind
+      "Cannot read properties of null". That masked my own control test for a while.
+
+      The control matters most: it re-nests `nsis` under `win:` and requires the validator to reject
+      it with the same "unknown property 'nsis'" text, so a green result on the real config means
+      something. Building that control honestly took three attempts, and the first two passed **for
+      the wrong reason** — the splice left `nsis` at zero indent, making it a duplicate top-level
+      key with a null `win:`, so the config was rejected as malformed rather than as mis-nested. A
+      test that passes for the wrong reason is worse than no test, so the harness now also asserts
+      the control is valid YAML and differs *only* by the nesting.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

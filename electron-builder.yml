@@ -42,12 +42,6 @@ win:
         - x64
   artifactName: Dragon-${version}-${arch}-Setup.exe
   icon: assets/app-icon.ico
-  nsis:
-    oneClick: true
-    perMachine: false
-    allowToChangeInstallationDirectory: false
-    createStartMenuShortcut: true
-    createDesktopShortcut: true
   # Personal, unsigned local alpha build: no code signing. Deliberately NOT setting
   # `signAndEditExecutable: false` here -- that flag does not just skip signing, it also
   # skips rcedit, which is what appends the .exe extension and stamps the icon/metadata.
@@ -55,3 +49,15 @@ win:
   # double-click, carrying Electron's default icon. Being unsigned needs no flag at all:
   # electron-builder skips signing on its own when it finds no certificate (it logs
   # "no signing info identified, signing is skipped"). See scripts/build-release.js.
+# Installer options live at the TOP LEVEL, not under `win:`. electron-builder validates the
+# config against a strict schema and rejects `win.nsis` outright with "configuration.win has an
+# unknown property 'nsis'". Only genuinely Windows-shaped keys (icon, artifactName, target) go
+# under `win:`.
+nsis:
+  oneClick: true
+  # Per-user install: no UAC prompt. An unsigned installer already draws a SmartScreen warning,
+  # and asking for admin on top of that is two trust asks before anything runs.
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createStartMenuShortcut: true
+  createDesktopShortcut: true
