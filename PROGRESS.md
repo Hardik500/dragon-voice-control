@@ -1094,6 +1094,37 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       draft is promoted by the next run, which will be the Mac's — that run is the first real test
       of both the join path and the promotion.
 
+  44. Forty-fourth pass: asked what happens if the same command runs on Windows while v0.1.0 is
+      still a draft and the Mac has not run. Answering it found a real gap in pass 43's own claim.
+
+      Traced it against the live repo: `git ls-remote --tags origin` returns **nothing**. A draft
+      release has no git tag — GitHub only creates it at publish time. So the run behaves like
+      this:
+
+        commitsSinceTag -> `git rev-list v0.1.0..HEAD` fails, defaults to 0
+        decideCycle    -> unreleased=false, Windows artifact present -> action "none"
+        main()         -> prints "nothing to do" and returns
+
+      The release stayed a draft. Pass 43 claimed "after any successful run, the release is
+      public", and that was false: the promotion lived only on the join path, while this run took
+      the no-op path. The exact state that strands a release is one machine staged it and the
+      other never arrived, so the no-op path is the one that most needs to publish.
+
+      Fixed: the "nothing to do" branch now publishes first if the latest release is a draft,
+      before returning. `--force-new` remains the escape hatch if the zero-commit default was
+      wrong.
+
+      Verified 15 checks walking the state the user described, using the actual
+      `gh release view v0.1.0` response rather than an invented fixture: Windows now publishes
+      the draft and cuts no version; a published release is not re-edited; the Mac then attaches
+      to the same v0.1.0 (the tag now exists, so its commit count is real); both machines are a
+      clean no-op once both artifacts are attached; new commits do bump to 0.1.1 afterwards; and
+      `--force-new` still works from the draft state. typecheck clean.
+
+      Still not verified by execution: the whole sequence, since it needs the Windows and macOS
+      hosts. The decision logic and the shape of the promotion are checked; the live
+      `gh release edit --draft=false` on this particular draft has not run.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to

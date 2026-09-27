@@ -244,8 +244,19 @@ function main() {
   const { action, version } = decision;
 
   if (action === "none") {
+    // There is nothing to build, but a draft is still a release nobody can see. This is exactly
+    // the state a release is left in when one machine staged it and the other never arrived, so
+    // publish it here rather than let "nothing to do" mean "silently left invisible". A draft
+    // also has no git tag, which is why the commit count above could not be read and defaulted
+    // to zero; publishing is still the right call, and --force-new is the escape hatch if the
+    // default was wrong.
+    if (latest && latest.isDraft) {
+      console.log(`\n  v${version} is still a draft from an earlier run — publishing it.`);
+      run("gh", ["release", "edit", `v${version}`, "--draft=false"], `Publishing v${version}`);
+      console.log(`  https://github.com/Hardik500/dragon-voice-control/releases/tag/v${version}`);
+    }
     console.log(`\n  v${version} already ships a ${PLATFORM.name} artifact and nothing has been`);
-    console.log(`  committed since. Nothing to do — use --force-new to cut a version anyway.\n`);
+    console.log(`  committed since. Nothing else to do — use --force-new to cut a version anyway.\n`);
     return;
   }
 
