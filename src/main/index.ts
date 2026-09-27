@@ -315,6 +315,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  // Logged first so a run that is stuck can be told apart from one that never started quitting.
+  logger.event("app.quit", {});
   pipeline?.emergencyStop();
   layaServer?.dispose();
   browserBridge?.stop();

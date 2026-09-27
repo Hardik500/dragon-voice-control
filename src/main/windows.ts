@@ -1,8 +1,21 @@
-import { BrowserWindow, screen } from "electron";
+import { app, BrowserWindow, screen } from "electron";
 import * as path from "path";
 
 const RENDERER_DIR = path.join(__dirname, "..", "..", "src", "renderer");
 const PRELOAD_DIR = path.join(__dirname, "..", "preload");
+
+/** Set once the app is genuinely quitting, so the settings window's close handler can tell the
+ *  difference between "the user closed this pane" and "the app is shutting down".
+ *
+ *  Without this, the unconditional `preventDefault()` below also blocks `app.quit()`: quitting
+ *  works by closing every window, the settings window vetoes its own close, and the process never
+ *  exits. macOS hides the symptom — the pane is already hidden, so nothing visible is left behind
+ *  and a live tray icon looks normal for a tray app. Windows shows it plainly, as a taskbar button
+ *  that refuses to go away. */
+let quitting = false;
+app.on("before-quit", () => {
+  quitting = true;
+});
 
 /** Topmost band for the overlay window.
  *
@@ -39,6 +52,7 @@ export function createSettingsWindow(): BrowserWindow {
   });
   win.loadFile(path.join(RENDERER_DIR, "settings.html"));
   win.on("close", (e) => {
+    if (quitting) return; // let the app actually shut down
     e.preventDefault();
     win.hide();
   });

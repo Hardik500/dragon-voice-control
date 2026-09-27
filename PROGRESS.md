@@ -1149,6 +1149,42 @@ location ("open downloads"). Repeat one direct command in each activation mode.
       Not verified: no GUI on this host, so the trimmed bar has not been seen. The roles are
       confirmed present in Electron's typings and `typecheck` is clean.
 
+  46. Forty-sixth pass: "on Windows, quitting the app leaves it in the taskbar" — the app could
+      not quit at all, on any platform.
+
+      The settings window's close handler called `e.preventDefault()` unconditionally, so that
+      closing the pane hides it instead of destroying it — correct for a tray app, but
+      `app.quit()` works by closing every window. The settings window vetoed its own close, the
+      window never went away, and the process never exited. `Quit Dragon` in the tray menu called
+      `app.quit()` and did nothing.
+
+      macOS hides this. The pane is created `show: false` and only revealed on demand, so after a
+      "quit" nothing visible is left and a live tray icon looks completely normal for a tray app.
+      Windows shows it as a taskbar button that refuses to disappear, which is how it was found.
+
+      Fixed with a `quitting` flag set in `app.on("before-quit")`; the close handler returns early
+      when it is set, letting the app shut down. Verified as a real red-green test rather than by
+      reasoning, because the whole claim is about Electron's event ordering: a minimal Electron
+      app on this host reproducing the exact pattern, in both forms —
+
+        mode "bug"    -> CALLING_QUIT, STILL_ALIVE_AFTER_QUIT, exit 42
+        mode "fixed"  -> CALLING_QUIT, exit 0
+
+      So the premise (quit depends on the window being allowed to close) is now observed, not
+      assumed. Grepped for other `close` handlers and other `preventDefault` calls in `src/main`:
+      the settings window was the only one, and this is the only remaining veto.
+
+      Also added `logger.event("app.quit")` as the first line of `before-quit`, so a run that is
+      stuck can be told apart from one that never began quitting. If a ghost tray icon survives
+      this fix, it is Explorer's notification-area cache rather than a live process, and that log
+      line is how to tell the two apart.
+
+      Deliberately not bundled: `app.setAppUserModelId()` (recommended for Windows tray apps, and
+      relevant to taskbar behaviour, but it would not fix a process that fails to exit, which is
+      the reported symptom) and `skipTaskbar` on the settings window (a different complaint — a
+      taskbar button while the app is running, not after quitting). Both are noted rather than
+      guessed at, since neither can be verified from this host.
+
 ## Exact next task
 
 Re-test on Windows with this build, paying attention to the fixed decision-layer bugs and to
