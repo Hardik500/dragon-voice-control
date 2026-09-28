@@ -5,7 +5,7 @@ directories:
 # Deterministic, space-free artifact names: Dragon-<version>-<arch>.exe / .app.
 # electron-builder's default is "Dragon 0.1.0.exe", and a space in a filename you
 # are about to share and have people type is not worth carrying.
-artifactName: Dragon-${version}-${arch}
+artifactName: Dragon-${version}-${arch}.${ext}
 files:
   - dist/**/*
   - dist-renderer/**/*
