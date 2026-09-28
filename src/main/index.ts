@@ -1,5 +1,6 @@
 import { app, session, shell, systemPreferences, BrowserWindow, Menu, Tray } from "electron";
 import { logger } from "../logging/logger";
+import { trustSystemCaCerts } from "./system-ca";
 import { SettingsStore } from "./settings-store";
 import { BrowserBridge } from "../browser/server";
 import { DashboardServer } from "./dashboard-server";
@@ -13,6 +14,7 @@ import { ActivationMode } from "../types/settings";
 import { OverlayUpdate } from "../types/pipeline";
 
 app.setName("Dragon");
+trustSystemCaCerts();
 
 // Menu-bar apps are especially easy to accidentally launch twice (double-clicking the
 // packaged app while a dev instance is already running, re-running `npm start`, etc.). A

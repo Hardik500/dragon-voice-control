@@ -1504,3 +1504,25 @@ macOS track is unchanged: work through the "macOS check" in `README.md` on a rea
 particularly the dictation/editing commands and site-aware search.
 
 Then remove this paragraph and mark milestone 8 as fully verified in this file.
+
+## Corporate TLS interception fix (2026-09-28)
+
+The packaged app failed to connect to Deepgram at all on a machine with corporate TLS
+interception installed (`stt.socket_error` / `SELF_SIGNED_CERT_IN_CHAIN`), which also would
+have broken the Jev/OpenRouter decision call the moment STT got past it — Node's bundled CA
+store doesn't trust the interception proxy's root cert that's injected into the macOS System
+Keychain. Fixed in `src/main/system-ca.ts` (`trustSystemCaCerts()`, called at the top of
+`src/main/index.ts` before any network module is touched): extracts the System Keychain's certs
+via `security find-certificate` and monkey-patches `tls.createSecureContext` so every secure
+context without its own `ca` gets them merged in. Since it reads whatever's already in the
+System Keychain rather than hardcoding a specific proxy's cert, this covers any such
+interception tool (or none — on an unaffected machine it just merges in the normal OS-trusted
+roots, a no-op in practice). See DECISIONS.md for why `NODE_EXTRA_CA_CERTS` didn't work and why
+the import style matters.
+
+Verified end-to-end on an affected machine: ran `npm run dev` and confirmed the log shows
+`main.system_ca_loaded` → `stt.connected` → `stt.session_connected` → `decision.response` (real
+Jev/OpenRouter response) → `pipeline.execution` for a real spoken command, no
+`SELF_SIGNED_CERT_IN_CHAIN` anywhere. Not yet re-verified against a full `package:mac` build
+(only `npm run dev`, same compiled `dist/` output) or on Windows (no Windows machine here, and
+no report of the same symptom there).

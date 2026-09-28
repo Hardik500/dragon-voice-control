@@ -1087,3 +1087,46 @@ the first `npm run package:win` to be a genuine test rather than a formality. No
 `app.setAppUserModelId()` is now more relevant than it was — a Start Menu entry benefits from a
 stable AppUserModelID — but it is deliberately not bundled here, since it was not part of the
 reported problem and cannot be verified from this host.
+
+## 2026-09-28 — Trust the macOS System Keychain's CA certs for Node TLS
+
+**Decision:** Added `src/main/system-ca.ts` (`trustSystemCaCerts()`, called at the very top of
+`src/main/index.ts`, before any network module is touched). It shells out to
+`security find-certificate -a -p /Library/Keychains/System.keychain`, then monkey-patches
+`tls.createSecureContext` so any secure context created without its own explicit `ca` option gets
+`[...tls.rootCertificates, ...systemCerts]` merged in. macOS only.
+
+**Reason:** The packaged app failed outright on a machine with corporate TLS interception
+installed — the Deepgram `wss://` connection (`ws`) failed immediately with
+`SELF_SIGNED_CERT_IN_CHAIN`, because Node's bundled CA store doesn't include the interception
+proxy's root that gets injected into the OS trust store (Chrome/curl trust it fine because they
+read the OS trust store directly; Node/Electron's `ws` and built-in `fetch` don't). The same root
+cause would also break the Jev/OpenRouter `fetch()` call the moment STT got past it, since `jev`
+is the default decision provider and also goes over `https://openrouter.ai`. Node 22.9 added
+`--use-system-ca` for exactly this; Electron 33 bundles Node 20, which doesn't have it. Reading
+whatever's already in the System Keychain (rather than hardcoding one interception tool's cert)
+means this works for any MDM-injected proxy root, or degrades to a no-op on a machine with none.
+
+Two things were tried and empirically ruled out against a real Electron process on the affected
+machine before landing on the monkey-patch, both reproduced/verified with a throwaway Electron
+harness (a real WebSocket connection to Deepgram with a dummy key, checking for a TLS-layer error
+vs. an auth-layer 401):
+- **`NODE_EXTRA_CA_CERTS` pointed at an exported PEM file, set via `process.env` at the top of
+  `app.whenReady()`.** Still failed with the same `SELF_SIGNED_CERT_IN_CHAIN` — Electron/Node's
+  TLS defaults get cached before that env var is read, even that early.
+- **`import * as tls from "tls"` in the first monkey-patch attempt.** Also silently failed even
+  though the exact same patch logic worked in a plain `.js` test file. TypeScript compiles
+  `import * as tls` to `__importStar(require("tls"))`, which shallow-copies the module's
+  properties onto a *new* object — mutating that copy's `createSecureContext` never touches the
+  real, cached `tls` module object that `ws`/`fetch` actually `require()`. Switching to
+  `import tls = require("tls")` (TS's plain-require alias, no copy) fixed it.
+
+**Consequences:** Verified end-to-end against the real compiled `dist/` output on the affected
+machine (`npm run dev`): `main.system_ca_loaded` → `stt.connected` → `stt.session_connected` →
+real `decision.response` from Jev → `pipeline.execution`, no cert errors anywhere. Any other
+TypeScript file in this codebase that needs to monkey-patch a Node builtin module (rather than
+just call its exports) must use `import x = require("x")`, not `import * as x from "x"` — the
+latter silently patches a throwaway copy. Not yet re-verified against a full `npm run
+package:mac` build (only the same compiled `dist/` output via `npm run dev`), and not reported
+or reproducible on Windows (no equivalent report there, and no Windows machine available to
+test).
