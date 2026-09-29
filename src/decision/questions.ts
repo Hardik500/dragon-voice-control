@@ -38,6 +38,11 @@ export const INTENT_CRITERIA: Record<Intent, string> = {
   chrome_new_tab: "Open a new Chrome tab.",
   chrome_close_tab: "Close the current Chrome tab.",
   chrome_switch_tab: "Switch to the next or previous Chrome tab.",
+  screen_click:
+    'Click a specific visible button, icon, or UI control described by the user, that is NOT a ' +
+    'web page element inside Chrome — anywhere in the frontmost application\'s window (e.g. ' +
+    '"click the Start Listening button", "click the red X in the corner"). Use chrome_click ' +
+    "instead when the phrasing is about clicking something on the current Chrome page.",
   delete_text:
     "Delete some of what was just dictated by voice: the last few words, the last thing said, or everything typed in this dictation session so far.",
   replace_text: 'Replace one specific word/phrase that was just dictated with a different word/phrase, e.g. "replace draft with final".',

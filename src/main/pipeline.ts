@@ -1,10 +1,15 @@
+import { nativeImage, NativeImage } from "electron";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
 import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
-import { callDecisionProvider, DecisionCancelledError, DecisionRequestError } from "../decision/jev-client";
+import { askDisambiguationChoice, callDecisionProvider, DecisionCancelledError, DecisionProviderConfig, DecisionRequestError } from "../decision/jev-client";
+import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, readLabelAtPoint } from "../decision/vision-client";
 import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
@@ -19,6 +24,95 @@ const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
 const DEFAULT_DELETE_WORD_COUNT = 3;
+const SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD = 0.35; // mirrors INTENT_CONFIDENCE_THRESHOLD
+
+type ScreenClickWindow = Awaited<ReturnType<typeof automation.captureFrontmostWindow>>;
+type ScreenPoint = { x: number; y: number; label: string };
+type ImageCrop = { imageBase64: string; width: number; height: number; offsetX: number; offsetY: number };
+
+/** Crops `box` (clamped to the image) out of an already-decoded screenshot, as base64 JPEG.
+ * Returns the crop's offset within the original image so the caller can translate points back. */
+function cropImage(image: NativeImage, imageWidth: number, imageHeight: number, box: Box): ImageCrop {
+  const offsetX = Math.min(imageWidth - 1, Math.max(0, Math.round(box.x0)));
+  const offsetY = Math.min(imageHeight - 1, Math.max(0, Math.round(box.y0)));
+  const width = Math.max(1, Math.min(imageWidth - offsetX, Math.round(box.x1) - offsetX));
+  const height = Math.max(1, Math.min(imageHeight - offsetY, Math.round(box.y1) - offsetY));
+  const cropped = image.crop({ x: offsetX, y: offsetY, width, height });
+  const size = cropped.getSize();
+  return { imageBase64: cropped.toJPEG(90).toString("base64"), width: size.width, height: size.height, offsetX, offsetY };
+}
+
+/** Box of ±margin (fraction of the full image's width/height) around a point. */
+function boxAroundPoint(x: number, y: number, imageWidth: number, imageHeight: number, margin: { x: number; y: number }): Box {
+  return { x0: x - imageWidth * margin.x, y0: y - imageHeight * margin.y, x1: x + imageWidth * margin.x, y1: y + imageHeight * margin.y };
+}
+
+/** Margins for the wide re-localization crop (used when the first point fails verification) vs
+ * the narrow verification crop (used to independently read back what's actually at a point). */
+const RELOCATE_CROP_MARGIN = { x: 0.25, y: 0.15 };
+const VERIFY_CROP_MARGIN = { x: 0.06, y: 0.035 };
+const VERIFY_BOX_PAD_PX = 8;
+const DEBUG_IMAGE_PREFIX = "dragon-screenclick-";
+const DEBUG_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Verification crop: the element's own box plus a small pad, but never smaller than the fixed
+ * margin around its centre — so the read-back sees exactly the element the model claimed. */
+function verifyBox(p: LocatedPoint, imageWidth: number, imageHeight: number): Box {
+  const m = boxAroundPoint(p.x, p.y, imageWidth, imageHeight, VERIFY_CROP_MARGIN);
+  return {
+    x0: Math.min(m.x0, p.box.x0 - VERIFY_BOX_PAD_PX),
+    y0: Math.min(m.y0, p.box.y0 - VERIFY_BOX_PAD_PX),
+    x1: Math.max(m.x1, p.box.x1 + VERIFY_BOX_PAD_PX),
+    y1: Math.max(m.y1, p.box.y1 + VERIFY_BOX_PAD_PX),
+  };
+}
+
+/** Verifies all candidates concurrently. One failed read-back (timeout/5xx) only drops that
+ * candidate; if every read-back fails, rethrows the first error so real API-key/network
+ * problems stay visible instead of silently entering recovery. */
+async function verifyCandidates(
+  description: string,
+  candidates: LocatedPoint[],
+  verify: (p: LocatedPoint) => Promise<string>
+): Promise<{ verified: ScreenPoint[]; readbacks: string[] }> {
+  if (candidates.length === 0) return { verified: [], readbacks: [] };
+  const results = await Promise.allSettled(candidates.map(verify));
+  if (results.every((r) => r.status === "rejected")) throw (results[0] as PromiseRejectedResult).reason;
+  const readbacks = results.map((r) => (r.status === "fulfilled" ? r.value : ""));
+  const verified = candidates.flatMap((p, i) => (results[i].status === "fulfilled" && labelMatches(description, readbacks[i]) ? [{ x: p.x, y: p.y, label: readbacks[i] }] : []));
+  return { verified, readbacks };
+}
+
+/** Saves the (frontmost-window-only) screenshot of a failed/ambiguous screen_click to the OS
+ * temp dir for offline model comparison, and deletes ones older than 24h. Never uploaded. */
+function saveScreenClickDebugImage(imageBase64: string, description: string, reason: string): void {
+  const dir = os.tmpdir();
+  const file = path.join(dir, `${DEBUG_IMAGE_PREFIX}${Date.now()}.jpg`);
+  fs.promises
+    .writeFile(file, Buffer.from(imageBase64, "base64"))
+    .then(() => logger.event("screen_click.debug_image", { description, reason, path: file }))
+    .catch(() => {});
+  fs.promises
+    .readdir(dir)
+    .then((names) => {
+      for (const n of names) {
+        const ts = Number(n.slice(DEBUG_IMAGE_PREFIX.length, -4));
+        if (n.startsWith(DEBUG_IMAGE_PREFIX) && Date.now() - ts > DEBUG_IMAGE_TTL_MS) fs.promises.unlink(path.join(dir, n)).catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
+/** Coarse positional description of a point within the window image, used to give Jev enough
+ * context to tell apart multiple verified screen_click matches with the same/similar label
+ * (e.g. two "General" rows in different panes) — see PROGRESS.md 2026-09-29. */
+function describeRegion(x: number, y: number, imageWidth: number, imageHeight: number): string {
+  const xPct = (x / imageWidth) * 100;
+  const yPct = (y / imageHeight) * 100;
+  const vert = yPct < 33 ? "near the top" : yPct < 66 ? "in the vertical middle" : "near the bottom";
+  const horiz = xPct < 33 ? "on the left" : xPct < 66 ? "in the horizontal center" : "on the right";
+  return `(${vert}, ${horiz} of the window)`;
+}
 
 function normalizeDecisionText(text: string): string {
   return text.toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ").trim();
@@ -97,6 +191,14 @@ export class DragonPipeline {
   /** Serializes Jev work per utterance so EagerEndOfTurn cannot race the final EndOfTurn. */
   private decisionInFlightByUtterance = new Map<string, Promise<void>>();
   private executedUtterances = new Set<string>();
+  /** Set while a resolved command is actually running (between the "executing" and "done"/
+   * "error" overlay updates). Deepgram keeps streaming ambient audio during a slow command
+   * (e.g. screen_click's screenshot+vision+click round trip), which fires StartOfTurn/Update
+   * events for incidental noise — without this guard, onTurn's "listening" overlay push for
+   * those events overwrote "Executing" almost immediately, making the loading state look like
+   * it vanished before the command actually finished. Purely cosmetic: only gates the overlay
+   * push, not turn processing. */
+  private executingUtteranceId: string | null = null;
   private ignoredLoggedUtterances = new Set<string>();
   private utteranceCounter = 0;
   private micStreaming = false;
@@ -571,16 +673,18 @@ export class DragonPipeline {
       return;
     }
     if (turn.event === "StartOfTurn" || turn.event === "Update") {
-      this.onOverlay({
-        utteranceId: turn.utteranceId,
-        state: "listening",
-        transcript: turn.transcript,
-        isFinal: false,
-        action: null,
-        status: null,
-        latencyMs: null,
-        activationMode: settings.activationMode,
-      });
+      if (this.executingUtteranceId == null) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "listening",
+          transcript: turn.transcript,
+          isFinal: false,
+          action: null,
+          status: null,
+          latencyMs: null,
+          activationMode: settings.activationMode,
+        });
+      }
       return; // Only EagerEndOfTurn/EndOfTurn trigger decisions (debounces interim noise).
     }
 
@@ -1052,12 +1156,21 @@ export class DragonPipeline {
       });
 
       const execStarted = Date.now();
+      this.executingUtteranceId = turn.utteranceId;
       let execError: string | null = null;
       try {
-        await this.executeCommand(resolved);
+        await this.executeCommand(resolved, effectiveText, controller.signal);
       } catch (err) {
         execError = err instanceof Error ? err.message : String(err);
       }
+      // If the user spoke again before this (slow) command finished, a newer utterance's own
+      // execution may have already overwritten executingUtteranceId with its own id — in that
+      // case this command is stale: don't reclaim the flag (it belongs to the newer command
+      // now) and don't push this command's "done"/"error" overlay below, since it would
+      // overwrite whatever the newer command has since displayed with old information (visible
+      // as a brief jitter to a stale state before the newer command's own update corrects it).
+      const isCurrentExecution = this.executingUtteranceId === turn.utteranceId;
+      if (isCurrentExecution) this.executingUtteranceId = null;
       const executionMs = Date.now() - execStarted;
       this.updateJevDecisionOutcome(
         turn.utteranceId,
@@ -1101,16 +1214,18 @@ export class DragonPipeline {
         error: execError,
       });
 
-      this.onOverlay({
-        utteranceId: turn.utteranceId,
-        state: execError ? "error" : "done",
-        transcript: effectiveText,
-        isFinal: true,
-        action: describeCommand(resolved),
-        status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
-        latencyMs: totalMs,
-        activationMode: settings.activationMode,
-      });
+      if (isCurrentExecution) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: execError ? "error" : "done",
+          transcript: effectiveText,
+          isFinal: true,
+          action: describeCommand(resolved),
+          status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
+          latencyMs: totalMs,
+          activationMode: settings.activationMode,
+        });
+      }
 
       this.history.add({
         utteranceId: turn.utteranceId,
@@ -1231,7 +1346,7 @@ export class DragonPipeline {
     });
   }
 
-  private async executeCommand(cmd: ResolvedCommand): Promise<void> {
+  private async executeCommand(cmd: ResolvedCommand, transcript: string, signal: AbortSignal): Promise<void> {
     switch (cmd.kind) {
       case "open_app":
         return automation.openApp(cmd.appAlias!);
@@ -1304,6 +1419,8 @@ export class DragonPipeline {
         return this.requireBrowserAction({ kind: "close_tab" });
       case "chrome_switch_tab":
         return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next" });
+      case "screen_click":
+        return this.executeScreenClick(cmd.text!, transcript, signal);
       case "search_in_app":
         return this.executeSearchInApp(cmd.query!);
       case "replace_text": {
@@ -1361,6 +1478,176 @@ export class DragonPipeline {
     await automation.pressNamedKey("enter");
   }
 
+  /** Vision-based click: screenshots the frontmost window only, discovers every on-screen match
+   * for the description, independently verifies each one, disambiguates if more than one survives
+   * verification, then moves+clicks at the corresponding absolute screen coordinate (window
+   * bounds + relative offset). */
+  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal): Promise<void> {
+    const settings = this.getSettings();
+    const window = await automation.captureFrontmostWindow();
+    // Decode once per click; every verify/relocate crop reuses it.
+    const image = nativeImage.createFromBuffer(Buffer.from(window.imageBase64, "base64"));
+    const rawMatches = await locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight);
+    if (rawMatches.length === 0) {
+      saveScreenClickDebugImage(window.imageBase64, description, "no_match");
+      throw new Error(`Could not find "${description}" on screen.`);
+    }
+    const candidates = dedupeMatches(rawMatches);
+
+    // The model's own `label` field turned out to be self-consistently unreliable as a
+    // verification signal — it can echo back the requested description even when its
+    // coordinates land on a completely different row (grounding failure, not a wrong-row pick).
+    // So verify each reported match independently: crop tightly around it and ask a
+    // separately-framed "what text is here?" question with no hint of the target — if that
+    // doesn't match, the point itself is wrong regardless of what the first call's label
+    // claimed. See PROGRESS.md 2026-09-28.
+    const verify = (p: LocatedPoint) =>
+      readLabelAtPoint(settings.openRouterApiKey, cropImage(image, window.imageWidth, window.imageHeight, verifyBox(p, window.imageWidth, window.imageHeight)).imageBase64);
+
+    const { verified } = await verifyCandidates(description, candidates, verify);
+
+    let point: ScreenPoint;
+    let retried = false;
+    let disambiguated = false;
+    if (verified.length === 0) {
+      // None of the reported matches survived independent verification — fall back to the
+      // recovery path (tight relocate-crop retry + one fresh full-image attempt, concurrently)
+      // using the model's best guess as the starting point.
+      retried = true;
+      saveScreenClickDebugImage(window.imageBase64, description, "unverified");
+      point = await this.recoverScreenClickPoint(description, candidates[0], window, image, settings, verify);
+    } else if (verified.length === 1) {
+      point = verified[0];
+    } else {
+      // Multiple genuinely distinct matches survived verification (e.g. several people named
+      // "Harshit", or repeated "General" rows across panes) — a single vision call can't tell
+      // which one the user meant, so ask Jev to pick using the full utterance's intent. See
+      // PROGRESS.md 2026-09-29.
+      disambiguated = true;
+      saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, window, settings, signal);
+    }
+
+    // The vision model's point is in the sent image's pixel space, which can differ from
+    // bounds' point space (Retina scaling and/or downscaling for cost/latency) — scale back
+    // rather than assuming a 1:1 ratio.
+    const scaleX = window.bounds.width / window.imageWidth;
+    const scaleY = window.bounds.height / window.imageHeight;
+    const screenX = window.bounds.x + point.x * scaleX;
+    const screenY = window.bounds.y + point.y * scaleY;
+    logger.event("automation.click_at", {
+      description,
+      bounds: window.bounds,
+      imageWidth: window.imageWidth,
+      imageHeight: window.imageHeight,
+      imagePoint: point,
+      verifiedLabel: point.label,
+      matchCount: rawMatches.length,
+      dedupedCount: candidates.length,
+      verifiedCount: verified.length,
+      retried,
+      disambiguated,
+      screenX,
+      screenY,
+    });
+    await automation.clickAt(screenX, screenY);
+  }
+
+  /** Recovery path for when zero of `locateElements`' reported matches survive independent
+   * verification: a tight relocate-crop retry around the model's best guess and one fresh
+   * full-image attempt, run concurrently (same call budget as running them in sequence, one
+   * round trip instead of two). The relocate-crop result wins if both verify. */
+  private async recoverScreenClickPoint(
+    description: string,
+    bestGuess: LocatedPoint,
+    window: ScreenClickWindow,
+    image: NativeImage,
+    settings: DragonSettings,
+    verify: (p: LocatedPoint) => Promise<string>
+  ): Promise<ScreenPoint> {
+    // Two different failure modes need two different retries: a *close but imprecise* miss is
+    // fixed by re-asking on a tighter crop around the same point (less competing UI per
+    // pixel); a *wrong region entirely* miss (e.g. landed on a tab bar instead of the list
+    // below it) means the target isn't even inside that crop — that case needs a fresh
+    // full-image attempt instead.
+    const relocateCrop = cropImage(image, window.imageWidth, window.imageHeight, boxAroundPoint(bestGuess.x, bestGuess.y, window.imageWidth, window.imageHeight, RELOCATE_CROP_MARGIN));
+    const toFullImage = (m: LocatedPoint): LocatedPoint => ({
+      x: relocateCrop.offsetX + m.x,
+      y: relocateCrop.offsetY + m.y,
+      label: m.label,
+      box: { x0: relocateCrop.offsetX + m.box.x0, y0: relocateCrop.offsetY + m.box.y0, x1: relocateCrop.offsetX + m.box.x1, y1: relocateCrop.offsetY + m.box.y1 },
+    });
+    const attempts = await Promise.allSettled([
+      locateElements(settings.openRouterApiKey, relocateCrop.imageBase64, description, relocateCrop.width, relocateCrop.height).then((ms) =>
+        verifyCandidates(description, ms.slice(0, 1).map(toFullImage), verify)
+      ),
+      locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight).then((ms) =>
+        verifyCandidates(description, ms.slice(0, 1), verify)
+      ),
+    ]);
+    if (attempts.every((a) => a.status === "rejected")) throw (attempts[0] as PromiseRejectedResult).reason;
+
+    const results = attempts.flatMap((a) => (a.status === "fulfilled" ? [a.value] : []));
+    const winner = results.find((r) => r.verified.length > 0);
+    if (winner) return winner.verified[0];
+    const found = results.flatMap((r) => r.readbacks).find(Boolean) ?? "";
+    throw new Error(`Could not confidently locate "${description}" on screen (found "${found}" instead).`);
+  }
+
+  /** Disambiguates among several independently-verified on-screen matches for the same
+   * description by asking Jev to choose using the full utterance's context (same "give Jev N
+   * candidates, let it choose" pattern as `buildTargetCandidates`/the `target` question — see
+   * PROGRESS.md 2026-09-29). Falls back to a deterministic pick (natural reading order: topmost,
+   * then leftmost) whenever Jev can't be asked, times out, or isn't confident enough — a click
+   * should still happen even with no disambiguating signal. */
+  private async disambiguateScreenClickCandidates(
+    description: string,
+    transcript: string,
+    candidates: ScreenPoint[],
+    window: ScreenClickWindow,
+    settings: DragonSettings,
+    signal: AbortSignal
+  ): Promise<ScreenPoint> {
+    // Exactly one read-back equals the spoken target (e.g. "Harshit" vs "Harshit Agarwal") —
+    // no need to ask Jev.
+    const exact = candidates.filter((c) => labelExact(description, c.label));
+    if (exact.length === 1) {
+      logger.event("screen_click.disambiguation", { description, candidateCount: candidates.length, chosenLabel: exact[0].label, usedExactLabelMatch: true });
+      return exact[0];
+    }
+
+    const deterministicDefault = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x)[0];
+
+    const criteria: Record<string, string> = {};
+    candidates.forEach((c, i) => {
+      criteria[String(i)] = `"${c.label}" ${describeRegion(c.x, c.y, window.imageWidth, window.imageHeight)}`;
+    });
+
+    const config: DecisionProviderConfig = {
+      provider: settings.decisionProvider,
+      openRouterApiKey: settings.openRouterApiKey,
+      layaBaseUrl: settings.layaBaseUrl,
+      layaModel: settings.layaModel,
+    };
+    const state = buildState({ transcript, activeApp: null, browserPage: null });
+    const instructions = `The user asked to click "${description}", and multiple matching on-screen elements were found. Which one did they mean, based on the full transcript?`;
+
+    const answer = await askDisambiguationChoice(config, state, instructions, criteria, signal);
+    const idx = answer ? Number(answer.choice) : NaN;
+    const confident = !!answer && answer.confidence >= SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD && Number.isInteger(idx) && !!candidates[idx];
+
+    logger.event("screen_click.disambiguation", {
+      description,
+      candidateCount: candidates.length,
+      criteria,
+      chosen: answer?.choice ?? null,
+      confidence: answer?.confidence ?? null,
+      usedDeterministicFallback: !confident,
+    });
+
+    return confident ? candidates[idx] : deterministicDefault;
+  }
+
   private async requireBrowserAction(action: BrowserAction): Promise<void> {
     if (!this.browserBridge.isConnected()) {
       throw new Error("Chrome extension is not connected. Load the unpacked extension and reload the page.");
@@ -1390,6 +1677,8 @@ function describeCommand(cmd: ResolvedCommand): string {
       return `Search for "${cmd.query}"`;
     case "search_in_app":
       return `Search for "${cmd.query}" in app`;
+    case "screen_click":
+      return `Click "${cmd.text}"`;
     case "replace_text":
       return `Replace "${cmd.find}" with "${cmd.replacement}"`;
     default:
@@ -1413,6 +1702,8 @@ function shortReplyFor(cmd: ResolvedCommand): string {
       return "Muted";
     case "chrome_search":
       return "Searching";
+    case "screen_click":
+      return "Clicking";
     case "chrome_open_url":
       return "Opening";
     default:

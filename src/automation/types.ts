@@ -40,6 +40,22 @@ export interface PlatformAutomation {
   openUrlInChrome(url: string): Promise<void>;
   getActiveAppName(): Promise<string | null>;
 
+  /** Screenshots the frontmost/focused app's window only (never the whole screen, never other
+   * windows) for vision-based UI targeting. Throws if no window/permission is available. */
+  captureFrontmostWindow(): Promise<{
+    /** Base64 JPEG. */
+    imageBase64: string;
+    bounds: { x: number; y: number; width: number; height: number };
+    /** Pixel dimensions of the image actually sent to the vision model — may differ from
+     * `bounds` (points on macOS Retina displays, and/or downscaled for cost/latency), so
+     * callers must scale a returned point by `bounds.width / imageWidth` (and height) rather
+     * than assuming a 1:1 ratio. */
+    imageWidth: number;
+    imageHeight: number;
+  }>;
+  /** Moves the mouse to absolute screen coordinates and performs one left click. */
+  clickAt(x: number, y: number): Promise<void>;
+
   /** Speaks a short acknowledgement; must interrupt (kill) any reply already speaking. */
   say(text: string): void;
   /** Barge-in support: stop any in-progress spoken reply immediately. */

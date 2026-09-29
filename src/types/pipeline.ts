@@ -59,6 +59,8 @@ export interface ExtractedPayload {
   deleteWordCount: number | null;
   /** replace_text: [find, replacement], extracted verbatim from "replace X with Y". */
   replacePair: [string, string] | null;
+  /** screen_click: "click/tap [on] [the] X" -> X, like dictatedText but for vision-based clicking. */
+  clickTarget: string | null;
 }
 
 export type Intent =
@@ -96,6 +98,7 @@ export type Intent =
   | "chrome_new_tab"
   | "chrome_close_tab"
   | "chrome_switch_tab"
+  | "screen_click"
   | "delete_text"
   | "replace_text"
   | "insert_newline"

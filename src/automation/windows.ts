@@ -57,6 +57,24 @@ const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 '@`;
 
+/** Second, self-contained P/Invoke type block for vision-based clicking. Kept separate from
+ * `WIN32_TYPE`'s lightweight `-MemberDefinition` form because `GetWindowRect` needs a `RECT`
+ * struct, which requires a full `-TypeDefinition` class. */
+const CLICK_WIN32_TYPE = `Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class DragonClickWin32 {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern void SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, UIntPtr dwExtraInfo);
+}
+'@`;
+const MOUSEEVENTF_LEFTDOWN = 0x0002;
+const MOUSEEVENTF_LEFTUP = 0x0004;
+
 const KEYEVENTF_EXTENDEDKEY = 0x0001;
 const KEYEVENTF_KEYUP = 0x0002;
 const SW_MINIMIZE = 6;
@@ -471,4 +489,55 @@ if ($procId -ne 0) {
     logger.error("automation.get_active_app", err);
     return null;
   }
+}
+
+/** Unverified on real Windows hardware — see PROGRESS.md. */
+export async function captureFrontmostWindow(): Promise<{
+  imageBase64: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  imageWidth: number;
+  imageHeight: number;
+}> {
+  const script = `${CLICK_WIN32_TYPE}
+Add-Type -AssemblyName System.Drawing
+$h = [DragonClickWin32]::GetForegroundWindow()
+$rect = New-Object DragonClickWin32+RECT
+[void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
+$x = $rect.Left; $y = $rect.Top; $w = $rect.Right - $rect.Left; $ht = $rect.Bottom - $rect.Top
+$bmp = New-Object System.Drawing.Bitmap $w, $ht
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $ht))
+$tmpFile = [System.IO.Path]::GetTempFileName() + '.jpg'
+$bmp.Save($tmpFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+Write-Output "$x|$y|$w|$ht|$tmpFile"`;
+  const { stdout } = await runPowerShell(script);
+  const parts = stdout.trim().split("|");
+  if (parts.length !== 5) throw new Error("Could not capture the frontmost window.");
+  const [xs, ys, ws, hs, tmpFile] = parts;
+  try {
+    const buf = await fs.promises.readFile(tmpFile);
+    const width = parseInt(ws, 10);
+    const height = parseInt(hs, 10);
+    return {
+      imageBase64: buf.toString("base64"),
+      bounds: { x: parseInt(xs, 10), y: parseInt(ys, 10), width, height },
+      // CopyFromScreen captured exactly width x height pixels, so this is a 1:1 ratio today —
+      // unverified on a real HiDPI Windows display (see PROGRESS.md), but keeps the interface
+      // consistent with macOS's captureFrontmostWindow().
+      imageWidth: width,
+      imageHeight: height,
+    };
+  } finally {
+    fs.promises.unlink(tmpFile).catch(() => {});
+  }
+}
+
+/** Unverified on real Windows hardware — see PROGRESS.md. */
+export async function clickAt(x: number, y: number): Promise<void> {
+  const script = `${CLICK_WIN32_TYPE}
+[DragonClickWin32]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})
+Start-Sleep -Milliseconds 50
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTDOWN}, 0, 0, 0, [UIntPtr]::Zero)
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)`;
+  await runPowerShell(script);
 }

@@ -80,6 +80,18 @@ function clickElementOverride(effectiveText: string, payload: ExtractedPayload):
   return { kind: "chrome_click", elementId: payload.browserElementCandidates[0].id };
 }
 
+const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the\s+)?.+/i;
+
+/** "click/tap X" with no Chrome page-element candidates available means X must be a screen
+ * element outside the DOM path (a native app's button/icon). If there ARE browser element
+ * candidates, `clickElementOverride` above already owns "click on X" — don't double-handle. */
+function screenClickOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
+  if (payload.browserElementCandidates.length > 0) return null;
+  if (!SCREEN_CLICK_PATTERN.test(effectiveText)) return null;
+  const text = payload.clickTarget ?? effectiveText.trim();
+  return { kind: "screen_click", text };
+}
+
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (!isDeterministicAppLaunch(effectiveText, payload)) return null;
   const cand = payload.appCandidates[0];
@@ -132,6 +144,10 @@ export function resolveCommand(
   if (intent !== "chrome_click") {
     const clickOverride = clickElementOverride(effectiveText, payload);
     if (clickOverride) return clickOverride;
+  }
+  if (intent !== "screen_click") {
+    const screenOverride = screenClickOverride(effectiveText, payload);
+    if (screenOverride) return screenOverride;
   }
 
   switch (intent) {
@@ -239,6 +255,11 @@ export function resolveCommand(
       return { kind: intent };
     case "chrome_switch_tab":
       return { kind: intent, direction };
+    case "screen_click": {
+      const text = payload.clickTarget ?? effectiveText.trim();
+      if (!text) return null;
+      return { kind: intent, text };
+    }
     case "insert_newline":
       return { kind: intent };
     case "search_in_app": {

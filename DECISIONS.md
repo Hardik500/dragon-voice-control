@@ -1130,3 +1130,106 @@ latter silently patches a throwaway copy. Not yet re-verified against a full `np
 package:mac` build (only the same compiled `dist/` output via `npm run dev`), and not reported
 or reproducible on Windows (no equivalent report there, and no Windows machine available to
 test).
+
+## 2026-09-28 — Added `screen_click`: screenshot + vision-LLM click, scoped to the frontmost window
+
+**Decision:** Added a new `screen_click` intent that screenshots only the frontmost/focused
+app window (`automation.captureFrontmostWindow()`), sends it to a vision-capable model
+(`openai/gpt-4o-mini` via OpenRouter's standard `/api/v1/chat/completions` endpoint — distinct
+from the Jev System One `/systemone` endpoint) asking for the pixel coordinates of a described
+element, then moves the mouse and clicks there in one combined action
+(`automation.clickAt()`). This is an intentional, user-approved exception to the
+"no Accessibility text APIs, no vision" invariant in `AGENTS.md`: the vision call only ever
+returns coordinates, never text content, and never sees more than the one frontmost window.
+
+**Reason:** There was no existing way for Dragon to click a UI element outside the Chrome DOM
+path (native app buttons/icons, menu items, etc.) without either building Accessibility-tree
+traversal per platform or invoking a vision model. Given the alpha's simplicity bias, a single
+screenshot + vision-LLM round trip was chosen over Accessibility APIs, scoped narrowly to one
+intent and one window to keep the exception auditable.
+
+**Consequences:** Requires an OpenRouter API key (reuses `settings.openRouterApiKey`, already
+required for Jev). macOS additionally needs Screen Recording permission on top of Accessibility.
+`screen_click` is deliberately excluded from `INTERIM_ELIGIBLE_INTENTS` in
+`src/decision/resolve.ts` — a screenshot + vision round trip is too slow/expensive to risk
+running twice on an interim transcript that may still change. The Windows implementation
+(`captureFrontmostWindow`/`clickAt` in `src/automation/windows.ts`) is unverified on real
+hardware, same caveat as the rest of that file — see `PROGRESS.md`.
+
+## 2026-09-28 — `clickAt()` on macOS switched from System Events to JXA CGEvent (fixes indefinite hang)
+
+**Decision:** `automation.clickAt()` on macOS now runs a JavaScript-for-Automation script
+(`osascript -l JavaScript`) that posts a raw `CGEvent` mouse click via `ObjC.import('CoreGraphics')`,
+instead of `tell application "System Events" to click at {x,y}`.
+
+**Reason:** Real-device testing of `screen_click` showed `clickAt()` hanging for the full
+osascript timeout every time, even though Accessibility/Screen Recording/Automation permissions
+were all correctly granted (verified in System Settings) and every other System Events call
+(`get name of ...`, `get position of front window`) returned instantly. Root-caused by
+reproducing the hang directly from a fully-trusted terminal (bypassing Dragon/Electron entirely):
+`click at {x,y}` hung only when the frontmost app was Slack (Electron-based), not when clicking
+the terminal's own window. This matches a documented AppleScript limitation (see Keyboard
+Maestro forum thread on `infoForUIElement`/System Events stalls): System Events' `click`
+command hit-tests the target app's accessibility tree to resolve what's under the point, which
+can hang indefinitely for Electron/Chromium-based apps with incomplete/slow-to-expose AX trees —
+not a Dragon-specific permission gap. JXA's `CGEventPost` posts the click at the HID event-tap
+level, skipping AX hit-testing entirely, gated by the same Accessibility permission already
+granted. This is a built-in macOS scripting layer (`osascript -l JavaScript`), not a new
+dependency — no Swift helper, no `cliclick`/Homebrew tool needed.
+
+**Consequences:** Verified from a terminal (`osascript -l JavaScript` posting the click)
+returning in ~0.07s with Slack frontmost, versus the old command hanging 30+ seconds in the
+same scenario. Not yet re-verified end-to-end through the full Dragon pipeline (screenshot →
+vision → click) — retest `screen_click` and check `pipeline.execution` `executionMs` in the
+logs. Only `clickAt()` was changed; all other macOS automation (`hideApp`, `pressNamedKey`,
+`deleteBackward`, window commands, `getActiveAppName`, `captureFrontmostWindow`'s window-bounds
+query) still goes through `osascript`/System Events AppleScript, since those are read-only
+queries or don't hit-test an arbitrary screen point and haven't shown this failure mode.
+
+
+## 2026-09-28 — Confirmed `screen_click` misses are vision-model imprecision, not coordinate math; switched to full `gpt-4o`
+
+**Decision:** Added logging of the raw `x_pct`/`y_pct` from `locateElement()`
+(`vision.locate_element`) and the resolved bounds/scale/screen coordinates from
+`executeScreenClick` (`automation.click_at`) to `src/main/pipeline.ts` and
+`src/decision/vision-client.ts`. Using a real log line (window bounds 1512x949,
+image 1280x803, `x_pct:8, y_pct:22`), verified `scaleX` (1.18125) and `scaleY`
+(1.18182) agree within 0.05% — no aspect distortion, no doubled/halved offset, no
+titlebar miscount. The transform itself is correct. Switched `VISION_MODEL` in
+`src/decision/vision-client.ts` from `openai/gpt-4o-mini` to `openai/gpt-4o`.
+
+**Reason:** Repeated user testing showed `screen_click` landing one row/item off in
+dense UI (Slack sidebar: "security" → "pde-all", "activity" → "my team") even after
+adding `detail: "high"`. The scale-factor math check above ruled out a coordinate
+bug, isolating the cause to `gpt-4o-mini`'s spatial-grounding accuracy on closely-
+packed small targets — the model itself returns a slightly wrong `x_pct`/`y_pct`.
+
+**Consequences:** Higher per-`screen_click` cost and latency (full `gpt-4o` vs
+mini) in exchange for better click accuracy — not yet re-verified end-to-end;
+retest the same dense-sidebar sequence and check whether misses persist. If
+`gpt-4o` still misses on dense lists, the next lever is a two-pass zoom (coarse
+locate → crop → re-locate in the crop) rather than a further model swap, since the
+underlying issue is target density/size in the source image, not model choice
+alone.
+
+## 2026-09-29 — `screen_click` vision model: `gpt-4o` → `google/gemini-3-flash-preview`, boxes instead of points
+
+**Decision:** `VISION_MODEL` in `src/decision/vision-client.ts` is now
+`google/gemini-3-flash-preview` (same OpenRouter endpoint and key). `locateElements()` asks for
+Gemini's native `box_2d` ([ymin,xmin,ymax,xmax], normalized 0–1000) and clicks the box centre.
+Also: screenshots/crops are JPEG instead of PNG; verify crops use `detail:"low"`; disambiguation
+skips Jev when exactly one verified label equals the spoken target; failed/ambiguous clicks save
+the frontmost-window screenshot to the OS temp dir (24h, never uploaded).
+
+**Reason:** The earlier assumption (entry above) that the miss was "target density, not model
+choice" doesn't hold up against published GUI-grounding results: GPT-4o scores 0.8% on
+ScreenSpot-Pro and ~18% on ScreenSpot, Gemini 3 Flash 69.1% on ScreenSpot-Pro (Benchmark Atlas
+leaderboard; GUI-Actor; arXiv 2509.11548). Boxes give the verify crop, dedup and relocate crop
+the element's real extent. JPEG cuts upload size, which dominated the measured round trip; a
+<512px crop loses nothing at `detail:"low"`.
+
+**Consequences:** Reversible by changing one constant (the prompt's `box_2d` format also works
+with other models, with their own grounding accuracy). `max_tokens` was deliberately not set:
+Gemini's reasoning tokens can count against it and truncate the answer. Not yet verified on real
+hardware — see PROGRESS.md 2026-09-29.
+

@@ -74,6 +74,14 @@ export function extractDictatedText(transcript: string): string | null {
   return null;
 }
 
+/** "click/tap [on] [the] X" -> X. Deliberately excludes "press" (ambiguous with press_key,
+ * e.g. "press enter"). Used for vision-based clicking outside the Chrome DOM path. */
+export function extractClickTarget(transcript: string): string | null {
+  const m = transcript.match(/\b(?:click|tap)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i);
+  if (m && m[1].trim().length > 0) return m[1].trim();
+  return null;
+}
+
 function cleanSearchQuery(query: string): string {
   return query
     .replace(/\s+on\s+(?:google(?:\s+dot\s+com)?|chrome)\s*[.!?]*$/i, "")
@@ -319,5 +327,6 @@ export function extractPayload(transcript: string, page: BrowserPageState | null
     finderLocation: extractFinderLocation(transcript),
     deleteWordCount: extractDeleteWordCount(transcript),
     replacePair: extractReplacePair(transcript),
+    clickTarget: extractClickTarget(transcript),
   };
 }

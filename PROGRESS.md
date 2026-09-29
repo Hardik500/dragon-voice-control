@@ -1526,3 +1526,352 @@ Jev/OpenRouter response) → `pipeline.execution` for a real spoken command, no
 `SELF_SIGNED_CERT_IN_CHAIN` anywhere. Not yet re-verified against a full `package:mac` build
 (only `npm run dev`, same compiled `dist/` output) or on Windows (no Windows machine here, and
 no report of the same symptom there).
+
+## Vision-based screen click (`screen_click`) (2026-09-28)
+
+Added point-and-click anywhere on screen for UI elements outside the Chrome DOM path (native app
+buttons/icons), via screenshot + vision-LLM instead of Accessibility APIs — see DECISIONS.md for
+the full rationale. New pieces: `src/decision/vision-client.ts` (`locateElement()`, calls
+OpenRouter's standard chat-completions endpoint with `openai/gpt-4o-mini`);
+`automation.captureFrontmostWindow()` / `automation.clickAt()` on both platforms;
+`screenClickOverride()` + the `screen_click` case in `src/decision/resolve.ts`; execution wired
+in `src/main/pipeline.ts`'s `executeScreenClick()`. `npx tsc --noEmit` passes with no errors.
+
+**Not run/verified in this sandbox** (no GUI, no macOS/Windows machine, same caveat as the rest
+of this file):
+- macOS `captureFrontmostWindow`/`clickAt` (`osascript`/`screencapture`) — reasoned about by
+  inspection only, not executed against a real window.
+- Windows `captureFrontmostWindow`/`clickAt` (`GetWindowRect`/`SetCursorPos`/`mouse_event` via a
+  new `DragonClickWin32` P/Invoke type) — unverified on real Windows hardware, same as the rest
+  of `windows.ts`.
+- The actual OpenRouter vision call (`openai/gpt-4o-mini`) — not exercised against a real
+  screenshot or API key.
+
+Manual verification still needed on a real Mac: say "click the [visible button label]" with a
+native app frontmost and confirm the click lands; say "click on [a link]" with Chrome frontmost
+and page elements available and confirm it still goes through `chrome_click`, not `screen_click`
+(regression check for `screenClickOverride`'s guard); revoke Screen Recording permission and
+confirm the friendly error message surfaces.
+
+### Follow-up fixes from first real-hardware test (2026-09-28)
+
+The first real test (`dragon-2026-09-28.jsonl`, session `sess_mulgi36b_8sftul`) surfaced three
+issues, all fixed here:
+
+1. **Every command, not just `screen_click`, was stalling ~10s.** `automation.getActiveAppName()`
+   and `captureFrontmostWindow()`'s window-position query both share `run()`'s 10s `execFile`
+   timeout meant for slower commands. In this session both were timing out (not erroring fast),
+   which `activeAppMs`/`executionMs` in the logs confirm (~10000ms on every single utterance).
+   `captureFrontmostWindow()`'s catch block then unconditionally rethrew a generic "no window"
+   message, masking the real timeout. Fixed: both quick, read-only queries now use a 3s timeout
+   (`QUICK_QUERY_TIMEOUT_MS`), and `friendlyOsascriptError()` now distinguishes a timeout
+   (`err.killed`) from a real Accessibility-permission error, producing an actionable message
+   ("System Events may be stuck behind an unanswered permission dialog...") instead of the
+   generic one. Root cause of *why* System Events itself was stalling is still unconfirmed — most
+   likely a hidden/unanswered permission dialog — flagging for the user to check next test.
+2. **Retina click-accuracy bug + unnecessary vision cost/latency.** `captureFrontmostWindow()`'s
+   PNG is in *pixels* (2x on Retina) while `bounds` is in *points*; `executeScreenClick()` was
+   adding the vision model's pixel-space point directly onto point-space bounds — on Retina this
+   would click at roughly 2x the intended offset. Fixed by having `captureFrontmostWindow()`
+   downscale to a max 1280px width via Electron's built-in `nativeImage` (no new dependency —
+   cuts vision-call image tokens, and therefore cost and latency, on large screens too) and
+   return the actual sent `imageWidth`/`imageHeight`; `executeScreenClick()` now scales the
+   returned point by `bounds.width / imageWidth` (and height) instead of assuming 1:1. Windows'
+   `captureFrontmostWindow()` gained the same two fields for interface parity (ratio is 1:1
+   there today since `CopyFromScreen` captures exactly `width x height` pixels — unverified on a
+   real HiDPI Windows display).
+3. **No visible loading feedback.** The overlay already sends a generic "Thinking"/"Executing"
+   state for every command (`src/main/pipeline.ts`'s `onOverlay` calls), so no new IPC/state was
+   needed. Added a CSS pulse animation to the status dot for those two states
+   (`src/renderer/overlay.html`) so a multi-second vision round-trip reads as "in progress"
+   rather than looking frozen. If the overlay still isn't visible, check the tray's "Show
+   Overlay" checkbox — `overlayVisible` defaults to `true` but persists once toggled.
+
+On the "cheaper/faster vision model" question: `gpt-4o-mini` already prices at $0.15/$0.60 per M
+tokens with ~0.5s model latency (OpenRouter, Sept 2026 pricing) — comparable to other
+options researched (DeepSeek V4 Flash Vision, Perceptron Mk1). The measured 3.4-5.7s round trip
+was mostly screenshot size/network overhead, not model choice, which the downscaling above
+directly addresses; kept the model as-is rather than switching to an unverified alternative.
+
+### Second real-hardware test: `clickAt()` hang root-caused and fixed (2026-09-28)
+
+After granting Accessibility/Screen Recording/Automation permissions correctly (confirmed via
+screenshots of System Settings — "Electron"/"Dragon" both listed and enabled, "System Events"
+enabled under Automation), `screen_click` still failed: `vision.locate_element found:true`
+succeeded every time, but `clickAt()` hung for the full 10s timeout, every time, against Slack.
+
+Root-caused by reproducing the hang **outside Dragon entirely** — ran
+`osascript -e 'tell application "System Events" to click at {x,y}'` directly from a
+fully-trusted terminal (Warp, already granted Accessibility/Automation): instant when the
+terminal's own window was frontmost, hung 30+ seconds when Slack was frontmost. This is a
+documented AppleScript limitation, not a Dragon permission gap: System Events' `click` command
+hit-tests the target app's accessibility tree to resolve what's under the point, and that
+hit-test can hang indefinitely for Electron/Chromium-based apps (Slack, VS Code, etc.) with
+incomplete AX trees.
+
+**Fixed** in `src/automation/macos.ts`: `clickAt()` now runs a JavaScript-for-Automation script
+(`osascript -l JavaScript`) that posts a raw `CGEvent` via `ObjC.import('CoreGraphics')`
+(`CGEventCreateMouseEvent` + `CGEventPost` at the HID event-tap level), bypassing System
+Events' AX hit-testing entirely. Same Accessibility permission, no new dependency (JXA is
+built into macOS). See DECISIONS.md for full detail.
+
+**Verified:** from a terminal, the JXA click returns in ~0.07s with Slack frontmost (previously
+hung 30+ seconds in the same scenario). **Not yet re-verified through the full Dragon pipeline**
+(screenshot → vision → click) — retest `screen_click` end-to-end and confirm
+`pipeline.execution`'s `executionMs` no longer includes a ~10s `clickAt()` stall.
+
+### Third real-hardware test: click lands slightly off-target, overlay "Executing" vanished instantly (2026-09-28)
+
+The `clickAt()` fix worked — the mouse now moves and clicks with no hang — but two issues
+surfaced:
+
+1. **Click lands slightly off the intended element.** Root cause: `locateElement()`
+   (`src/decision/vision-client.ts`) asked the vision model for raw pixel coordinates within the
+   sent image. OpenAI's vision endpoint internally downscales/tiles the uploaded image before the
+   model ever sees it (documented image-tokenization behavior), and the model has no way to know
+   that resize happened — its pixel answer is relative to whatever resolution OpenAI's backend
+   actually processed, not the `imageWidth`/`imageHeight` we sent and used to scale back to screen
+   coordinates, producing a systematic offset on top of ordinary vision-model imprecision. Fixed
+   by asking for `x_pct`/`y_pct` (0-100 percentage of image width/height) instead of raw pixels —
+   percentages are scale-invariant, so OpenAI's internal resizing no longer matters — and
+   converting to pixels in `locateElement()` using the caller-supplied `imageWidth`/`imageHeight`.
+   `executeScreenClick()` in `src/main/pipeline.ts` now passes those through.
+2. **The "Executing" overlay state vanished almost immediately, well before the click actually
+   happened.** Root cause: Deepgram keeps streaming ambient audio during a slow command (the
+   screenshot+vision+click round trip takes 3-5s), which fires `StartOfTurn`/`Update` events for
+   incidental noise; `onTurn`'s handler for those events unconditionally pushed a "listening"
+   overlay update, overwriting "Executing" before the command actually finished — with no
+   completed action yet to fall back to (`overlay.ts`'s completion-linger logic only kicks in
+   after a real "done"/"error"), the action/status text was cleared outright. Fixed by adding
+   `executingUtteranceId` to `DragonPipeline`, set for the duration of `executeCommand()` in the
+   main decision flow; `onTurn`'s `StartOfTurn`/`Update` branch now skips the "listening" overlay
+   push while it's set. Purely cosmetic — only gates the overlay push, not turn processing, so a
+   genuine new utterance spoken during execution is still captured normally.
+
+**Verified:** the "Executing" overlay state is now stable through the full round trip. Click
+accuracy improved but is still imprecise on dense targets — real-hardware session against Slack
+(a busy channel-list sidebar) hit the intended element once ("kudos") but missed to a
+nearby-but-wrong row twice in a row for "security" (landed on "pde-all", then
+"newco-aapi-erg" — both a few rows away in the same sidebar), landed on the right general area but
+not exactly for "activity", and for "Tonya" landed on a post she'd written rather than her
+name/avatar specifically. `logger.event("vision.locate_element", ...)` only records
+`description`/`found`, not the actual `x_pct`/`y_pct` or resolved screen coordinates, so the
+misses couldn't be pinpointed from logs — diagnosed by inspection instead.
+
+Root cause: `locateElement()`'s OpenRouter request never set a `detail` value on `image_url`.
+Per OpenAI's documented vision behavior, without `detail: "high"` a busy image can be processed
+as a single low-resolution pass — fine for one large isolated button, but the Slack sidebar's
+channel rows are only ~10px tall after the existing 1280px-width downscale, well below what a
+low-res pass can distinguish between neighbors. **Fixed** in `src/decision/vision-client.ts` by
+setting `image_url.detail = "high"`, which makes OpenAI tile the image at full resolution instead.
+**Not yet re-verified on real hardware.**
+
+### Overlay jitter: concurrent command executions could stomp each other's display (2026-09-28)
+
+User also reported occasional jitter — the overlay dot/status briefly flashing to "error" (or
+some other stale state) before correcting itself to the current spoken prompt. Overlay pushes
+(`onOverlay(...)`) aren't logged anywhere, so this couldn't be confirmed against a specific
+timestamp in this session's logs (the captured exchange's commands happened to run back-to-back,
+not overlapping). Found a plausible unconfirmed cause by inspection: `executeCommand()` has no
+cancellation, and `executingUtteranceId` was a single field — if a second command is spoken while
+a slow one (e.g. `screen_click`'s 3-6s screenshot+vision+click) is still running, both executions
+interleave on the event loop and the **older** one's unconditional "done"/"error" overlay push
+(after it finally finishes) can overwrite whatever the newer command has since displayed.
+
+Applied a defensive fix in `src/main/pipeline.ts` regardless, since it's cheap and correct even if
+unconfirmed: capture `isCurrentExecution = this.executingUtteranceId === turn.utteranceId` right
+after `executeCommand()` returns, before clearing the flag. If a newer command already overwrote
+`executingUtteranceId` with its own id, this command is stale — skip reclaiming the flag (it
+belongs to the newer command now) and skip this command's own "done"/"error" overlay push. History
+logging, `pipeline.execution` events, and the voice reply are unaffected — only the overlay
+*display* push is gated. **Not yet re-verified on real hardware** (and still unconfirmed as the
+actual cause of the reported jitter).
+
+### Fourth/fifth real-hardware tests: wrong-row picks in dense sidebars, root-caused and fixed (2026-09-28)
+
+`detail: "high"` and switching `openai/gpt-4o-mini` → `openai/gpt-4o` (see `vision-client.ts`)
+did not fix the underlying issue: repeated `screen_click` calls against Slack's dense channel
+sidebar and macOS System Settings' sidebar kept landing on the **wrong row entirely** ("security"
+→ "pde-all", then → "newco-aapi-erg"; "activity" → "my team", then → "copilot-conversation-testing"),
+not just imprecisely on the right one. Ruled out the coordinate-scaling and OpenAI image-tiling
+(edge-of-image) hypotheses by inspection and by testing a non-edge target in System Settings,
+which showed the same failure mode — confirming this is `gpt-4o`'s point-grounding struggling to
+discriminate the Nth item among many visually-similar, tightly-packed rows, independent of image
+position, model choice, or `detail` setting.
+
+**Fix** (`src/decision/vision-client.ts` + `src/main/pipeline.ts`): the vision prompt now also
+asks for the exact visible `label` text at the point it picked. `executeScreenClick()` fuzzy-
+matches (`labelMatches()`, token-overlap) that label against the spoken description before
+trusting the point; on mismatch it crops a region around the (wrong) point — 50% width / 30%
+height of the window, centered on the miss — and re-asks `locateElement()` on just that crop
+(less competing UI per pixel). If the second attempt's label still doesn't match, `screen_click`
+now fails with a clear error naming what it found instead, rather than silently clicking the
+wrong row. The common case (label matches on the first try) is unchanged — one round trip, no
+added latency. **Not yet re-verified on real hardware** — retest the same dense-sidebar sequence
+("security", "activity") and confirm either a correct click or a clean failure, never a
+wrong-row click.
+
+### Sixth real-hardware test: self-reported `label` proven unreliable as a check; switched to an independent read-back (2026-09-28)
+
+The label-verification fix above did not help — logs showed the model's own `label` field
+reliably echoing the requested description ("general" → `label:"General"`, "screen time" →
+`label:"Screen Time"`) even while `x_pct`/`y_pct` landed on a completely different row (Network,
+Sound respectively). This isn't a wrong-row *semantic* pick, it's the model failing to ground its
+own correct answer to a pixel — asking it to "find X" and trusting its self-reported label for
+the same call shares that bias, so `labelMatches()` never fired.
+
+**Fix**: added `readLabelAtPoint()` (`src/decision/vision-client.ts`) — a second, separately-
+framed call with no "find X" hint. It's given a small crop (6% width / 3.5% height of the window,
+`VERIFY_CROP_MARGIN` in `src/main/pipeline.ts`) centered on the candidate point and asked "what
+text is here?", forcing an independent read instead of a repeat of the target. `executeScreenClick()`
+now verifies every point this way (not just on a self-reported mismatch), and only falls back to
+the wider re-localization crop (`RELOCATE_CROP_MARGIN`, previously the whole fix) when the
+independent read disagrees. The original `locateElement().label` field is kept for logging only,
+no longer trusted for verification. Adds one extra vision call on the common path (every click is
+now verified, not just retried on suspicion) — acceptable latency/cost tradeoff for correctness on
+an alpha. **Not yet re-verified on real hardware** — retest "general"/"screen time"/"focus" in
+System Settings and confirm the independent read-back actually disagrees when the point is wrong
+(check `vision.read_label_at_point` in the logs), and that a correct point is never rejected.
+
+### Seventh real-hardware test: independent verification works, but the retry crop assumed the wrong failure mode (2026-09-28)
+
+The read-back verification above worked as intended — it correctly rejected a bad point ("Harshit"
+→ landed on Slack's "DMs" tab, verification caught the mismatch and refused to click it). But the
+retry then failed too: `locateElement`'s wrong point (5.4%, 20.5%) was near Slack's top tab bar,
+while "Harshit Agarwal" is a row further down in the Activity list — the `RELOCATE_CROP_MARGIN`
+crop centered on the *wrong* point never contained the real target, so re-asking on it deterministically
+returned `found: false`, and `screen_click` failed outright instead of clicking anything.
+
+This is a different failure mode than the one the relocate-crop retry was designed for: a
+*close-but-imprecise* miss (row N-1 instead of row N, still inside the crop) is fixed by a tighter
+crop; a *wrong-region* miss (tab bar instead of list) is not, because the target was never in
+frame. **Fix** (`executeScreenClick` in `src/main/pipeline.ts`): after the relocate-crop retry
+still doesn't verify (either `found: false` or the read-back still mismatches), fall back to one
+more fresh full-image `locateElement` call before giving up — gpt-4o's point-picking is stochastic
+enough that a second independent full pass often lands correctly (seen earlier with "focus"
+landing right on a second full attempt). No new dependencies or grid/tiling scheme; reuses the
+same `locateElement`/`readLabelAtPoint` building blocks. Only adds latency on the (already rare)
+double-failure path. **Not yet re-verified on real hardware** — retest the Slack "Harshit"/dense-list
+case and confirm it either clicks correctly or fails cleanly, and that the common one-shot-correct
+path is unaffected.
+
+### Retested same day: fallback fires correctly, but 3 independent attempts still all miss (2026-09-28)
+
+Retested "Harshit" in the same dense Slack Activity list right after the fix above. Log:
+
+```
+locate_element  xPct:90.5 yPct:14.2 label:"Click \"Harshit\""   (attempt 1, full image)
+read_label_at_point  label:""                                   (verify: empty — correctly rejected)
+locate_element  found:false                                      (relocate-crop retry — target wasn't in that crop at all)
+locate_element  xPct:4.5  yPct:8.5  label:"Harshit Agarwal"      (fallback: fresh full-image attempt)
+read_label_at_point  label:"Activity"                            (verify: reads the panel header, not the row — correctly rejected)
+→ error: Could not confidently locate "Harshit" on screen (found "Activity" instead).
+```
+
+Good news: the independent verification worked exactly as designed on *every* attempt — it never
+clicked the wrong thing, it just ran out of attempts and failed cleanly. Bad news: the fresh
+full-image fallback (the new 3rd attempt) is subject to the *exact same* grounding weakness as
+attempt 1 — gpt-4o landed on the "Activity" header (y≈8.5%, near the top of the panel) instead of
+the "Harshit Agarwal" row beneath it. One extra fresh attempt isn't consistently enough for this
+specific case (dense list, low-frequency target); it happened to work for "focus" (2-of-2) but not
+here (3-of-3 failed).
+
+**Options for tomorrow, cheapest first:**
+1. **Bump the fresh-attempt retry budget** (e.g. loop the fresh full-image attempt up to 2-3 times
+   instead of once) before giving up — same building blocks, zero new code paths, just a bigger
+   budget on the already-rare multi-failure branch. Cheapest, but doesn't fix the underlying
+   grounding weakness, just plays the stochastic odds harder; latency grows on hard cases.
+2. **Parallel multi-sample + agreement**: fire 2-3 fresh `locateElement` calls concurrently (instead
+   of serially retrying), verify each with `readLabelAtPoint`, click the first (or majority-clustered)
+   one that verifies. Same latency as one round-trip since parallel; better odds than serial retry
+   at the same call budget.
+3. **Structural alternative (bigger change, not for tomorrow without discussion)**: read the target
+   element's on-screen position from the OS accessibility tree instead of vision coordinates, for
+   apps where it's available — sidesteps LLM grounding entirely for text lookups. `DECISIONS.md`
+   (2026-09-28) already rejected building AX traversal for *clicking* (hangs on Electron), but that
+   was about `AXUIElement`-driven clicks specifically; whether read-only AX tree *lookup* (find the
+   element, get its frame, then click via the existing `CGEvent`-based `clickAt`) also hangs on
+   Electron/Slack is untested and would need its own investigation before reopening that decision.
+
+Leaning toward option 2 (parallel multi-sample) as the next thing to try — same call budget as a
+naive retry-budget bump, but should improve hit rate faster since it's not betting on a single
+stochastic redraw. Not yet implemented — to be built and tested tomorrow.
+
+### Multi-match discovery + Jev disambiguation for `screen_click` (2026-09-29)
+
+Implemented the plan at `plan-screen-click-disambiguation-2026-09-29.md` — a different angle on
+the wrong-row problem above: instead of asking the vision model for one point and retrying when
+it's wrong, ask it for *every* on-screen match up front, verify each independently, and only
+fall back to single-point retry/disambiguation logic when that's ambiguous or empty.
+
+- `src/decision/vision-client.ts`: `locateElement()` → `locateElements()`, returning up to
+  `MAX_LOCATE_MATCHES = 5` scored `{x, y, label}` points from one vision call instead of one.
+- `src/decision/jev-client.ts`: added `askDisambiguationChoice()` + `DisambiguationAnswer` — an
+  ad-hoc single-question follow-up (reuses `callDecisionProvider`'s provider/endpoint plumbing
+  but a minimal one-question schema, since the fixed 5-question bundle requires
+  intent/target/direction/complete that don't apply here).
+- `src/main/pipeline.ts`'s `executeScreenClick()`: calls `locateElements()`, independently
+  verifies each candidate via the existing `readLabelAtPoint()` read-back, then:
+  - 0 verified → falls back to the existing single-point recovery path (`recoverScreenClickPoint()`,
+    logic unchanged from the prior single-point retry/relocate-crop/fresh-attempt chain).
+  - 1 verified → click it directly, no extra round trip.
+  - 2+ verified → `disambiguateScreenClickCandidates()` asks Jev to choose using the full
+    utterance transcript plus a coarse position description per candidate (`describeRegion()`:
+    top/middle/bottom × left/center/right of the window). Falls back to a deterministic pick
+    (topmost, then leftmost) if Jev can't be asked, times out, or answers below
+    `SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD = 0.35` — a click should still happen even
+    with no disambiguating signal.
+- `executeCommand()`/`executeScreenClick()` now take `transcript`/`signal` params (threaded from
+  `runDecisionInternal`'s existing `effectiveText`/`controller.signal`) so disambiguation can use
+  the full utterance and respect in-flight cancellation.
+
+`npx tsc --noEmit` and `npm run typecheck` (main + renderer) both pass. **Not yet run on real
+hardware** — same caveat as the rest of this section: no GUI/macOS/Windows machine in this
+sandbox, so the actual OpenRouter multi-match vision call and the Jev disambiguation round trip
+are unverified end-to-end. Retest the dense-list cases above ("Harshit" in Slack's Activity list,
+"General"/repeated-label cases) and confirm: a single unambiguous match still clicks in one round
+trip (no regression on the common path), 2+ genuinely distinct matches trigger disambiguation and
+land on the one matching the spoken transcript's intent, and the zero-verified-match path still
+fails cleanly via the unchanged recovery logic.
+
+### `screen_click` accuracy + latency pass (2026-09-29)
+
+Implemented `plan-screen-click-perf-and-correctness-2026-09-29.md`. Accuracy first: the wrong-row
+misses trace to the vision model's grounding ability (see DECISIONS.md 2026-09-29), so the model
+changed; the rest are latency/robustness fixes that apply whichever model wins.
+
+- `src/decision/vision-client.ts`:
+  - `VISION_MODEL` = `google/gemini-3-flash-preview` (was `openai/gpt-4o`); single switch for all vision calls.
+  - `locateElements()` asks for `box_2d` ([ymin,xmin,ymax,xmax], 0–1000) instead of `x_pct/y_pct`;
+    `LocatedPoint` gains `box` (image px), `x,y` = box centre. `temperature:0`,
+    `reasoning.effort:"low"`, `response_format: json_object`. Logs `model` + `imageBytes`.
+  - `readLabelAtPoint()`: `detail:"low"`, `temperature:0`, `reasoning.effort:"minimal"`.
+  - `labelMatches()` ignores filler words (`the, and, click, tap, press, button, on, icon, link,
+    tab`) and 1–2 letter tokens; new `labelExact()`; new `dedupeMatches()` (IoU > 0.5 or centre
+    inside a higher-ranked box).
+- `src/automation/macos.ts` / `windows.ts`: screenshot is JPEG (q85 / GDI+ default) instead of PNG.
+- `src/main/pipeline.ts`:
+  - Screenshot decoded once per click; crops are JPEG.
+  - Verify crop = element box + 8px pad (never smaller than the old fixed margin).
+  - All candidates verified concurrently (`Promise.allSettled`); one failed read-back drops only
+    that candidate, all failing rethrows the first error.
+  - Recovery runs the relocate-crop and fresh full-image attempts concurrently.
+  - Disambiguation skips Jev when exactly one verified label equals the spoken target.
+  - Failed / ambiguous clicks save the frontmost-window screenshot to
+    `os.tmpdir()/dragon-screenclick-<ts>.jpg` (logged as `screen_click.debug_image`, deleted
+    after 24h) for offline model comparison.
+
+Expected round trips: unambiguous = 1 locate + 1 parallel verify; ambiguous adds 1 Jev call only
+when no label matches exactly; zero-verified adds 1 parallel recovery round.
+
+**Verified here:** `npm run typecheck` passes; a throwaway harness (electron stubbed) asserted
+`labelMatches`/`labelExact`, `box2dToPixels` y/x order, and `dedupeMatches`. **Not run on real
+hardware**: the Gemini calls through OpenRouter (including whether `reasoning`/`response_format`
+are accepted together with an image), JPEG capture on Windows, and actual hit rate. Retest Slack
+"Harshit" (Activity list) and System Settings "General"/"Screen Time"; compare
+`pipeline.execution.executionMs` with the 2026-09-28 logs. To compare models on saved
+screenshots, a throwaway replay script lives at `/tmp/dragon-replay/replay.mjs` (outside the
+repo; usage in its header). Success bar: ≥ 90% correct click or clean failure, 0 wrong-row clicks.
+If Gemini still misses dense lists, next levers are a numbered-grid overlay, then local OCR
+(which would need an AGENTS.md invariant change).
+
