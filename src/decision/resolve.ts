@@ -145,7 +145,8 @@ export function resolveCommand(
     const clickOverride = clickElementOverride(effectiveText, payload);
     if (clickOverride) return clickOverride;
   }
-  if (intent !== "screen_click") {
+  const jevPickedApp = (intent === "open_app" || intent === "activate_app") && payload.appCandidates.length > 0;
+  if (intent !== "screen_click" && !jevPickedApp) {
     const screenOverride = screenClickOverride(effectiveText, payload);
     if (screenOverride) return screenOverride;
   }

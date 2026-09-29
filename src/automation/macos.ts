@@ -384,7 +384,9 @@ function run(argv) {
   var w = attr(ax, "AXFocusedWindow");
   if (!w.v) throw new Error("AX focused window lookup failed (" + w.rc + ")");
   var res = walk(w.v, terms);
-  if (res.visited < 30) { delay(0.7); res = walk(w.v, terms); }
+  var app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  var electron = $.NSFileManager.defaultManager.fileExistsAtPath(ObjC.unwrap(app.bundleURL.path) + "/Contents/Frameworks/Electron Framework.framework");
+  if (electron && res.visited < 30) { delay(0.7); res = walk(w.v, terms); }
   return JSON.stringify({ window: rect(w.v), elements: res.elements });
 }`;
 

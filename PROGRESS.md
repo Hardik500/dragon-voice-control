@@ -1891,3 +1891,7 @@ full voice-to-click through Dragon in this mode, and anything on Windows (UIA sc
 Next: try Slack "Harshit" and System Settings "General"/"Screen Time" in both modes; compare hit
 rate and `pipeline.execution.executionMs`.
 
+
+## 2026-09-29 - auto mode
+
+- Added `"auto"` screen click mode (default), Electron-only AX retry, and the Jev app-intent override fix. Typecheck passes; not run end-to-end. To test: Warp "click Spring Boot" (falls back to vision), System Settings "click General" (accessibility), "click on Chrome" (focuses Chrome).

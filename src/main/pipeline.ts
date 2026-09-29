@@ -185,6 +185,9 @@ function keepsDictationOpen(kind: ResolvedCommand["kind"]): boolean {
   );
 }
 
+/** Thrown when the accessibility lookup found nothing; "auto" mode falls back to vision on it. */
+class AccessibilityMissError extends Error {}
+
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
   private inFlight: InFlight[] = [];
@@ -1485,6 +1488,14 @@ export class DragonPipeline {
   private async executeScreenClick(description: string, transcript: string, signal: AbortSignal): Promise<void> {
     const settings = this.getSettings();
     if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal);
+    if (settings.screenClickMethod === "auto") {
+      try {
+        return await this.executeAccessibilityClick(description, transcript, settings, signal);
+      } catch (err) {
+        if (signal.aborted || !(err instanceof AccessibilityMissError)) throw err;
+        logger.event("screen_click.fallback", { description, fallback: "accessibility_miss" });
+      }
+    }
     const window = await automation.captureFrontmostWindow();
     // Decode once per click; every verify/relocate crop reuses it.
     const image = nativeImage.createFromBuffer(Buffer.from(window.imageBase64, "base64"));
@@ -1568,7 +1579,7 @@ export class DragonPipeline {
       .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }))
       .filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height && labelMatches(description, p.label));
     const candidates = dedupeMatches(inWindow);
-    if (candidates.length === 0) throw new Error(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
+    if (candidates.length === 0) throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
     const point =
       candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, settings, signal);
     const screenX = window.x + point.x;

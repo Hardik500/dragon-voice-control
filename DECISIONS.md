@@ -1252,3 +1252,9 @@ first walk can be near-empty, so one retry after 0.7s). Slack row descriptions i
 previews, so labels are capped at 80 chars before logging/Jev. No auto-fallback keeps the two
 methods separately measurable; add one if the experiment favours a hybrid.
 
+
+## 2026-09-29 - screen_click "auto" default; respect Jev app-launch intent
+
+- **Decision:** `screenClickMethod` gains `"auto"` (default): accessibility lookup first, vision on an `AccessibilityMissError`. Logs `screen_click.fallback`. macOS AX retry (0.7s) now only for Electron apps (checks `Electron Framework.framework`). `screenClickOverride` no longer overrides Jev `open_app`/`activate_app` when an app alias matched ("Click on Chrome" was forced to screen_click).
+- **Reason:** Warp exposes 7 unlabelled elements (0/10 hits, ~790ms wasted); 9/9 accessibility clicks in Slack/System Settings were correct.
+- **Consequences:** loose label matches click without vision confirmation. Not yet run through Dragon.
