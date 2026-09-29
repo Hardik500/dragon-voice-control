@@ -28,7 +28,7 @@ export class VisionRequestError extends Error {}
 
 const LABEL_STOPWORDS = new Set(["the", "and", "click", "tap", "press", "button", "on", "icon", "link", "tab"]);
 
-function labelTokens(s: string): string[] {
+export function labelTokens(s: string): string[] {
   return s.toLowerCase().split(/\W+/).filter((t) => t && !LABEL_STOPWORDS.has(t));
 }
 

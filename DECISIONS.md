@@ -1233,3 +1233,22 @@ with other models, with their own grounding accuracy). `max_tokens` was delibera
 Gemini's reasoning tokens can count against it and truncate the answer. Not yet verified on real
 hardware — see PROGRESS.md 2026-09-29.
 
+
+## 2026-09-29 — screen_click: optional accessibility-tree lookup (toggle)
+
+**Decision:** New setting `screenClickMethod` (`"vision"` default | `"accessibility"`), shown in
+Settings as "Screen click lookup". Accessibility mode finds labelled elements in the frontmost
+window via the OS accessibility tree and clicks the centre of the exact element frame — no
+screenshot, no vision call. macOS walks the tree through the AX C API from JXA (ObjC bridge), not
+System Events; Windows uses UI Automation from PowerShell. No fallback to vision on a miss.
+
+**Reason:** User wants to compare both approaches on real apps. Vision grounding can land one row
+off; AX frames are exact where elements are labelled. System Events was measured too slow (~96
+elements in 6s on System Settings); the AX C API walked 169–504 elements in 0.3–0.8s.
+
+**Consequences:** Unlabelled icon buttons and GPU-rendered apps (Warp exposed 7 elements) aren't
+findable in this mode. Electron apps get `AXManualAccessibility` set (tree built on demand; the
+first walk can be near-empty, so one retry after 0.7s). Slack row descriptions include message
+previews, so labels are capped at 80 chars before logging/Jev. No auto-fallback keeps the two
+methods separately measurable; add one if the experiment favours a hybrid.
+

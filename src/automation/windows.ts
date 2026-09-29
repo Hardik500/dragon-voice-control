@@ -541,3 +541,31 @@ Start-Sleep -Milliseconds 50
 [DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)`;
   await runPowerShell(script);
 }
+
+/** UI Automation counterpart of macOS's AX lookup: descendants of the foreground window whose
+ * Name contains any term. Unverified on real Windows hardware — see PROGRESS.md. */
+export async function findAccessibleElements(terms: string[]): Promise<{
+  window: { x: number; y: number; width: number; height: number };
+  elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+}> {
+  const script = `${CLICK_WIN32_TYPE}
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$terms = @('${psQuote(JSON.stringify(terms))}' | ConvertFrom-Json)
+$h = [DragonClickWin32]::GetForegroundWindow()
+$rect = New-Object DragonClickWin32+RECT
+[void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$els = @(foreach ($e in $all) {
+  $n = $e.Current.Name
+  if (-not $n) { continue }
+  $l = $n.ToLower()
+  if (-not ($terms | Where-Object { $l.Contains($_) })) { continue }
+  $r = $e.Current.BoundingRectangle
+  if ($r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0) { continue }
+  @{ label = $n; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height }
+})
+ConvertTo-Json -Compress -Depth 4 -InputObject @{ window = @{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top }; elements = $els }`;
+  const { stdout } = await runPowerShell(script);
+  return JSON.parse(stdout.trim());
+}

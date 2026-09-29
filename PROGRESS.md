@@ -1875,3 +1875,19 @@ repo; usage in its header). Success bar: ≥ 90% correct click or clean failure,
 If Gemini still misses dense lists, next levers are a numbered-grid overlay, then local OCR
 (which would need an AGENTS.md invariant change).
 
+
+## 2026-09-29 — screen_click accessibility-tree toggle
+
+- Settings → "Screen click lookup": Vision model (default) or Accessibility tree (experimental).
+- `automation.findAccessibleElements(terms)` (macOS: JXA + AX C API; Windows: UIA) returns
+  labelled elements whose label contains a search term. `executeAccessibilityClick()` in
+  `src/main/pipeline.ts` filters with `labelMatches`, keeps on-screen ones, dedupes, and reuses Jev
+  disambiguation when several remain.
+
+**Verified here (real macOS):** `npm run typecheck` passes. The exact embedded JXA script was run
+against live apps: System Settings "general" → one element, "General" at (293,409) 74×24, 567ms;
+Slack "harshit" → Activity rows, 297ms; frontmost Warp → 0 elements (no AX tree). **Not run:** a
+full voice-to-click through Dragon in this mode, and anything on Windows (UIA script unverified).
+Next: try Slack "Harshit" and System Settings "General"/"Screen Time" in both modes; compare hit
+rate and `pipeline.execution.executionMs`.
+

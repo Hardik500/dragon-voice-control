@@ -9,7 +9,7 @@ import { automation } from "../automation";
 import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { askDisambiguationChoice, callDecisionProvider, DecisionCancelledError, DecisionProviderConfig, DecisionRequestError } from "../decision/jev-client";
-import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, readLabelAtPoint } from "../decision/vision-client";
+import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, labelTokens, readLabelAtPoint } from "../decision/vision-client";
 import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
@@ -1484,6 +1484,7 @@ export class DragonPipeline {
    * bounds + relative offset). */
   private async executeScreenClick(description: string, transcript: string, signal: AbortSignal): Promise<void> {
     const settings = this.getSettings();
+    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal);
     const window = await automation.captureFrontmostWindow();
     // Decode once per click; every verify/relocate crop reuses it.
     const image = nativeImage.createFromBuffer(Buffer.from(window.imageBase64, "base64"));
@@ -1525,7 +1526,7 @@ export class DragonPipeline {
       // PROGRESS.md 2026-09-29.
       disambiguated = true;
       saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
-      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, window, settings, signal);
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, settings, signal);
     }
 
     // The vision model's point is in the sent image's pixel space, which can differ from
@@ -1550,6 +1551,29 @@ export class DragonPipeline {
       screenX,
       screenY,
     });
+    await automation.clickAt(screenX, screenY);
+  }
+
+  /** screen_click via the OS accessibility tree instead of a screenshot: exact element frames,
+   * no vision call. Only labelled elements are findable; unlabelled icons need Vision mode. */
+  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal): Promise<void> {
+    const tokens = labelTokens(description);
+    const terms = tokens.filter((t) => t.length >= 3).length ? tokens.filter((t) => t.length >= 3) : tokens;
+    if (!terms.length) throw new Error(`Nothing to look up for "${description}".`);
+    const { window, elements } = await automation.findAccessibleElements(terms);
+    // Window-relative, and only on-screen: scrolled-away list rows stay in the tree. Labels are
+    // capped because some rows' AXDescription carries a message preview (Slack Activity).
+    const inWindow = elements
+      .filter((e) => e.width > 0 && e.height > 0)
+      .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }))
+      .filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height && labelMatches(description, p.label));
+    const candidates = dedupeMatches(inWindow);
+    if (candidates.length === 0) throw new Error(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
+    const point =
+      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, settings, signal);
+    const screenX = window.x + point.x;
+    const screenY = window.y + point.y;
+    logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
     await automation.clickAt(screenX, screenY);
   }
 
@@ -1604,7 +1628,7 @@ export class DragonPipeline {
     description: string,
     transcript: string,
     candidates: ScreenPoint[],
-    window: ScreenClickWindow,
+    area: { width: number; height: number },
     settings: DragonSettings,
     signal: AbortSignal
   ): Promise<ScreenPoint> {
@@ -1620,7 +1644,7 @@ export class DragonPipeline {
 
     const criteria: Record<string, string> = {};
     candidates.forEach((c, i) => {
-      criteria[String(i)] = `"${c.label}" ${describeRegion(c.x, c.y, window.imageWidth, window.imageHeight)}`;
+      criteria[String(i)] = `"${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`;
     });
 
     const config: DecisionProviderConfig = {

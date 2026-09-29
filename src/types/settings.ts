@@ -2,6 +2,7 @@ export type ActivationMode = "push_to_talk" | "always_listening";
 export type DecisionProvider = "jev" | "laya";
 
 export type LogVerbosity = "normal" | "verbose";
+export type ScreenClickMethod = "vision" | "accessibility";
 
 export interface DragonSettings {
   openRouterApiKey: string;
@@ -17,6 +18,7 @@ export interface DragonSettings {
   workflowModeShortcut: string;
   voiceReplyEnabled: boolean;
   logVerbosity: LogVerbosity;
+  screenClickMethod: ScreenClickMethod;
   overlayVisible: boolean;
 }
 
@@ -43,6 +45,7 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   workflowModeShortcut: DEFAULT_WORKFLOW_MODE_SHORTCUT,
   voiceReplyEnabled: true,
   logVerbosity: "normal",
+  screenClickMethod: "vision",
   overlayVisible: true,
 };
 

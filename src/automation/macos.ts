@@ -346,3 +346,54 @@ export async function clickAt(x: number, y: number): Promise<void> {
       `var u=$.CGEventCreateMouseEvent($(),$.kCGEventLeftMouseUp,p,$.kCGMouseButtonLeft);$.CGEventPost($.kCGHIDEventTap,u);`
   );
 }
+
+/** Walks the frontmost window's AX tree through the AX C API (JXA ObjC bridge), not System
+ * Events: System Events costs one Apple event per property per element (~96 elements in 6s),
+ * this walks the whole tree in well under a second. Labels are AXTitle/AXDescription, plus
+ * AXValue for AXStaticText only (sidebar/list rows expose their text there) — never editable
+ * text. `AXManualAccessibility` makes Electron apps (Slack, VS Code) build their tree; the first
+ * walk after enabling it can come back near-empty, so it retries once. Terms arrive via argv. */
+const AX_FIND_SCRIPT = `ObjC.import("AppKit");ObjC.import("ApplicationServices");
+ObjC.bindFunction("AXUIElementCopyAttributeValue", ["int", ["id", "id", "id*"]]);
+ObjC.bindFunction("AXUIElementCreateApplication", ["id", ["int"]]);
+ObjC.bindFunction("AXUIElementSetAttributeValue", ["int", ["id", "id", "id"]]);
+function attr(el, name) { var ref = Ref(); var rc = $.AXUIElementCopyAttributeValue(el, $(name), ref); return rc === 0 ? { v: ref[0] } : { rc: rc }; }
+function str(el, name) { var a = attr(el, name); if (!a.v) return ""; var s = ObjC.unwrap(a.v); return typeof s === "string" ? s : ""; }
+function nums(el, name) { var a = attr(el, name); if (!a.v) return null; var m = ObjC.unwrap(a.v.description).match(/[xywh]:(-?[0-9.]+)/g); return m && m.map(function (t) { return parseFloat(t.slice(2)); }); }
+function rect(el) { var p = nums(el, "AXPosition"), s = nums(el, "AXSize"); return p && s ? { x: p[0], y: p[1], width: s[0], height: s[1] } : null; }
+function walk(win, terms) {
+  var out = [], queue = [win], deadline = Date.now() + 4000, visited = 0;
+  while (queue.length && Date.now() < deadline && out.length < 50) {
+    var el = queue.shift();
+    visited++;
+    if (el !== win) {
+      var role = str(el, "AXRole");
+      var label = str(el, "AXTitle") || str(el, "AXDescription") || (role === "AXStaticText" ? str(el, "AXValue") : "");
+      var l = label.toLowerCase();
+      if (label && terms.some(function (t) { return l.indexOf(t) >= 0; })) { var r = rect(el); if (r) { r.label = label; out.push(r); } }
+    }
+    var kids = attr(el, "AXChildren");
+    if (kids.v) { var a = ObjC.unwrap(kids.v); for (var i = 0; i < a.length; i++) queue.push(a[i]); }
+  }
+  return { elements: out, visited: visited };
+}
+function run(argv) {
+  var terms = JSON.parse(argv[0]);
+  var ax = $.AXUIElementCreateApplication($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
+  $.AXUIElementSetAttributeValue(ax, $("AXManualAccessibility"), $.NSNumber.numberWithBool(true));
+  var w = attr(ax, "AXFocusedWindow");
+  if (!w.v) throw new Error("AX focused window lookup failed (" + w.rc + ")");
+  var res = walk(w.v, terms);
+  if (res.visited < 30) { delay(0.7); res = walk(w.v, terms); }
+  return JSON.stringify({ window: rect(w.v), elements: res.elements });
+}`;
+
+export async function findAccessibleElements(terms: string[]): Promise<{
+  window: { x: number; y: number; width: number; height: number };
+  elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+}> {
+  const { stdout } = await run("osascript", ["-l", "JavaScript", "-e", AX_FIND_SCRIPT, JSON.stringify(terms)], 8_000);
+  const parsed = JSON.parse(stdout.trim());
+  if (!parsed.window) throw new Error("Could not find a window to click in — the frontmost app may not have an open window.");
+  return parsed;
+}

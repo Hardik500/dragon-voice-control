@@ -80,6 +80,12 @@ PowerShell/User32 on Windows). Read `/home/hardik/.opencode/plan/dragon-alpha-pl
   endpoint) to get element bounding boxes, then `automation.clickAt()` moves and clicks the box
   centre in one action. `VISION_MODEL` in `vision-client.ts` is the single model switch. macOS additionally requires Screen Recording permission (System Settings -> Privacy &
   Security -> Screen Recording) on top of the Accessibility permission Dragon already needs.
+- **Accessibility-tree clicking (`screenClickMethod: "accessibility"`, experimental, off by
+  default).** A second, equally narrow exception for the same `screen_click` intent:
+  `automation.findAccessibleElements()` reads element *labels* (macOS AXTitle/AXDescription and
+  AXStaticText values; Windows UIA Name) from the frontmost window only, to click an element's
+  exact frame without a screenshot. Never editable text / text-field values; labels are capped
+  at 80 chars in the pipeline. Don't reuse it for other intents.
 
 ## Making changes
 
