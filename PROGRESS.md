@@ -2119,3 +2119,39 @@ candidates here (sidebar item plus page content), which is what the numbered pic
 test directly. Two earlier probes were also thrown off by measuring the wrong window — the
 foreground window was the terminal running the probe. Target windows by process handle instead of
 by focus when probing this code.
+
+### Verified end-to-end on Windows; three residual misses (2026-10-02)
+
+Read the real Windows logs directly (this dev host is WSL2 with `/mnt/c` mounted, so
+`%APPDATA%\Dragon\logs` is readable from here — no need to paste).
+
+**Accessibility matching is fixed.** Nine `automation.click_at` events with
+`method:"accessibility"` and no vision fallback, across two sessions:
+
+- maximized Settings (`-7,-7 2575x1455`): `Gaming` rel(242,730), `Windows Update` rel(242,909)
+- restored Settings (`915,346 1415x641`): `System` rel(704,476), `Bluetooth & devices`
+  rel(704,536) — `Bluetooth` matched **5** labels, deduped to 1 candidate, clicked cleanly, which
+  is exactly what the standalone verify script predicted
+- earlier session: `System`, `Home`, `Personalization`, all correct sidebar positions
+
+`main.system_ca_loaded` also appears once per session, so the CA-trust fix is live in the
+packaged build.
+
+**Three misses remain, all in `accessibility` mode** (so they surface as errors rather than silent
+vision fallbacks, per `executeScreenClick`'s `AccessibilityMissError` handling):
+
+```
+20:41:17  Could not find "Windows Update"
+20:41:35  Could not find "gaming"
+20:41:39  Could not find "accounts"
+```
+
+Each follows a successful click that navigated Settings to a new page, and the window changed
+from maximized to restored mid-sequence. The most likely explanation is that a narrower Settings
+window collapses its navigation pane, so those sidebar labels are genuinely absent from the UIA
+tree. **Not proven from this log**: whether UIA returned 0 labels or the window-bounds /
+`labelMatches` filters dropped them. That distinction is precisely what the `screen_click.ax_lookup`
+event added in commit `7d26bee` records, and that commit landed *after* the run being read here —
+so the next attempt answers it directly.
+
+**Not yet done:** no confirmed root cause for the three misses, and no fix attempted for them.
