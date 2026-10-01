@@ -187,6 +187,8 @@ function keepsDictationOpen(kind: ResolvedCommand["kind"]): boolean {
 
 /** Thrown when the accessibility lookup found nothing; "auto" mode falls back to vision on it. */
 class AccessibilityMissError extends Error {}
+/** Not a failure: the click is ambiguous and `pendingChoice` now awaits a spoken number. */
+class ChoiceRequiredError extends Error {}
 const PENDING_CHOICE_TTL_MS = 15_000;
 
 export class DragonPipeline {
@@ -231,7 +233,7 @@ export class DragonPipeline {
    * as any other command continue being typed verbatim, without repeating "type" each time. */
   private dictationActive = false;
   /** Ambiguous screen_click awaiting a spoken number; screen coordinates, cleared on next utterance. */
-  private pendingChoice: { expiresAt: number; options: { label: string; x: number; y: number }[] } | null = null;
+  private pendingChoice: { app: string | null; expiresAt: number; options: { label: string; x: number; y: number }[] } | null = null;
   /** Everything typed in the current dictation session, kept in sync with what's on screen
    * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
    * instead of guessing. Cleared when dictation ends. */
@@ -871,10 +873,25 @@ export class DragonPipeline {
       activationMode: settings.activationMode,
     });
 
-    if (this.pendingChoice && turn.isFinal && (await this.handlePendingChoice(effectiveText))) {
-      this.unregisterInFlight(controller);
-      this.onOverlay({ utteranceId: turn.utteranceId, state: "done", transcript: effectiveText, isFinal: true, action: "Choose option", status: null, latencyMs: Date.now() - startedAt, activationMode: settings.activationMode });
-      return;
+    if (this.pendingChoice && Date.now() > this.pendingChoice.expiresAt) this.pendingChoice = null;
+    if (this.pendingChoice) {
+      // A live picker owns the next utterance: a partial "2" must not reach Jev.
+      if (!turn.isFinal) {
+        this.unregisterInFlight(controller);
+        return;
+      }
+      if (this.executedUtterances.has(turn.utteranceId)) {
+        this.unregisterInFlight(controller);
+        return;
+      }
+      const handled = await this.handlePendingChoice(effectiveText);
+      if (handled) {
+        this.executedUtterances.add(turn.utteranceId);
+        this.unregisterInFlight(controller);
+        this.history.add({ utteranceId: turn.utteranceId, timestamp: Date.now(), transcript: effectiveText, intent: "screen_click", action: "Choose option", status: handled.error ? "error" : "success", detail: handled.error ?? "" });
+        this.onOverlay({ utteranceId: turn.utteranceId, state: handled.error ? "error" : "done", transcript: effectiveText, isFinal: true, action: "Choose option", status: handled.error, latencyMs: Date.now() - startedAt, activationMode: settings.activationMode });
+        return;
+      }
     }
 
     if (
@@ -1170,10 +1187,12 @@ export class DragonPipeline {
       const execStarted = Date.now();
       this.executingUtteranceId = turn.utteranceId;
       let execError: string | null = null;
+      let choicePrompt: string | null = null;
       try {
         await this.executeCommand(resolved, effectiveText, controller.signal);
       } catch (err) {
-        execError = err instanceof Error ? err.message : String(err);
+        if (err instanceof ChoiceRequiredError) choicePrompt = err.message;
+        else execError = err instanceof Error ? err.message : String(err);
       }
       // If the user spoke again before this (slow) command finished, a newer utterance's own
       // execution may have already overwritten executingUtteranceId with its own id — in that
@@ -1184,6 +1203,17 @@ export class DragonPipeline {
       const isCurrentExecution = this.executingUtteranceId === turn.utteranceId;
       if (isCurrentExecution) this.executingUtteranceId = null;
       const executionMs = Date.now() - execStarted;
+      if (choicePrompt) {
+        // Not a failure: awaiting a spoken number (see handlePendingChoice).
+        this.unregisterInFlight(controller);
+        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", choicePrompt, describeCommand(resolved), executionMs);
+        logger.event("pipeline.choice_prompt", { utteranceId: turn.utteranceId, executionMs });
+        if (isCurrentExecution) {
+          this.onOverlay({ utteranceId: turn.utteranceId, state: "listening", transcript: effectiveText, isFinal: true, action: describeCommand(resolved), status: choicePrompt, latencyMs: sttToDecisionMs + decisionMs + executionMs, activationMode: settings.activationMode });
+        }
+        return;
+      }
+
       this.updateJevDecisionOutcome(
         turn.utteranceId,
         execError ? "error" : "success",
@@ -1694,31 +1724,40 @@ export class DragonPipeline {
     // `handlePendingChoice`); anything else clears it.
     const ordered = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x).slice(0, 5);
     this.pendingChoice = {
+      app: await automation.getActiveAppName().catch(() => null),
       expiresAt: Date.now() + PENDING_CHOICE_TTL_MS,
       options: ordered.map((c) => ({ label: c.label, ...toScreen(c) })),
     };
     const list = ordered.map((c, i) => `${i + 1}: "${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`).join("; ");
-    throw new Error(`Which one? Say a number — ${list}`);
+    throw new ChoiceRequiredError(`Which one? Say a number — ${list}`);
   }
 
   /** Consumes a pending numbered choice. Returns true when the utterance was handled (picked
    * or cancelled); false when there is no live choice or the utterance is something else. */
-  private async handlePendingChoice(text: string): Promise<boolean> {
+  private async handlePendingChoice(text: string): Promise<{ error: string | null } | false> {
     const pending = this.pendingChoice;
     if (!pending) return false;
     this.pendingChoice = null;
     if (Date.now() > pending.expiresAt) return false;
     const t = text.trim().toLowerCase().replace(/[.!?]+$/, "");
-    if (/^(?:cancel|never ?mind|stop)$/.test(t)) return true;
-    const m = t.match(/^(?:number |option )?(\d|one|two|three|four|five)$/);
+    if (/^(?:cancel|never ?mind|stop)$/.test(t)) return { error: null };
+    const m = t.match(/^(?:number |option )?(\d|one|won|two|to|too|three|four|for|five)$/);
     if (!m) return false;
-    const words = ["", "one", "two", "three", "four", "five"];
-    const n = /\d/.test(m[1]) ? Number(m[1]) : words.indexOf(m[1]);
+    const words: Record<string, number> = { one: 1, won: 1, two: 2, to: 2, too: 2, three: 3, four: 4, for: 4, five: 5 };
+    const n = /\d/.test(m[1]) ? Number(m[1]) : words[m[1]];
     const choice = pending.options[n - 1];
     if (!choice) return false;
-    logger.event("screen_click.choice_picked", { n, label: choice.label });
-    await automation.clickAt(choice.x, choice.y);
-    return true;
+    try {
+      // Coordinates are absolute; if the user switched apps meanwhile they're stale.
+      if (pending.app && (await automation.getActiveAppName()) !== pending.app) {
+        return { error: "Window changed, try again" };
+      }
+      logger.event("screen_click.choice_picked", { n, label: choice.label });
+      await automation.clickAt(choice.x, choice.y);
+      return { error: null };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   private async requireBrowserAction(action: BrowserAction): Promise<void> {

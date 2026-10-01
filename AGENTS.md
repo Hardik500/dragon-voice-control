@@ -69,6 +69,9 @@ PowerShell/User32 on Windows). Read `/home/hardik/.opencode/plan/dragon-alpha-pl
   other intents. Keep this buffer in sync with every `typeText`/`deleteBackward` call path; if
   you add a new way text can be typed, update the buffer alongside it or these commands will
   silently drift out of sync with what's actually on screen.
+- **`pendingChoice`** (numbered disambiguation for `screen_click`) stores only screen coordinates,
+  option labels and the frontmost app name; it expires after 15s and is dropped if the frontmost
+  app changed. The reply ("1".."5") is consumed at the top of `runDecisionInternal`, before Jev.
 - Dragon runs **one command per utterance** by design (no multi-step/cross-app planning). A
   request like "open Slack, search for X, and type a message" is expected to be spoken as
   separate sequential utterances, each a direct command — don't build a planner to chain them

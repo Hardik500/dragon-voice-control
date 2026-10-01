@@ -1264,3 +1264,9 @@ methods separately measurable; add one if the experiment favours a hybrid.
 - **Decision:** (1) "select/choose/pick/change to/set to/turn on/turn off/toggle X" route to `screen_click` (`extractImplicitClickTarget`); "go to"/"switch to" excluded (app launch / search_in_app own them), "select all" excluded. (2) When 2+ matches remain and Jev is not confident, Dragon no longer clicks the first; it sets `pendingChoice` and shows "Which one? Say a number" in the overlay. The next final utterance "1".."5" clicks, "cancel" clears, anything else clears. (3) Added select/choose/toggle/cancel to `STT_KEYTERMS`.
 - **Reason:** user had to say "click" every time, and Slack duplicate names clicked the wrong row. Wispr Flow has no developer API (cloud consumer app), so it cannot replace Deepgram; local Whisper deferred.
 - **Consequences:** picker is text in the overlay (no on-screen badges). "Click this" cursor hit-test, dynamic app-name keyterms and `stt.low_confidence` logging are not done. Typechecked only; not run through Dragon. Unknown whether numeric replies pass the always-listening addressed gate.
+
+## 2026-10-01 - picker hardening
+
+- **Decision:** Ambiguous click prompt throws ChoiceRequiredError (overlay listening, outcome ignored, not an error). Reply path dedupes via executedUtterances, records history, surfaces clickAt failures, accepts homophones (won/to/too/for), drops the choice if the frontmost app changed, and ignores non-final turns while a choice is live.
+- **Reason:** Prompt looked like a failure; reply path skipped duplicate suppression; stale coordinates and misheard numbers.
+- **Consequences:** Typechecked only; not run on hardware.
