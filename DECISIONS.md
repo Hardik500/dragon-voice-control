@@ -1336,3 +1336,18 @@ corporate root installed". `X509Store` is the same data via the API with no modu
 / `CurrentUser` fields). Startup cost is unchanged (still synchronous, still one PowerShell
 process). Verified on Linux with stubbed PowerShell output only — the script itself has still
 never been executed by a real `powershell.exe`.
+
+## 2026-10-02 - Version stays 0.1.1; verify builds by log fingerprint instead
+
+**Decision:** Do not bump the version to make rebuilds distinguishable. Confirmed by the user.
+
+**Reason:** `scripts/release.js` owns versioning, tagging and publishing, so the version is not a
+tool for diagnosing a stale local build. Hand-editing it would cut across that.
+
+**Consequences:** `artifactName` stays `Dragon-${version}-${arch}-Setup.exe`, so rebuilding at an
+unchanged version yields an identically-named installer and nothing signals that a new binary was
+produced — this is what made a stale build look like a failed fix here. Until the release process
+is revisited, a rebuild should be verified by (a) deleting `%LOCALAPPDATA%\Programs\Dragon` and
+`release/` before building, and (b) checking the log for the code's own fingerprint
+(`main.system_ca_loaded` / `main.system_ca_load_failed`, which every Windows launch now emits)
+rather than trusting the installer filename.

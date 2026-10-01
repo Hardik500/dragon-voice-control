@@ -1994,3 +1994,31 @@ distinguishes all three cases that were previously conflated:
 `certCount` in the hundreds = loaded; `certCount:0` = read succeeded, store genuinely held nothing
 extra (interception then isn't the cause and the diagnosis must be revisited); `*_error` or
 `main.system_ca_load_failed` = the read itself failed, with the reason.
+
+### Resolved on Windows hardware (2026-10-02)
+
+Reported working on the user's Windows machine after a clean rebuild
+(`%LOCALAPPDATA%\Programs\Dragon` and `release\` removed first, then `npm run package:win` from
+current source). The Deepgram `wss://` connects and Jev/OpenRouter responds, no
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE`.
+
+**The earlier "still broken after installing the latest build" was a stale binary, not a failed
+fix.** Two causes compounded: `artifactName` is `Dragon-${version}-${arch}-Setup.exe` and the
+version was still `0.1.1`, so every rebuild had an identical filename with nothing to signal it
+was new; and installing the same version over an existing same-version install is a reliable way
+to keep running the old binary on Windows. `scripts/build-release.js` also does not clear
+`release/` before packaging. The log settled it: that build emitted no `main.system_ca_*` line
+at all, which the current code makes impossible on Windows (every launch logs exactly one of
+`..._loaded` / `..._load_failed`). Version was deliberately NOT bumped to work around this.
+
+Worth remembering for any future "I rebuilt and it still fails" report on this project: check
+whether the log shows the code's own fingerprint before believing the fix was exercised. The
+earlier round of this same issue was spent chasing a stale binary partly because the zero-cert
+path logged nothing, making old and new code indistinguishable in the log.
+
+**Caveat on the causal claim.** Intermittent by nature: on 2026-09-29 the packaged build logged
+`stt.connected` at 20:21/20:22 and `stt.socket_error` at 20:25 on the same machine, so the
+failure tracked network/VPN state rather than the binary. Whether the corporate root was actually
+present in the Windows store on the working run is not yet confirmed from the log's `certCount` —
+if that value turns out to have been 0, the fix was not the cause and the original failure needs
+re-diagnosis. Worth one `Select-String` for `system_ca` over `dragon-2026-10-02.jsonl`.
