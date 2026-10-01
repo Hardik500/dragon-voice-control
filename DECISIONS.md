@@ -1270,3 +1270,69 @@ methods separately measurable; add one if the experiment favours a hybrid.
 - **Decision:** Ambiguous click prompt throws ChoiceRequiredError (overlay listening, outcome ignored, not an error). Reply path dedupes via executedUtterances, records history, surfaces clickAt failures, accepts homophones (won/to/too/for), drops the choice if the frontmost app changed, and ignores non-final turns while a choice is live.
 - **Reason:** Prompt looked like a failure; reply path skipped duplicate suppression; stale coordinates and misheard numbers.
 - **Consequences:** Typechecked only; not run on hardware.
+
+## 2026-10-01 - Trust the Windows certificate stores for Node TLS too
+
+**Decision:** `src/main/system-ca.ts` no longer returns early on non-darwin hosts. The
+cert source is chosen per platform — `darwin` keeps `security find-certificate -a -p
+/Library/Keychains/System.keychain` unchanged, `win32` shells out to `powershell.exe -NoProfile
+-NonInteractive -Command` and emits `Cert:\CurrentUser\Root` + `Cert:\LocalMachine\Root` as PEM
+(thumbprint-deduped) — and both feed the *same* existing `tls.createSecureContext` monkey-patch
+that merges them into `tls.rootCertificates`. `main.system_ca_loaded` now also logs `platform`.
+
+**Reason:** The 2026-09-28 macOS fix was gated on `process.platform !== "darwin"`, so Windows got
+no OS trust store at all and Dragon connected with Node's bundled CAs only — reported as a
+certificate failure on the built app on a Windows machine. Identical root cause to the macOS
+report (Node doesn't read the OS trust store, so an MDM/TLS-inspection root is invisible to it),
+which is why the same remedy applies rather than a Windows-specific one. The earlier DECISIONS.md
+entry said this "was not reported or reproducible on Windows"; that was only ever true because
+nothing on Windows implemented it.
+
+**Why PowerShell and not something else:** Node has no API for the Windows certificate store
+(`--use-system-ca` needs Node 22.9+; Electron 33 ships Node 20), `certutil` can't emit a whole
+store as PEM, and `Export-Certificate` takes one file path per certificate, which is untenable
+for a 300-400 entry store. `Get-ChildItem Cert:\...` + `[Convert]::ToBase64String($_.RawData,
+"InsertLineBreaks")` gets the DER bytes directly and stays consistent with this repo's
+"everything on Windows goes through PowerShell" decision. Reading `LocalMachine\Root` does not
+require elevation. Both stores are read because a locally-installed root can land in either.
+
+**The non-obvious part:** a PEM whose last base64 line is not newline-separated from the
+`-----END CERTIFICATE-----` armour is *silently* dropped by Node — no throw at load, just
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY` when connecting. `InsertLineBreaks` emits no trailing break,
+so `$sb.AppendLine($b64)` is load-bearing; a plain `Append` would turn the whole fix into a
+silent no-op that looks exactly like the bug it was meant to fix. Noted in a comment on the
+script so it survives a future "cleanup".
+
+**Consequences:** Stays synchronous on the startup path (before `app.whenReady()`) so there is no
+race with the first TLS connection; the visible cost is a ~1s delay before the tray icon appears
+on Windows, and `timeout: 20_000` bounds it if `powershell.exe` is policy-blocked or wedged (that
+throw is caught and logged as `main.system_ca_load_failed`, not left to hang app launch). Verified
+on Linux only, against a simulated interception chain with a stubbed PowerShell response — see
+PROGRESS.md for exactly what passed and what did not. **No real `powershell.exe` and no Windows
+hardware were involved**, so the script is correct by inspection and the fix is unverified in
+production until run on the reported machine.
+
+## 2026-10-01 - Never let the CA-trust read fail silently
+
+**Decision:** `trustSystemCaCerts()` no longer returns early when it finds zero certificates — it
+logs `main.system_ca_loaded` with `certCount: 0` either way. The Windows read additionally emits
+`#store <location> <count>` / `#error <location> <message>` lines on stdout, parsed into the same
+log event, and reports PowerShell's stderr on the throw path. The Windows read moved from the
+`Cert:` PowerShell drive to .NET's `X509Store`, with each store independently try/caught.
+
+**Reason:** The first build with the Windows branch produced a log with no `main.system_ca_*` line
+at all, which is consistent with three very different situations: the read threw, the read
+succeeded and found nothing, or the build predates the change. A silent zero-cert path was
+converted into an untestable one, and the previous "keep it simplest" instinct — dropping the
+`noop` event — is what caused it. Diagnostics on a code path that only runs at startup, on one
+platform, in a packaged app, are the cheapest possible debugging; silence there is the expensive
+kind.
+
+**Also:** `Cert:` is a module-provided PowerShell drive and can be unavailable under
+AppLocker/WDAC on a locked-down machine, which failed silently and looked identical to "no
+corporate root installed". `X509Store` is the same data via the API with no module dependency.
+
+**Consequences:** The log event's shape is now platform-dependent on Windows (extra `LocalMachine`
+/ `CurrentUser` fields). Startup cost is unchanged (still synchronous, still one PowerShell
+process). Verified on Linux with stubbed PowerShell output only — the script itself has still
+never been executed by a real `powershell.exe`.

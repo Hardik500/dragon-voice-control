@@ -1907,3 +1907,90 @@ rate and `pipeline.execution.executionMs`.
 - **Decision:** Ambiguous click prompt throws ChoiceRequiredError (overlay listening, outcome ignored, not an error). Reply path dedupes via executedUtterances, records history, surfaces clickAt failures, accepts homophones (won/to/too/for), drops the choice if the frontmost app changed, and ignores non-final turns while a choice is live.
 - **Reason:** Prompt looked like a failure; reply path skipped duplicate suppression; stale coordinates and misheard numbers.
 - **Consequences:** Typechecked only; not run on hardware.
+
+## 2026-10-01 - Windows corporate TLS interception fix
+
+**Symptom:** certificate failure running the built app on a Windows machine. The macOS fix from
+2026-09-28 turned out never to have applied on Windows: `src/main/system-ca.ts` opened with
+`if (process.platform !== "darwin") return;`, so `trustSystemCaCerts()` was a no-op there and
+Dragon connected with Node's bundled CAs only. Same root cause as the macOS report — Node doesn't
+read the OS trust store, so an MDM/TLS-inspection root is invisible to it.
+
+**Change** (`src/main/system-ca.ts` only; no other file touched). The cert source is now chosen
+per platform and the existing `tls.createSecureContext` merge is shared by both:
+- `win32` (new): reads `Cert:\CurrentUser\Root` and `Cert:\LocalMachine\Root` via
+  `powershell.exe -NoProfile -NonInteractive -Command`, deduped by thumbprint, emitted as PEM.
+  Reading `LocalMachine\Root` needs no elevation.
+- `darwin`: unchanged (`security find-certificate -a -p /Library/Keychains/System.keychain`).
+- `main.system_ca_loaded` now carries `platform` as well as `certCount`, so one log line says
+  which branch ran.
+
+**Verified here (Linux, no Windows machine available).** Throwaway harness in `/tmp/opencode`
+(never committed; AGENTS.md forbids test suites) stubs `electron`, forces `process.platform`,
+and stubs `execFileSync` to return a PowerShell-shaped PEM. Against a locally generated
+root -> intermediate -> leaf chain shaped like real interception:
+- Before the patch, handshake fails `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` (the real symptom).
+- After, `tls.connect` succeeds, `https.get` returns 200 (the `ws`/Deepgram path) and global
+  `fetch()` returns 200 (the Jev/vision path).
+- The merged `ca` array held all 121 Node bundled roots plus the injected one, so public CAs
+  were not un-trusted by the merge.
+- A server signed by an unrelated CA is still rejected (`DEPTH_ZERO_SELF_SIGNED_CERT`) — roots
+  are merged, verification is not disabled.
+- An explicit caller-supplied `ca` is still passed through untouched.
+- macOS branch re-checked after the refactor: same `security find-certificate` call, certs
+  merged, bundled roots intact.
+
+**Not verified:** no real `powershell.exe` ran (none on this host), so the script is correct by
+inspection only, and nothing has run on Windows hardware. `npm run package:win` also can't run
+here — `scripts/build-release.js` refuses a Windows target on Linux without `wine` because
+electron-builder needs `rcedit` to stamp the icon, and without it Windows won't launch the exe.
+Build on the Windows machine instead.
+
+**Trap found while verifying, worth not re-introducing:** if a PEM's last base64 line isn't
+newline-separated from the `-----END CERTIFICATE-----` armour, Node **silently ignores that
+certificate** — no throw, just `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` at connect time (confirmed:
+`ERR_OSSL_PEM_BAD_END_LINE`). `[Convert]::ToBase64String(bytes, "InsertLineBreaks")` breaks every
+64 chars but emits no trailing break, so the script's `AppendLine($b64)` is load-bearing. A plain
+`Append` there would make the whole fix a silent no-op.
+
+**To verify on Windows:** run the app, then check `%APPDATA%\Dragon\logs\dragon-*.jsonl` for
+`main.system_ca_loaded` (`platform: "win32"`, `certCount` in the hundreds) followed by
+`stt.connected` -> `stt.session_connected` -> `decision.response`. `main.system_ca_load_failed`
+means the PowerShell read threw; no line at all means the store held nothing extra.
+
+### Follow-up: first Windows log was ambiguous (2026-10-01, later same day)
+
+The first build carrying the Windows branch produced logs with **no** `main.system_ca_*` line at
+all: neither `loaded` nor `load_failed`, on either of two sessions. `stt.socket_error` was
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` as before. That absence was undiagnosable because the code had
+`if (certs.length === 0) return;` — a zero-cert read logged nothing, which is byte-identical to
+the code not having run (stale build). Removed the early return; zero is now a logged result.
+
+Also observed in that log, independent of the fix: on 2026-09-29 the same machine had
+`stt.connected` at 20:21/20:22 **and** `stt.socket_error` at 20:25. So the failure is
+intermittent on a per-run basis, which fits a network-dependent TLS-inspecting proxy (different
+network/VPN state) rather than a permanently missing root.
+
+Second change in the same pass, for robustness: the Windows read now uses .NET's `X509Store`
+directly instead of the `Cert:` PowerShell drive. The drive is a module-provided convenience layer
+and can be unavailable under AppLocker/WDAC, which failed silently; the API cannot. Each store is
+independently try/caught so one unreadable store can't hide the other's certs, and a failure
+message rides on stdout as `#error <store> <message>` (stderr is only reachable through a thrown
+error's message, i.e. never on the success path).
+
+**Verified on Linux** (harnesses in `/tmp/opencode`, not committed):
+- Empty stores -> `main.system_ca_loaded` `certCount:0` `LocalMachine:0` `CurrentUser:0` is
+  logged (previously silent). This is the regression guard for the ambiguity above.
+- One store errors -> the other still contributes: `certCount:1` plus
+  `CurrentUser_error:"The system cannot find the file specified"`.
+- `#store`/`#error` lines are parsed out of stdout into the log and never reach the `ca` array.
+- All prior TLS checks still pass: fails `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` before the patch;
+  succeeds after via `tls.connect`, `https.get` and global `fetch()`; all 121 Node bundled roots
+  retained; an unrelated CA still rejected; explicit caller `ca` untouched.
+- macOS branch re-checked: unchanged.
+
+**Still not verified:** no real `powershell.exe`, no Windows hardware. The next Windows log now
+distinguishes all three cases that were previously conflated:
+`certCount` in the hundreds = loaded; `certCount:0` = read succeeded, store genuinely held nothing
+extra (interception then isn't the cause and the diagnosis must be revisited); `*_error` or
+`main.system_ca_load_failed` = the read itself failed, with the reason.
