@@ -1,6 +1,6 @@
 import { KEY_PHRASE_NAMES, LOCATION_NAMES, SETTINGS_PANE_NAMES } from "../commands/registry";
 import { AppCandidate, Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
-import { extractDeleteScope } from "./extract";
+import { extractDeleteScope, extractImplicitClickTarget } from "./extract";
 import { JevAnswers } from "./jev-client";
 
 /** Intents that may execute from a confident interim transcript (closed, low-risk-of-truncation commands). */
@@ -87,7 +87,7 @@ const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the
  * candidates, `clickElementOverride` above already owns "click on X" — don't double-handle. */
 function screenClickOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (payload.browserElementCandidates.length > 0) return null;
-  if (!SCREEN_CLICK_PATTERN.test(effectiveText)) return null;
+  if (!SCREEN_CLICK_PATTERN.test(effectiveText) && !extractImplicitClickTarget(effectiveText)) return null;
   const text = payload.clickTarget ?? effectiveText.trim();
   return { kind: "screen_click", text };
 }

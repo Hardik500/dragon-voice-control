@@ -1258,3 +1258,9 @@ methods separately measurable; add one if the experiment favours a hybrid.
 - **Decision:** `screenClickMethod` gains `"auto"` (default): accessibility lookup first, vision on an `AccessibilityMissError`. Logs `screen_click.fallback`. macOS AX retry (0.7s) now only for Electron apps (checks `Electron Framework.framework`). `screenClickOverride` no longer overrides Jev `open_app`/`activate_app` when an app alias matched ("Click on Chrome" was forced to screen_click).
 - **Reason:** Warp exposes 7 unlabelled elements (0/10 hits, ~790ms wasted); 9/9 accessibility clicks in Slack/System Settings were correct.
 - **Consequences:** loose label matches click without vision confirmation. Not yet run through Dragon.
+
+## 2026-10-01 - implicit click verbs, numbered picker, keyterms
+
+- **Decision:** (1) "select/choose/pick/change to/set to/turn on/turn off/toggle X" route to `screen_click` (`extractImplicitClickTarget`); "go to"/"switch to" excluded (app launch / search_in_app own them), "select all" excluded. (2) When 2+ matches remain and Jev is not confident, Dragon no longer clicks the first; it sets `pendingChoice` and shows "Which one? Say a number" in the overlay. The next final utterance "1".."5" clicks, "cancel" clears, anything else clears. (3) Added select/choose/toggle/cancel to `STT_KEYTERMS`.
+- **Reason:** user had to say "click" every time, and Slack duplicate names clicked the wrong row. Wispr Flow has no developer API (cloud consumer app), so it cannot replace Deepgram; local Whisper deferred.
+- **Consequences:** picker is text in the overlay (no on-screen badges). "Click this" cursor hit-test, dynamic app-name keyterms and `stt.low_confidence` logging are not done. Typechecked only; not run through Dragon. Unknown whether numeric replies pass the always-listening addressed gate.

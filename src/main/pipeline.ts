@@ -187,6 +187,7 @@ function keepsDictationOpen(kind: ResolvedCommand["kind"]): boolean {
 
 /** Thrown when the accessibility lookup found nothing; "auto" mode falls back to vision on it. */
 class AccessibilityMissError extends Error {}
+const PENDING_CHOICE_TTL_MS = 15_000;
 
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
@@ -229,6 +230,8 @@ export class DragonPipeline {
   /** True once "type X" has executed; lets subsequent utterances that Jev doesn't recognize
    * as any other command continue being typed verbatim, without repeating "type" each time. */
   private dictationActive = false;
+  /** Ambiguous screen_click awaiting a spoken number; screen coordinates, cleared on next utterance. */
+  private pendingChoice: { expiresAt: number; options: { label: string; x: number; y: number }[] } | null = null;
   /** Everything typed in the current dictation session, kept in sync with what's on screen
    * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
    * instead of guessing. Cleared when dictation ends. */
@@ -867,6 +870,12 @@ export class DragonPipeline {
       latencyMs: null,
       activationMode: settings.activationMode,
     });
+
+    if (this.pendingChoice && turn.isFinal && (await this.handlePendingChoice(effectiveText))) {
+      this.unregisterInFlight(controller);
+      this.onOverlay({ utteranceId: turn.utteranceId, state: "done", transcript: effectiveText, isFinal: true, action: "Choose option", status: null, latencyMs: Date.now() - startedAt, activationMode: settings.activationMode });
+      return;
+    }
 
     if (
       this.dictationActive &&
@@ -1537,7 +1546,7 @@ export class DragonPipeline {
       // PROGRESS.md 2026-09-29.
       disambiguated = true;
       saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
-      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, settings, signal);
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal);
     }
 
     // The vision model's point is in the sent image's pixel space, which can differ from
@@ -1581,7 +1590,7 @@ export class DragonPipeline {
     const candidates = dedupeMatches(inWindow);
     if (candidates.length === 0) throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
     const point =
-      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, settings, signal);
+      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal);
     const screenX = window.x + point.x;
     const screenY = window.y + point.y;
     logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
@@ -1640,6 +1649,7 @@ export class DragonPipeline {
     transcript: string,
     candidates: ScreenPoint[],
     area: { width: number; height: number },
+    toScreen: (p: ScreenPoint) => { x: number; y: number },
     settings: DragonSettings,
     signal: AbortSignal
   ): Promise<ScreenPoint> {
@@ -1650,8 +1660,6 @@ export class DragonPipeline {
       logger.event("screen_click.disambiguation", { description, candidateCount: candidates.length, chosenLabel: exact[0].label, usedExactLabelMatch: true });
       return exact[0];
     }
-
-    const deterministicDefault = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x)[0];
 
     const criteria: Record<string, string> = {};
     candidates.forEach((c, i) => {
@@ -1677,10 +1685,40 @@ export class DragonPipeline {
       criteria,
       chosen: answer?.choice ?? null,
       confidence: answer?.confidence ?? null,
-      usedDeterministicFallback: !confident,
+      askedUser: !confident,
     });
 
-    return confident ? candidates[idx] : deterministicDefault;
+    if (confident) return candidates[idx];
+
+    // Still ambiguous: don't guess, ask. The next final utterance "1".."5" picks (see
+    // `handlePendingChoice`); anything else clears it.
+    const ordered = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x).slice(0, 5);
+    this.pendingChoice = {
+      expiresAt: Date.now() + PENDING_CHOICE_TTL_MS,
+      options: ordered.map((c) => ({ label: c.label, ...toScreen(c) })),
+    };
+    const list = ordered.map((c, i) => `${i + 1}: "${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`).join("; ");
+    throw new Error(`Which one? Say a number — ${list}`);
+  }
+
+  /** Consumes a pending numbered choice. Returns true when the utterance was handled (picked
+   * or cancelled); false when there is no live choice or the utterance is something else. */
+  private async handlePendingChoice(text: string): Promise<boolean> {
+    const pending = this.pendingChoice;
+    if (!pending) return false;
+    this.pendingChoice = null;
+    if (Date.now() > pending.expiresAt) return false;
+    const t = text.trim().toLowerCase().replace(/[.!?]+$/, "");
+    if (/^(?:cancel|never ?mind|stop)$/.test(t)) return true;
+    const m = t.match(/^(?:number |option )?(\d|one|two|three|four|five)$/);
+    if (!m) return false;
+    const words = ["", "one", "two", "three", "four", "five"];
+    const n = /\d/.test(m[1]) ? Number(m[1]) : words.indexOf(m[1]);
+    const choice = pending.options[n - 1];
+    if (!choice) return false;
+    logger.event("screen_click.choice_picked", { n, label: choice.label });
+    await automation.clickAt(choice.x, choice.y);
+    return true;
   }
 
   private async requireBrowserAction(action: BrowserAction): Promise<void> {
