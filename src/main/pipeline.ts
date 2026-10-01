@@ -1613,10 +1613,11 @@ export class DragonPipeline {
     const { window, elements } = await automation.findAccessibleElements(terms);
     // Window-relative, and only on-screen: scrolled-away list rows stay in the tree. Labels are
     // capped because some rows' AXDescription carries a message preview (Slack Activity).
-    const inWindow = elements
+    const located = elements
       .filter((e) => e.width > 0 && e.height > 0)
-      .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }))
-      .filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height && labelMatches(description, p.label));
+      .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }));
+    const onScreen = located.filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height);
+    const inWindow = onScreen.filter((p) => labelMatches(description, p.label));
     const candidates = dedupeMatches(inWindow);
     // Logged on EVERY accessibility lookup, hit or miss. Without it a failure and a stale build are
     // indistinguishable: both "just don't work", and `auto` mode swallows the miss by falling back
@@ -1626,9 +1627,29 @@ export class DragonPipeline {
       description,
       terms,
       matchCount: elements.length,
+      locatedCount: located.length,
+      onScreenCount: onScreen.length,
+      labelMatchCount: inWindow.length,
       candidateCount: candidates.length,
+      window,
+      // Capped: enough to see which labels were found and where they sit relative to the window.
+      labels: located.slice(0, 12).map((p) => ({ label: p.label, x: Math.round(p.x), y: Math.round(p.y) })),
     });
-    if (candidates.length === 0) throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
+    if (candidates.length === 0) {
+      // Two very different situations used to produce one indistinguishable message. Found but
+      // off-screen means the row exists and is scrolled out of view -- clicking its stored
+      // coordinates would hit whatever is at that spot instead, so refusing is correct, but
+      // "scroll it into view first" is the fix, not "try Vision mode" (observed 2026-10-02: a
+      // restored 1415x641 Settings window kept several sidebar rows out of view, and every one of
+      // them was reported as "could not find ... in the accessibility tree").
+      if (inWindow.length === 0 && onScreen.length > 0) {
+        throw new AccessibilityMissError(`Found "${description}" but its label does not match the target — try naming it more exactly.`);
+      }
+      if (located.length > 0 && onScreen.length === 0) {
+        throw new AccessibilityMissError(`Found "${description}" but it is scrolled out of view — scroll it into view and say that again.`);
+      }
+      throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
+    }
     const point =
       candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal);
     const screenX = window.x + point.x;
