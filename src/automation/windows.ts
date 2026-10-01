@@ -543,14 +543,30 @@ Start-Sleep -Milliseconds 50
 }
 
 /** UI Automation counterpart of macOS's AX lookup: descendants of the foreground window whose
- * Name contains any term. Unverified on real Windows hardware — see PROGRESS.md. */
+ * Name contains any term.
+ *
+ * **The terms must be inlined as a flat PowerShell array literal, never as JSON piped through
+ * `ConvertFrom-Json`.** That is the bug this function shipped with, and it made accessibility
+ * mode silently dead on Windows while macOS worked: `ConvertFrom-Json` emits a JSON array as a
+ * *single* pipeline object, so `$terms = @('["a","b"]' | ConvertFrom-Json)` yields a 1-element
+ * array whose one element is itself an `Object[]` — not 2 strings. The filter below then calls
+ * `$label.Contains($_)`, and `String.Contains(String)` cannot accept an `Object[]`, so every
+ * comparison threw, nothing ever matched, and "auto" mode quietly fell back to vision. Observed
+ * 2026-10-02: a real Windows Settings window exposed 144 elements / 120 named labels including
+ * "System", "Bluetooth & devices" and "Accessibility", and still matched 0 of them.
+ *
+ * macOS never hit this because it passes the JSON as an `osascript` *argument*, where JXA parses
+ * it into a proper flat array. Only the Windows path inlines it into a script string.
+ *
+ * `psQuote` doubles embedded single quotes, which is all inlining needs: PowerShell
+ * single-quoted strings treat backticks literally, so there is no other escape to get wrong. */
 export async function findAccessibleElements(terms: string[]): Promise<{
   window: { x: number; y: number; width: number; height: number };
   elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
 }> {
   const script = `${CLICK_WIN32_TYPE}
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$terms = @('${psQuote(JSON.stringify(terms))}' | ConvertFrom-Json)
+$terms = @(${terms.map((t) => `'${psQuote(t)}'`).join(",")})
 $h = [DragonClickWin32]::GetForegroundWindow()
 $rect = New-Object DragonClickWin32+RECT
 [void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
@@ -567,5 +583,17 @@ $els = @(foreach ($e in $all) {
 })
 ConvertTo-Json -Compress -Depth 4 -InputObject @{ window = @{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top }; elements = $els }`;
   const { stdout } = await runPowerShell(script);
-  return JSON.parse(stdout.trim());
+  // macOS already guards its parsed result (`macos.ts`); without this, a zero HWND or any PowerShell
+  // error on stdout produced `JSON.parse("")` -> "Unexpected end of JSON input", which names
+  // neither the cause nor the platform. See the term-inlining note above for why silent failure
+  // here cost a full debugging round.
+  const out = stdout.trim();
+  if (!out) {
+    throw new Error("The accessibility lookup returned no output — the frontmost window may have closed, or PowerShell failed before producing JSON.");
+  }
+  const parsed = JSON.parse(out);
+  if (!parsed?.window || parsed.window.width <= 0 || parsed.window.height <= 0) {
+    throw new Error("The accessibility lookup found no usable frontmost window — GetForegroundWindow() may have returned a hidden or zero-size window.");
+  }
+  return parsed;
 }
