@@ -1618,6 +1618,16 @@ export class DragonPipeline {
       .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }))
       .filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height && labelMatches(description, p.label));
     const candidates = dedupeMatches(inWindow);
+    // Logged on EVERY accessibility lookup, hit or miss. Without it a failure and a stale build are
+    // indistinguishable: both "just don't work", and `auto` mode swallows the miss by falling back
+    // to vision. `matchCount` is the number of labels UIA returned and `candidateCount` what
+    // survived the window-bounds + labelMatches filters, which splits the two failure modes apart.
+    logger.event("screen_click.ax_lookup", {
+      description,
+      terms,
+      matchCount: elements.length,
+      candidateCount: candidates.length,
+    });
     if (candidates.length === 0) throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
     const point =
       candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal);
