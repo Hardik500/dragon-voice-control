@@ -1351,3 +1351,27 @@ is revisited, a rebuild should be verified by (a) deleting `%LOCALAPPDATA%\Progr
 `release/` before building, and (b) checking the log for the code's own fingerprint
 (`main.system_ca_loaded` / `main.system_ca_load_failed`, which every Windows launch now emits)
 rather than trusting the installer filename.
+
+## 2026-10-02 - Inline Windows AX terms as a flat literal, never JSON | ConvertFrom-Json
+
+**Decision:** `findAccessibleElements()` builds `$terms` as a flat PowerShell array literal,
+`@('system','bluetooth')`, instead of `@('["system","bluetooth"]' | ConvertFrom-Json)`. Also added
+the "no usable frontmost window" guard that macOS already had.
+
+**Reason:** `ConvertFrom-Json` emits a JSON array as a single pipeline object, and `@()` wraps it
+without flattening, so `$terms` was a 1-element array containing an `Object[]`. The filter's
+`$label.Contains($_)` therefore passed an `Object[]` to a `String` parameter, which throws — every
+element was skipped, so accessibility mode matched nothing on Windows and `auto` mode silently
+used vision instead. Measured on the reported machine: 120 named labels available, 0 matched.
+macOS was unaffected only because it passes the JSON as an `osascript` argument, where JXA parses
+it flat.
+
+**Consequences:** A PowerShell array literal has no pipeline-enumeration semantics to get wrong,
+which is the property that matters here — the previous form looked correct and was silently wrong
+for the entire life of the feature. Separately: `auto` mode makes any accessibility failure
+invisible by design (it falls back to vision), so accessibility bugs must be reproduced in
+`accessibility` mode or they cannot be observed at all. Worth remembering next time a
+platform-specific path "works on macOS and not on Windows": reproduce the exact script against the
+real machine before theorising. Two confident theories here (Chrome's UIA tree, and the 10s
+timeout) were both wrong, and both were falsified in a single measurement each. Not yet re-run
+end-to-end through Dragon.

@@ -2051,3 +2051,71 @@ certificate subjects (or an admin-scope PowerShell query on the Windows box), wh
 another build-and-run cycle for an app that now works. The 09-29 intermittency — same binary
 connecting at 20:21 and failing at 20:25 — also means network/VPN state was a possible
 co-factor; the fix removed the cert problem, but the trigger may still be network-dependent.
+
+## Windows accessibility click matched nothing (2026-10-02)
+
+**Symptom:** accessibility-based `screen_click` never worked on Windows; the same commands worked
+smoothly on macOS. `auto` mode hid it completely, because a miss just logs
+`screen_click.fallback` and silently uses vision instead — so "accessibility is broken" was never
+visible as an error.
+
+**How it was found.** Not by reading the code. Component probes were run against the reported
+machine first, and two plausible theories were killed by measurement rather than argument:
+
+- *"Chrome doesn't expose page content to UIA"* — true, but irrelevant: the user was testing
+  native OS UI (Windows Settings), not a webpage.
+- *"the unbounded `Descendants`/`TrueCondition` walk blows the 10s timeout"* — false on this
+  machine: 148 elements read in ~33ms against a 10,000ms budget.
+
+Reproducing `findAccessibleElements()` verbatim (same `Add-Type` block, same
+`GetForegroundWindow()`, same filter loop, same `ConvertTo-Json`) with instrumentation at each
+stage then showed the real cause in one line.
+
+**Root cause.** The terms line was
+
+```powershell
+$terms = @('["a","b"]' | ConvertFrom-Json)
+```
+
+`ConvertFrom-Json` emits a JSON array as a *single* pipeline object, and `@()` wraps that object
+without flattening it. So `$terms` was a 1-element array whose element is an `Object[]`, not two
+strings — the run printed `terms parsed: System.Object[]  count=1`. The filter then called
+`$label.Contains($_)`, and `String.Contains(String)` cannot accept an `Object[]`, so every
+comparison threw, nothing matched, and the result was always an empty list.
+
+macOS never hit this: it passes the JSON as an `osascript` **argument** (`run("osascript", [...,
+JSON.stringify(terms)])`), where JXA parses it into a proper flat array. Only the Windows path
+inlined the JSON into a script string and piped it through `ConvertFrom-Json`.
+
+Measured against a real Windows Settings window: **144 elements, 120 named labels** — including
+`System`, `Bluetooth & devices`, `Accessibility`, `Privacy & security` — and **0 matches**. The
+accessibility read was never the problem; matching was.
+
+**Fix** (`src/automation/windows.ts`): inline the terms as a flat PowerShell array literal,
+`@('system','bluetooth')`, which removes the pipeline-flattening subtlety entirely. `psQuote`
+already doubles embedded single quotes and single-quoted PowerShell strings treat backticks
+literally, so inlining has no other escape to get wrong. Also added the guard macOS already had:
+empty stdout or a zero-size window now throws a message naming the cause instead of
+`JSON.parse("")` -> `Unexpected end of JSON input`.
+
+**Verified on the reported machine** (fixed script, real Windows Settings window):
+
+```
+### terms count=2 type=String values=system,bluetooth
+### window=[Settings]
+### elements=148  MATCHED=4
+    'System' at 1409,795 419x54
+    'Bluetooth & devices' at 1409,855 419x54
+    'Bluetooth devices' at 1910,1341 744x126
+    'Bluetooth devices' at 1948,1379 668x40
+```
+
+**Still to do:** rebuild and confirm end-to-end through Dragon itself ("click Bluetooth" in
+Settings, in accessibility mode). Note that substring matching legitimately returns several
+candidates here (sidebar item plus page content), which is what the numbered picker
+(`pendingChoice`, see the 2026-10-01 picker entries) exists to resolve.
+
+**Lesson worth keeping:** the two most confident theories were both wrong, and both were cheap to
+test directly. Two earlier probes were also thrown off by measuring the wrong window — the
+foreground window was the terminal running the probe. Target windows by process handle instead of
+by focus when probing this code.
