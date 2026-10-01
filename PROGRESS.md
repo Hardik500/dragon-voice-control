@@ -2022,3 +2022,32 @@ failure tracked network/VPN state rather than the binary. Whether the corporate 
 present in the Windows store on the working run is not yet confirmed from the log's `certCount` —
 if that value turns out to have been 0, the fix was not the cause and the original failure needs
 re-diagnosis. Worth one `Select-String` for `system_ca` over `dragon-2026-10-02.jsonl`.
+
+### Confirmed: 59 roots merged, interception was the cause (2026-10-02)
+
+The working packaged build's log:
+
+```
+{"stage":"main.system_ca_loaded","platform":"win32","certCount":59,"LocalMachine":59,"CurrentUser":0}
+```
+
+This closes the open item above, and in the direction that confirms the fix:
+
+- The new code definitely ran (`main.system_ca_loaded` is a fingerprint the old code cannot emit).
+- The PowerShell read worked. Both stores were attempted and **neither errored**; `CurrentUser: 0`
+  means CurrentUser was read and genuinely empty, not silently skipped — which the old
+  `Cert:`-drive version could not distinguish from a failure.
+- 59 roots were merged into Node's CA set alongside its bundled 121, all from `LocalMachine`,
+  which is where MDM/inspection agents install theirs.
+
+The trust store is the only functional difference between the failing build and this one (same
+Electron 33.4.11, same Node 20.18.3, same machine), and the outcome went fail -> pass, so one of
+those 59 was the missing chain anchor. That is the causal claim, and it now rests on the log
+rather than on inference.
+
+**Residual, stated honestly:** which of the 59 is the inspection root isn't recorded, so the
+identification is "one of these 59" rather than a named cert. Naming it would mean logging
+certificate subjects (or an admin-scope PowerShell query on the Windows box), which isn't worth
+another build-and-run cycle for an app that now works. The 09-29 intermittency — same binary
+connecting at 20:21 and failing at 20:25 — also means network/VPN state was a possible
+co-factor; the fix removed the cert problem, but the trigger may still be network-dependent.
