@@ -66,6 +66,12 @@ using System.Runtime.InteropServices;
 public class DragonClickWin32 {
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  // Without this, UIA returns physical pixels while GetWindowRect/SetCursorPos use scaled ones on a
+  // >100% display, so lower elements looked outside the window and clicks landed off-target
+  // (observed 2026-10-02: "Dark" at y=1834 vs a 1455px-tall window). The static constructor runs
+  // before the first call into this class, making all three agree on physical pixels.
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  static DragonClickWin32() { SetProcessDPIAware(); }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
   [DllImport("user32.dll")] public static extern void SetCursorPos(int X, int Y);

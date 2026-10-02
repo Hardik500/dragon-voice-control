@@ -2164,3 +2164,9 @@ so the next attempt answers it directly.
 - `activateApp` (`windows.ts`): UWP apps such as Settings (`SystemSettings`) have no `MainWindowHandle` on their own process, so activation relaunched, polled the full 6s and logged `focused:false`. It now falls back to an `ApplicationFrameHost` window whose `MainWindowTitle` equals the alias label. `tsc` clean; not run on Windows.
 - Open: merging lookup + click into one PowerShell call.
 
+
+## 2026-10-02 Windows DPI awareness, WhatsApp.Root, Chrome-only page elements
+
+- CLICK_WIN32_TYPE (src/automation/windows.ts) now calls SetProcessDPIAware() in a static constructor. UIA returned physical pixels while GetWindowRect/SetCursorPos used scaled ones on a >100% display (Settings "Dark" at y=1834 vs a 1455px-tall window), so lower elements were filtered out and clicks were mis-positioned. Unverified on Windows.
+- registry-windows.ts: whatsapp now uses process WhatsApp.Root and launch token whatsapp:. Process name is a guess until confirmed by Get-Process.
+- pipeline.ts: Chrome page elements are ignored unless Chrome is frontmost (lastActiveApp reused on cache hits), so "click add device" in a native app no longer becomes chrome_click.

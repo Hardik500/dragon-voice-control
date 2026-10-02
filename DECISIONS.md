@@ -1384,3 +1384,8 @@ end-to-end through Dragon.
 
 **Consequences:** A spoken "click X" always attempts a screen click when there are no page-element candidates. Don't generalize this to other verbs.
 
+
+## 2026-10-02 Windows scripts are DPI-aware; page elements only when Chrome is frontmost
+
+- Decision: DragonClickWin32 calls SetProcessDPIAware() so lookup, capture and click all use physical pixels. Reason: UIA vs GetWindowRect/SetCursorPos mismatch at >100% scaling. Consequence: coordinates are physical pixels throughout the Windows path.
+- Decision: extractPayload gets the browser page only when the frontmost app is Chrome (or unknown). Reason: stale tab elements hijacked native-app clicks. Consequence: browser DOM actions need Chrome focused.

@@ -193,6 +193,7 @@ const PENDING_CHOICE_TTL_MS = 15_000;
 
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
+  private lastActiveApp: string | null = null;
   private inFlight: InFlight[] = [];
   /** Serializes Jev work per utterance so EagerEndOfTurn cannot race the final EndOfTurn. */
   private decisionInFlightByUtterance = new Map<string, Promise<void>>();
@@ -948,7 +949,13 @@ export class DragonPipeline {
           return value;
         }),
       ]);
-      const payload = extractPayload(effectiveText, browserPage);
+      // Chrome page elements only make sense when Chrome is frontmost. Otherwise "click add
+      // device" in WhatsApp matched stale Chrome tab elements, became chrome_click and clicked
+      // nothing (2026-10-02). Cache hits skip the app read, so reuse the last known one.
+      if (activeApp) this.lastActiveApp = activeApp;
+      const frontApp = activeApp ?? this.lastActiveApp;
+      const chromeFront = !frontApp || /chrome/i.test(frontApp);
+      const payload = extractPayload(effectiveText, chromeFront ? browserPage : null);
       let summary: JevAnswerSummary;
       let decisionMs: number;
       let jevMs: number | null = null;
