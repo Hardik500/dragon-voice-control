@@ -2161,5 +2161,6 @@ so the next attempt answers it directly.
 - `src/automation/windows.ts` `findAccessibleElements`: if a matched element is `IsOffscreen`, empty, or outside the window rect, call UIA `ScrollItemPattern.ScrollIntoView()` and re-read its bounds. Targets the `matchCount:1, candidateCount:0` misses in the restored window (session `sess_muq1lven_g5h4hy`).
 - `src/decision/resolve.ts` `isDeterministicScreenClick` + `src/main/pipeline.ts`: a literal "click/tap X" on a final turn (not in dictation/workflow) skips the not-addressed gate and the `none`/low-confidence drop. Fixes "Click system." being ignored.
 - Verified: `npx tsc --noEmit` clean. **Not run on Windows hardware.** Does not help if the nav pane collapses into a hamburger menu.
-- Open: Settings `activate_app` `focused:false` (6.5s; UWP app hosted by `ApplicationFrameHost`), and merging lookup + click into one PowerShell call.
+- `activateApp` (`windows.ts`): UWP apps such as Settings (`SystemSettings`) have no `MainWindowHandle` on their own process, so activation relaunched, polled the full 6s and logged `focused:false`. It now falls back to an `ApplicationFrameHost` window whose `MainWindowTitle` equals the alias label. `tsc` clean; not run on Windows.
+- Open: merging lookup + click into one PowerShell call.
 

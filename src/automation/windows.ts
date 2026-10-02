@@ -218,14 +218,19 @@ export async function activateApp(aliasKey: string): Promise<void> {
     const exe = findChromeExe();
     if (exe) launchTarget = exe;
   }
+  // UWP apps (Settings, Photos, ...) have no MainWindowHandle on their own process: the visible
+  // window is owned by ApplicationFrameHost and titled with the app's label. Without this
+  // fallback "open settings" relaunched, polled the full 6s and reported focused:false.
+  const findProcs = `$procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+  if (-not $procs) { $procs = Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq '${psQuote(alias.label ?? alias.processName)}' } }`;
   const script = `${WIN32_TYPE}
-$procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+${findProcs}
 if (-not $procs) {
   Start-Process '${psQuote(launchTarget)}'
   $deadline = (Get-Date).AddSeconds(${ACTIVATE_LAUNCH_WAIT_SECONDS})
   do {
     Start-Sleep -Milliseconds 150
-    $procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+    ${findProcs}
   } while (-not $procs -and (Get-Date) -lt $deadline)
 }
 $procs = ${preferLabeledWindow(alias.label)}
