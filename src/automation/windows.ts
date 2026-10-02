@@ -578,6 +578,13 @@ $els = @(foreach ($e in $all) {
   $l = $n.ToLower()
   if (-not ($terms | Where-Object { $l.Contains($_) })) { continue }
   $r = $e.Current.BoundingRectangle
+  # Restored (non-maximized) windows clip list rows: UIA still returns them, offscreen or outside the window. Scroll them into view and re-read, else the pipeline's window-bounds filter drops them.
+  if ($e.Current.IsOffscreen -or $r.IsEmpty -or $r.Left -lt $rect.Left -or $r.Top -lt $rect.Top -or $r.Right -gt $rect.Right -or $r.Bottom -gt $rect.Bottom) {
+    try {
+      $sp = $null
+      if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$sp)) { $sp.ScrollIntoView(); Start-Sleep -Milliseconds 80; $r = $e.Current.BoundingRectangle }
+    } catch {}
+  }
   if ($r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0) { continue }
   @{ label = $n; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height }
 })

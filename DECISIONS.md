@@ -1375,3 +1375,12 @@ platform-specific path "works on macOS and not on Windows": reproduce the exact 
 real machine before theorising. Two confident theories here (Chrome's UIA tree, and the 10s
 timeout) were both wrong, and both were falsified in a single measurement each. Not yet re-run
 end-to-end through Dragon.
+
+## 2026-10-02 Literal "click X" bypasses Jev's confidence gate
+
+**Decision:** `isDeterministicScreenClick` exempts the explicit click/tap verb (not implicit verbs like "select") from the `none`/low-confidence gate on final turns outside dictation/workflow.
+
+**Reason:** Jev scored "Click system." as `none` 0.45 and it was dropped, the same class of miss as plain "open <app>".
+
+**Consequences:** A spoken "click X" always attempts a screen click when there are no page-element candidates. Don't generalize this to other verbs.
+

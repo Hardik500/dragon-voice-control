@@ -92,6 +92,14 @@ function screenClickOverride(effectiveText: string, payload: ExtractedPayload): 
   return { kind: "screen_click", text };
 }
 
+/** True for a literal "click/tap X" with no page-element candidates. Exported so the pipeline can
+ * stop Jev's `none`/low-confidence verdict from dropping it (observed: "Click system." scored
+ * `none` 0.45 and was ignored). Only the explicit verb — implicit verbs ("select X") still
+ * need Jev's confidence. */
+export function isDeterministicScreenClick(effectiveText: string, payload: ExtractedPayload): boolean {
+  return payload.browserElementCandidates.length === 0 && SCREEN_CLICK_PATTERN.test(effectiveText);
+}
+
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (!isDeterministicAppLaunch(effectiveText, payload)) return null;
   const cand = payload.appCandidates[0];

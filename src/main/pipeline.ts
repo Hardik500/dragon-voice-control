@@ -10,7 +10,7 @@ import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair,
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { askDisambiguationChoice, callDecisionProvider, DecisionCancelledError, DecisionProviderConfig, DecisionRequestError } from "../decision/jev-client";
 import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, labelTokens, readLabelAtPoint } from "../decision/vision-client";
-import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, resolveCommand, summarizeAnswers } from "../decision/resolve";
+import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, isDeterministicScreenClick, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
@@ -1065,7 +1065,8 @@ export class DragonPipeline {
         !this.workflowActive &&
         !isExplicitMediaControl(turn, summary) &&
         !standaloneKeyboardCommand &&
-        !isDeterministicAppLaunch(effectiveText, payload)
+        !isDeterministicAppLaunch(effectiveText, payload) &&
+        !(turn.isFinal && isDeterministicScreenClick(effectiveText, payload))
       ) {
         const addressedThreshold = settings.decisionProvider === "laya" ? LAYA_ADDRESSED_THRESHOLD : JEV_ADDRESSED_THRESHOLD;
         if (summary.addressed == null || summary.addressed < addressedThreshold) {
@@ -1126,7 +1127,8 @@ export class DragonPipeline {
       // spoken, entirely executable command. Only enforce the completeness gate on turns
       // that *aren't* final yet, where it protects against acting on a truncated interim.
       const incomplete = !turn.isFinal && summary.complete < COMPLETE_THRESHOLD;
-      const noCommand = summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete;
+      const deterministicClick = turn.isFinal && !this.dictationActive && !this.workflowActive && isDeterministicScreenClick(effectiveText, payload);
+      const noCommand = !deterministicClick && (summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete);
 
       if (noCommand) {
         if (this.workflowActive) {
