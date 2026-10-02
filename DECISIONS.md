@@ -1389,3 +1389,6 @@ end-to-end through Dragon.
 
 - Decision: DragonClickWin32 calls SetProcessDPIAware() so lookup, capture and click all use physical pixels. Reason: UIA vs GetWindowRect/SetCursorPos mismatch at >100% scaling. Consequence: coordinates are physical pixels throughout the Windows path.
 - Decision: extractPayload gets the browser page only when the frontmost app is Chrome (or unknown). Reason: stale tab elements hijacked native-app clicks. Consequence: browser DOM actions need Chrome focused.
+
+## 2026-10-02 Scroll only when no visible match
+Decision: two-pass UIA lookup, scroll off-screen matches only if no on-screen match exists. Reason: scrolling for every match moved the page under the chosen target. Consequence: a target that exists both visible and hidden never triggers scrolling. WebView2 retry added (700ms, once).

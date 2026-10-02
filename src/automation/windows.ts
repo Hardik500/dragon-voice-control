@@ -582,23 +582,34 @@ $h = [DragonClickWin32]::GetForegroundWindow()
 $rect = New-Object DragonClickWin32+RECT
 [void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
 $root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
-$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-$els = @(foreach ($e in $all) {
+$cond = [System.Windows.Automation.Condition]::TrueCondition
+$scope = [System.Windows.Automation.TreeScope]::Descendants
+$all = $root.FindAll($scope, $cond)
+# WebView2/Electron apps (WhatsApp) build their UIA tree lazily after the first query; the first FindAll can come back nearly empty. Retry once if almost nothing is named.
+if (@($all | Where-Object { $_.Current.Name }).Count -lt 10) { Start-Sleep -Milliseconds 700; $all = $root.FindAll($scope, $cond) }
+$good = @(); $bad = @()
+foreach ($e in $all) {
   $n = $e.Current.Name
   if (-not $n) { continue }
   $l = $n.ToLower()
   if (-not ($terms | Where-Object { $l.Contains($_) })) { continue }
   $r = $e.Current.BoundingRectangle
-  # Restored (non-maximized) windows clip list rows: UIA still returns them, offscreen or outside the window. Scroll them into view and re-read, else the pipeline's window-bounds filter drops them.
-  if ($e.Current.IsOffscreen -or $r.IsEmpty -or $r.Left -lt $rect.Left -or $r.Top -lt $rect.Top -or $r.Right -gt $rect.Right -or $r.Bottom -gt $rect.Bottom) {
+  if (-not ($e.Current.IsOffscreen -or $r.IsEmpty -or $r.Left -lt $rect.Left -or $r.Top -lt $rect.Top -or $r.Right -gt $rect.Right -or $r.Bottom -gt $rect.Bottom)) { $good += ,@{ label = $n; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height } }
+  else { $bad += ,$e }
+}
+$els = $good
+# Only scroll when nothing matching is already visible: scrolling shifts the page, so doing it for every off-screen match moved the on-screen target before the click (observed 2026-10-02, Settings sections).
+if ($good.Count -eq 0) {
+  $els = @(foreach ($e in $bad) {
+    $r = $e.Current.BoundingRectangle
     try {
       $sp = $null
       if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$sp)) { $sp.ScrollIntoView(); Start-Sleep -Milliseconds 80; $r = $e.Current.BoundingRectangle }
     } catch {}
-  }
-  if ($r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0) { continue }
-  @{ label = $n; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height }
-})
+    if ($r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0) { continue }
+    @{ label = $e.Current.Name; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height }
+  })
+}
 ConvertTo-Json -Compress -Depth 4 -InputObject @{ window = @{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top }; elements = $els }`;
   const { stdout } = await runPowerShell(script);
   // macOS already guards its parsed result (`macos.ts`); without this, a zero HWND or any PowerShell

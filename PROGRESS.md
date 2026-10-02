@@ -2170,3 +2170,8 @@ so the next attempt answers it directly.
 - CLICK_WIN32_TYPE (src/automation/windows.ts) now calls SetProcessDPIAware() in a static constructor. UIA returned physical pixels while GetWindowRect/SetCursorPos used scaled ones on a >100% display (Settings "Dark" at y=1834 vs a 1455px-tall window), so lower elements were filtered out and clicks were mis-positioned. Unverified on Windows.
 - registry-windows.ts: whatsapp now uses process WhatsApp.Root and launch token whatsapp:. Process name is a guess until confirmed by Get-Process.
 - pipeline.ts: Chrome page elements are ignored unless Chrome is frontmost (lastActiveApp reused on cache hits), so "click add device" in a native app no longer becomes chrome_click.
+
+## 2026-10-02 Windows UIA lookup: scroll only when nothing visible, WebView2 retry
+- findAccessibleElements (windows.ts) now collects matches without scrolling and only calls ScrollIntoView when no match is already on-screen (scrolling every off-screen match shifted the page before the click; Settings sections).
+- Retries FindAll once after 700ms when <10 elements are named (WebView2/WhatsApp builds its UIA tree lazily). Unverified on Windows; if WhatsApp still returns 0 matches, dump its UIA tree.
+- Note: the "try Vision screen-click mode" error with no fallback means screenClickMethod is "accessibility", not "auto".
