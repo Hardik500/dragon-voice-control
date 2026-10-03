@@ -54,13 +54,14 @@ export interface PlatformAutomation {
     imageHeight: number;
   }>;
   /** Moves the mouse to absolute screen coordinates and performs one left click. */
-  clickAt(x: number, y: number): Promise<void>;
+  clickAt(x: number, y: number, clicks?: number): Promise<void>;
   /** screen_click's "accessibility" method: labelled elements in the frontmost window whose
    * label contains any of `terms` (lowercase). Absolute screen coordinates, same space as
    * `clickAt()`. Labels only — never editable text content. */
   findAccessibleElements(terms: string[]): Promise<{
     window: { x: number; y: number; width: number; height: number };
-    elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+    /** `menu`: macOS app menu-bar item (outside the window rect). */
+    elements: Array<{ label: string; x: number; y: number; width: number; height: number; menu?: boolean }>;
   }>;
 
   /** Speaks a short acknowledgement; must interrupt (kill) any reply already speaking. */

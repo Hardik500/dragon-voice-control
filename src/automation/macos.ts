@@ -337,13 +337,14 @@ export async function captureFrontmostWindow(): Promise<{
   }
 }
 
-export async function clickAt(x: number, y: number): Promise<void> {
+export async function clickAt(x: number, y: number, clicks = 1): Promise<void> {
   const px = Math.round(x);
   const py = Math.round(y);
   await jxa(
     `ObjC.import('CoreGraphics');var p=$.CGPointMake(${px},${py});` +
-      `var d=$.CGEventCreateMouseEvent($(),$.kCGEventLeftMouseDown,p,$.kCGMouseButtonLeft);$.CGEventPost($.kCGHIDEventTap,d);` +
-      `var u=$.CGEventCreateMouseEvent($(),$.kCGEventLeftMouseUp,p,$.kCGMouseButtonLeft);$.CGEventPost($.kCGHIDEventTap,u);`
+      `for(var i=1;i<=${clicks};i++){` +
+      `var d=$.CGEventCreateMouseEvent($(),$.kCGEventLeftMouseDown,p,$.kCGMouseButtonLeft);$.CGEventSetIntegerValueField(d,$.kCGMouseEventClickState,i);$.CGEventPost($.kCGHIDEventTap,d);` +
+      `var u=$.CGEventCreateMouseEvent($(),$.kCGEventLeftMouseUp,p,$.kCGMouseButtonLeft);$.CGEventSetIntegerValueField(u,$.kCGMouseEventClickState,i);$.CGEventPost($.kCGHIDEventTap,u);}`
   );
 }
 
@@ -384,6 +385,8 @@ function run(argv) {
   var w = attr(ax, "AXFocusedWindow");
   if (!w.v) throw new Error("AX focused window lookup failed (" + w.rc + ")");
   var res = walk(w.v, terms);
+  var mb = attr(ax, "AXMenuBar");
+  if (mb.v) { var mk = attr(mb.v, "AXChildren"); if (mk.v) ObjC.unwrap(mk.v).forEach(function (m) { var t = str(m, "AXTitle"), l = t.toLowerCase(), r = rect(m); if (t && r && terms.some(function (x) { return l.indexOf(x) >= 0; })) { r.label = t; r.menu = true; res.elements.push(r); } }); }
   var app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
   var electron = $.NSFileManager.defaultManager.fileExistsAtPath(ObjC.unwrap(app.bundleURL.path) + "/Contents/Frameworks/Electron Framework.framework");
   if (electron && res.visited < 30) { delay(0.7); res = walk(w.v, terms); }
@@ -392,7 +395,7 @@ function run(argv) {
 
 export async function findAccessibleElements(terms: string[]): Promise<{
   window: { x: number; y: number; width: number; height: number };
-  elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+  elements: Array<{ label: string; x: number; y: number; width: number; height: number; menu?: boolean }>;
 }> {
   const { stdout } = await run("osascript", ["-l", "JavaScript", "-e", AX_FIND_SCRIPT, JSON.stringify(terms)], 8_000);
   const parsed = JSON.parse(stdout.trim());

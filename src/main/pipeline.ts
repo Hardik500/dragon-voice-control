@@ -1471,7 +1471,7 @@ export class DragonPipeline {
       case "chrome_switch_tab":
         return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next" });
       case "screen_click":
-        return this.executeScreenClick(cmd.text!, transcript, signal);
+        return this.executeScreenClick(cmd.text!, transcript, signal, cmd.double ? 2 : 1);
       case "search_in_app":
         return this.executeSearchInApp(cmd.query!);
       case "replace_text": {
@@ -1533,12 +1533,12 @@ export class DragonPipeline {
    * for the description, independently verifies each one, disambiguates if more than one survives
    * verification, then moves+clicks at the corresponding absolute screen coordinate (window
    * bounds + relative offset). */
-  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal): Promise<void> {
+  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal, clicks = 1): Promise<void> {
     const settings = this.getSettings();
-    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal);
+    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
     if (settings.screenClickMethod === "auto") {
       try {
-        return await this.executeAccessibilityClick(description, transcript, settings, signal);
+        return await this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
       } catch (err) {
         if (signal.aborted || !(err instanceof AccessibilityMissError)) throw err;
         logger.event("screen_click.fallback", { description, fallback: "accessibility_miss" });
@@ -1610,12 +1610,12 @@ export class DragonPipeline {
       screenX,
       screenY,
     });
-    await automation.clickAt(screenX, screenY);
+    await automation.clickAt(screenX, screenY, clicks);
   }
 
   /** screen_click via the OS accessibility tree instead of a screenshot: exact element frames,
    * no vision call. Only labelled elements are findable; unlabelled icons need Vision mode. */
-  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal): Promise<void> {
+  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal, clicks = 1): Promise<void> {
     const tokens = labelTokens(description);
     const terms = tokens.filter((t) => t.length >= 3).length ? tokens.filter((t) => t.length >= 3) : tokens;
     if (!terms.length) throw new Error(`Nothing to look up for "${description}".`);
@@ -1624,8 +1624,8 @@ export class DragonPipeline {
     // capped because some rows' AXDescription carries a message preview (Slack Activity).
     const located = elements
       .filter((e) => e.width > 0 && e.height > 0)
-      .map((e) => ({ label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }));
-    const onScreen = located.filter((p) => p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height);
+      .map((e) => ({ menu: e.menu, label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }));
+    const onScreen = located.filter((p) => p.menu || p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height);
     const inWindow = onScreen.filter((p) => labelMatches(description, p.label));
     const candidates = dedupeMatches(inWindow);
     // Logged on EVERY accessibility lookup, hit or miss. Without it a failure and a stale build are
@@ -1664,7 +1664,7 @@ export class DragonPipeline {
     const screenX = window.x + point.x;
     const screenY = window.y + point.y;
     logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
-    await automation.clickAt(screenX, screenY);
+    await automation.clickAt(screenX, screenY, clicks);
   }
 
   /** Recovery path for when zero of `locateElements`' reported matches survive independent

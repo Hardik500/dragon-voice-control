@@ -85,7 +85,16 @@ const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the
 /** "click/tap X" with no Chrome page-element candidates available means X must be a screen
  * element outside the DOM path (a native app's button/icon). If there ARE browser element
  * candidates, `clickElementOverride` above already owns "click on X" — don't double-handle. */
+/** "double click X" / "open file X": file-tree rows open on double-click, not single. */
+const DOUBLE_CLICK_RE = /^\s*(?:please\s+)?(?:double[\s-]?(?:click|tap)|open\s+(?:the\s+)?file)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i;
+
+function doubleClickTarget(effectiveText: string): string | null {
+  return effectiveText.match(DOUBLE_CLICK_RE)?.[1].trim() || null;
+}
+
 function screenClickOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
+  const dbl = doubleClickTarget(effectiveText);
+  if (dbl) return { kind: "screen_click", text: dbl, double: true };
   if (payload.browserElementCandidates.length > 0) return null;
   if (!SCREEN_CLICK_PATTERN.test(effectiveText) && !extractImplicitClickTarget(effectiveText)) return null;
   const text = payload.clickTarget ?? effectiveText.trim();
@@ -97,7 +106,7 @@ function screenClickOverride(effectiveText: string, payload: ExtractedPayload): 
  * `none` 0.45 and was ignored). Only the explicit verb — implicit verbs ("select X") still
  * need Jev's confidence. */
 export function isDeterministicScreenClick(effectiveText: string, payload: ExtractedPayload): boolean {
-  return payload.browserElementCandidates.length === 0 && SCREEN_CLICK_PATTERN.test(effectiveText);
+  return payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText) !== null);
 }
 
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
@@ -154,7 +163,7 @@ export function resolveCommand(
     if (clickOverride) return clickOverride;
   }
   const jevPickedApp = (intent === "open_app" || intent === "activate_app") && payload.appCandidates.length > 0;
-  if (intent !== "screen_click" && !jevPickedApp) {
+  if ((intent !== "screen_click" || doubleClickTarget(effectiveText)) && !jevPickedApp) {
     const screenOverride = screenClickOverride(effectiveText, payload);
     if (screenOverride) return screenOverride;
   }

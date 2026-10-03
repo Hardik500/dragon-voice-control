@@ -2175,3 +2175,8 @@ so the next attempt answers it directly.
 - findAccessibleElements (windows.ts) now collects matches without scrolling and only calls ScrollIntoView when no match is already on-screen (scrolling every off-screen match shifted the page before the click; Settings sections).
 - Retries FindAll once after 700ms when <10 elements are named (WebView2/WhatsApp builds its UIA tree lazily). Unverified on Windows; if WhatsApp still returns 0 matches, dump its UIA tree.
 - Note: the "try Vision screen-click mode" error with no fallback means screenClickMethod is "accessibility", not "auto".
+
+## 2026-10-03 screen click: macOS menu bar + double-click
+- macOS AX lookup also scans the frontmost app menu bar (AXMenuBar top-level items, flagged menu:true so the window-bounds filter keeps them). Submenu items are not built until opened, so only top-level (File, Edit...) are clickable.
+- New "double click X" / "open file X" -> screen_click with double:true; clickAt(x, y, clicks) posts 2 clicks (macOS CGEvent clickState, Windows 2x mouse_event). Pending numbered-choice picks stay single-click.
+- Observed from logs: the Mac log was Cursor, where "click on file" matched "Search Files" because the menu bar was outside the window walk. Type-checked only; not run on a real app, Windows untested.

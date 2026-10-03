@@ -176,6 +176,8 @@ export interface ResolvedCommand {
   /** Registry alias key passed to `automation.*` for execution. */
   appAlias?: string;
   text?: string;
+  /** screen_click: double-click instead of single (opening files/folders in trees). */
+  double?: boolean;
   url?: string;
   query?: string;
   amount?: number;

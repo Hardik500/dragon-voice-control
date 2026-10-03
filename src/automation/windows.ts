@@ -544,12 +544,17 @@ Write-Output "$x|$y|$w|$ht|$tmpFile"`;
 }
 
 /** Unverified on real Windows hardware — see PROGRESS.md. */
-export async function clickAt(x: number, y: number): Promise<void> {
+export async function clickAt(x: number, y: number, clicks = 1): Promise<void> {
   const script = `${CLICK_WIN32_TYPE}
 [DragonClickWin32]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})
 Start-Sleep -Milliseconds 50
 [DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTDOWN}, 0, 0, 0, [UIntPtr]::Zero)
-[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)`;
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)`.concat(
+    clicks > 1 ? `
+Start-Sleep -Milliseconds 60
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTDOWN}, 0, 0, 0, [UIntPtr]::Zero)
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)` : ""
+  );
   await runPowerShell(script);
 }
 
