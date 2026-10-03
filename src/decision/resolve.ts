@@ -88,12 +88,19 @@ const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the
 /** "double click X" / "open file X": file-tree rows open on double-click, not single. */
 const DOUBLE_CLICK_RE = /^\s*(?:please\s+)?(?:double[\s-]?(?:click|tap)|open\s+(?:the\s+)?file)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i;
 
-function doubleClickTarget(effectiveText: string): string | null {
-  return effectiveText.match(DOUBLE_CLICK_RE)?.[1].trim() || null;
+/** Bare "open package dot json" / "open main.ts [file]": a filename (spoken "dot ext" or literal
+ * ".ext"), not an app or site. Web TLDs are excluded so "open google dot com" still navigates. */
+const OPEN_FILENAME_RE = /^\s*(?:please\s+)?open\s+(?:the\s+)?(.+?\s+dot\s+(?!(?:com|org|net|io|dev|co|gov|edu|app|ai|uk)\b)[a-z0-9]{1,5}|[^\s.]+\.(?!(?:com|org|net|io|dev|co|gov|edu|app|ai|uk)\b)[a-z0-9]{1,5})(?:\s+file)?\s*[.!?]*$/i;
+
+function doubleClickTarget(effectiveText: string, payload: ExtractedPayload): string | null {
+  const explicit = effectiveText.match(DOUBLE_CLICK_RE)?.[1].trim();
+  if (explicit) return explicit;
+  if (payload.appCandidates.length > 0 || payload.url) return null;
+  return effectiveText.match(OPEN_FILENAME_RE)?.[1].trim() || null;
 }
 
 function screenClickOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
-  const dbl = doubleClickTarget(effectiveText);
+  const dbl = doubleClickTarget(effectiveText, payload);
   if (dbl) return { kind: "screen_click", text: dbl, double: true };
   if (payload.browserElementCandidates.length > 0) return null;
   if (!SCREEN_CLICK_PATTERN.test(effectiveText) && !extractImplicitClickTarget(effectiveText)) return null;
@@ -106,7 +113,7 @@ function screenClickOverride(effectiveText: string, payload: ExtractedPayload): 
  * `none` 0.45 and was ignored). Only the explicit verb — implicit verbs ("select X") still
  * need Jev's confidence. */
 export function isDeterministicScreenClick(effectiveText: string, payload: ExtractedPayload): boolean {
-  return payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText) !== null);
+  return payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText, payload) !== null);
 }
 
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
@@ -163,7 +170,7 @@ export function resolveCommand(
     if (clickOverride) return clickOverride;
   }
   const jevPickedApp = (intent === "open_app" || intent === "activate_app") && payload.appCandidates.length > 0;
-  if ((intent !== "screen_click" || doubleClickTarget(effectiveText)) && !jevPickedApp) {
+  if ((intent !== "screen_click" || doubleClickTarget(effectiveText, payload)) && !jevPickedApp) {
     const screenOverride = screenClickOverride(effectiveText, payload);
     if (screenOverride) return screenOverride;
   }
