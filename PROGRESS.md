@@ -1526,3 +1526,659 @@ Jev/OpenRouter response) → `pipeline.execution` for a real spoken command, no
 `SELF_SIGNED_CERT_IN_CHAIN` anywhere. Not yet re-verified against a full `package:mac` build
 (only `npm run dev`, same compiled `dist/` output) or on Windows (no Windows machine here, and
 no report of the same symptom there).
+
+## Vision-based screen click (`screen_click`) (2026-09-28)
+
+Added point-and-click anywhere on screen for UI elements outside the Chrome DOM path (native app
+buttons/icons), via screenshot + vision-LLM instead of Accessibility APIs — see DECISIONS.md for
+the full rationale. New pieces: `src/decision/vision-client.ts` (`locateElement()`, calls
+OpenRouter's standard chat-completions endpoint with `openai/gpt-4o-mini`);
+`automation.captureFrontmostWindow()` / `automation.clickAt()` on both platforms;
+`screenClickOverride()` + the `screen_click` case in `src/decision/resolve.ts`; execution wired
+in `src/main/pipeline.ts`'s `executeScreenClick()`. `npx tsc --noEmit` passes with no errors.
+
+**Not run/verified in this sandbox** (no GUI, no macOS/Windows machine, same caveat as the rest
+of this file):
+- macOS `captureFrontmostWindow`/`clickAt` (`osascript`/`screencapture`) — reasoned about by
+  inspection only, not executed against a real window.
+- Windows `captureFrontmostWindow`/`clickAt` (`GetWindowRect`/`SetCursorPos`/`mouse_event` via a
+  new `DragonClickWin32` P/Invoke type) — unverified on real Windows hardware, same as the rest
+  of `windows.ts`.
+- The actual OpenRouter vision call (`openai/gpt-4o-mini`) — not exercised against a real
+  screenshot or API key.
+
+Manual verification still needed on a real Mac: say "click the [visible button label]" with a
+native app frontmost and confirm the click lands; say "click on [a link]" with Chrome frontmost
+and page elements available and confirm it still goes through `chrome_click`, not `screen_click`
+(regression check for `screenClickOverride`'s guard); revoke Screen Recording permission and
+confirm the friendly error message surfaces.
+
+### Follow-up fixes from first real-hardware test (2026-09-28)
+
+The first real test (`dragon-2026-09-28.jsonl`, session `sess_mulgi36b_8sftul`) surfaced three
+issues, all fixed here:
+
+1. **Every command, not just `screen_click`, was stalling ~10s.** `automation.getActiveAppName()`
+   and `captureFrontmostWindow()`'s window-position query both share `run()`'s 10s `execFile`
+   timeout meant for slower commands. In this session both were timing out (not erroring fast),
+   which `activeAppMs`/`executionMs` in the logs confirm (~10000ms on every single utterance).
+   `captureFrontmostWindow()`'s catch block then unconditionally rethrew a generic "no window"
+   message, masking the real timeout. Fixed: both quick, read-only queries now use a 3s timeout
+   (`QUICK_QUERY_TIMEOUT_MS`), and `friendlyOsascriptError()` now distinguishes a timeout
+   (`err.killed`) from a real Accessibility-permission error, producing an actionable message
+   ("System Events may be stuck behind an unanswered permission dialog...") instead of the
+   generic one. Root cause of *why* System Events itself was stalling is still unconfirmed — most
+   likely a hidden/unanswered permission dialog — flagging for the user to check next test.
+2. **Retina click-accuracy bug + unnecessary vision cost/latency.** `captureFrontmostWindow()`'s
+   PNG is in *pixels* (2x on Retina) while `bounds` is in *points*; `executeScreenClick()` was
+   adding the vision model's pixel-space point directly onto point-space bounds — on Retina this
+   would click at roughly 2x the intended offset. Fixed by having `captureFrontmostWindow()`
+   downscale to a max 1280px width via Electron's built-in `nativeImage` (no new dependency —
+   cuts vision-call image tokens, and therefore cost and latency, on large screens too) and
+   return the actual sent `imageWidth`/`imageHeight`; `executeScreenClick()` now scales the
+   returned point by `bounds.width / imageWidth` (and height) instead of assuming 1:1. Windows'
+   `captureFrontmostWindow()` gained the same two fields for interface parity (ratio is 1:1
+   there today since `CopyFromScreen` captures exactly `width x height` pixels — unverified on a
+   real HiDPI Windows display).
+3. **No visible loading feedback.** The overlay already sends a generic "Thinking"/"Executing"
+   state for every command (`src/main/pipeline.ts`'s `onOverlay` calls), so no new IPC/state was
+   needed. Added a CSS pulse animation to the status dot for those two states
+   (`src/renderer/overlay.html`) so a multi-second vision round-trip reads as "in progress"
+   rather than looking frozen. If the overlay still isn't visible, check the tray's "Show
+   Overlay" checkbox — `overlayVisible` defaults to `true` but persists once toggled.
+
+On the "cheaper/faster vision model" question: `gpt-4o-mini` already prices at $0.15/$0.60 per M
+tokens with ~0.5s model latency (OpenRouter, Sept 2026 pricing) — comparable to other
+options researched (DeepSeek V4 Flash Vision, Perceptron Mk1). The measured 3.4-5.7s round trip
+was mostly screenshot size/network overhead, not model choice, which the downscaling above
+directly addresses; kept the model as-is rather than switching to an unverified alternative.
+
+### Second real-hardware test: `clickAt()` hang root-caused and fixed (2026-09-28)
+
+After granting Accessibility/Screen Recording/Automation permissions correctly (confirmed via
+screenshots of System Settings — "Electron"/"Dragon" both listed and enabled, "System Events"
+enabled under Automation), `screen_click` still failed: `vision.locate_element found:true`
+succeeded every time, but `clickAt()` hung for the full 10s timeout, every time, against Slack.
+
+Root-caused by reproducing the hang **outside Dragon entirely** — ran
+`osascript -e 'tell application "System Events" to click at {x,y}'` directly from a
+fully-trusted terminal (Warp, already granted Accessibility/Automation): instant when the
+terminal's own window was frontmost, hung 30+ seconds when Slack was frontmost. This is a
+documented AppleScript limitation, not a Dragon permission gap: System Events' `click` command
+hit-tests the target app's accessibility tree to resolve what's under the point, and that
+hit-test can hang indefinitely for Electron/Chromium-based apps (Slack, VS Code, etc.) with
+incomplete AX trees.
+
+**Fixed** in `src/automation/macos.ts`: `clickAt()` now runs a JavaScript-for-Automation script
+(`osascript -l JavaScript`) that posts a raw `CGEvent` via `ObjC.import('CoreGraphics')`
+(`CGEventCreateMouseEvent` + `CGEventPost` at the HID event-tap level), bypassing System
+Events' AX hit-testing entirely. Same Accessibility permission, no new dependency (JXA is
+built into macOS). See DECISIONS.md for full detail.
+
+**Verified:** from a terminal, the JXA click returns in ~0.07s with Slack frontmost (previously
+hung 30+ seconds in the same scenario). **Not yet re-verified through the full Dragon pipeline**
+(screenshot → vision → click) — retest `screen_click` end-to-end and confirm
+`pipeline.execution`'s `executionMs` no longer includes a ~10s `clickAt()` stall.
+
+### Third real-hardware test: click lands slightly off-target, overlay "Executing" vanished instantly (2026-09-28)
+
+The `clickAt()` fix worked — the mouse now moves and clicks with no hang — but two issues
+surfaced:
+
+1. **Click lands slightly off the intended element.** Root cause: `locateElement()`
+   (`src/decision/vision-client.ts`) asked the vision model for raw pixel coordinates within the
+   sent image. OpenAI's vision endpoint internally downscales/tiles the uploaded image before the
+   model ever sees it (documented image-tokenization behavior), and the model has no way to know
+   that resize happened — its pixel answer is relative to whatever resolution OpenAI's backend
+   actually processed, not the `imageWidth`/`imageHeight` we sent and used to scale back to screen
+   coordinates, producing a systematic offset on top of ordinary vision-model imprecision. Fixed
+   by asking for `x_pct`/`y_pct` (0-100 percentage of image width/height) instead of raw pixels —
+   percentages are scale-invariant, so OpenAI's internal resizing no longer matters — and
+   converting to pixels in `locateElement()` using the caller-supplied `imageWidth`/`imageHeight`.
+   `executeScreenClick()` in `src/main/pipeline.ts` now passes those through.
+2. **The "Executing" overlay state vanished almost immediately, well before the click actually
+   happened.** Root cause: Deepgram keeps streaming ambient audio during a slow command (the
+   screenshot+vision+click round trip takes 3-5s), which fires `StartOfTurn`/`Update` events for
+   incidental noise; `onTurn`'s handler for those events unconditionally pushed a "listening"
+   overlay update, overwriting "Executing" before the command actually finished — with no
+   completed action yet to fall back to (`overlay.ts`'s completion-linger logic only kicks in
+   after a real "done"/"error"), the action/status text was cleared outright. Fixed by adding
+   `executingUtteranceId` to `DragonPipeline`, set for the duration of `executeCommand()` in the
+   main decision flow; `onTurn`'s `StartOfTurn`/`Update` branch now skips the "listening" overlay
+   push while it's set. Purely cosmetic — only gates the overlay push, not turn processing, so a
+   genuine new utterance spoken during execution is still captured normally.
+
+**Verified:** the "Executing" overlay state is now stable through the full round trip. Click
+accuracy improved but is still imprecise on dense targets — real-hardware session against Slack
+(a busy channel-list sidebar) hit the intended element once ("kudos") but missed to a
+nearby-but-wrong row twice in a row for "security" (landed on "pde-all", then
+"newco-aapi-erg" — both a few rows away in the same sidebar), landed on the right general area but
+not exactly for "activity", and for "Tonya" landed on a post she'd written rather than her
+name/avatar specifically. `logger.event("vision.locate_element", ...)` only records
+`description`/`found`, not the actual `x_pct`/`y_pct` or resolved screen coordinates, so the
+misses couldn't be pinpointed from logs — diagnosed by inspection instead.
+
+Root cause: `locateElement()`'s OpenRouter request never set a `detail` value on `image_url`.
+Per OpenAI's documented vision behavior, without `detail: "high"` a busy image can be processed
+as a single low-resolution pass — fine for one large isolated button, but the Slack sidebar's
+channel rows are only ~10px tall after the existing 1280px-width downscale, well below what a
+low-res pass can distinguish between neighbors. **Fixed** in `src/decision/vision-client.ts` by
+setting `image_url.detail = "high"`, which makes OpenAI tile the image at full resolution instead.
+**Not yet re-verified on real hardware.**
+
+### Overlay jitter: concurrent command executions could stomp each other's display (2026-09-28)
+
+User also reported occasional jitter — the overlay dot/status briefly flashing to "error" (or
+some other stale state) before correcting itself to the current spoken prompt. Overlay pushes
+(`onOverlay(...)`) aren't logged anywhere, so this couldn't be confirmed against a specific
+timestamp in this session's logs (the captured exchange's commands happened to run back-to-back,
+not overlapping). Found a plausible unconfirmed cause by inspection: `executeCommand()` has no
+cancellation, and `executingUtteranceId` was a single field — if a second command is spoken while
+a slow one (e.g. `screen_click`'s 3-6s screenshot+vision+click) is still running, both executions
+interleave on the event loop and the **older** one's unconditional "done"/"error" overlay push
+(after it finally finishes) can overwrite whatever the newer command has since displayed.
+
+Applied a defensive fix in `src/main/pipeline.ts` regardless, since it's cheap and correct even if
+unconfirmed: capture `isCurrentExecution = this.executingUtteranceId === turn.utteranceId` right
+after `executeCommand()` returns, before clearing the flag. If a newer command already overwrote
+`executingUtteranceId` with its own id, this command is stale — skip reclaiming the flag (it
+belongs to the newer command now) and skip this command's own "done"/"error" overlay push. History
+logging, `pipeline.execution` events, and the voice reply are unaffected — only the overlay
+*display* push is gated. **Not yet re-verified on real hardware** (and still unconfirmed as the
+actual cause of the reported jitter).
+
+### Fourth/fifth real-hardware tests: wrong-row picks in dense sidebars, root-caused and fixed (2026-09-28)
+
+`detail: "high"` and switching `openai/gpt-4o-mini` → `openai/gpt-4o` (see `vision-client.ts`)
+did not fix the underlying issue: repeated `screen_click` calls against Slack's dense channel
+sidebar and macOS System Settings' sidebar kept landing on the **wrong row entirely** ("security"
+→ "pde-all", then → "newco-aapi-erg"; "activity" → "my team", then → "copilot-conversation-testing"),
+not just imprecisely on the right one. Ruled out the coordinate-scaling and OpenAI image-tiling
+(edge-of-image) hypotheses by inspection and by testing a non-edge target in System Settings,
+which showed the same failure mode — confirming this is `gpt-4o`'s point-grounding struggling to
+discriminate the Nth item among many visually-similar, tightly-packed rows, independent of image
+position, model choice, or `detail` setting.
+
+**Fix** (`src/decision/vision-client.ts` + `src/main/pipeline.ts`): the vision prompt now also
+asks for the exact visible `label` text at the point it picked. `executeScreenClick()` fuzzy-
+matches (`labelMatches()`, token-overlap) that label against the spoken description before
+trusting the point; on mismatch it crops a region around the (wrong) point — 50% width / 30%
+height of the window, centered on the miss — and re-asks `locateElement()` on just that crop
+(less competing UI per pixel). If the second attempt's label still doesn't match, `screen_click`
+now fails with a clear error naming what it found instead, rather than silently clicking the
+wrong row. The common case (label matches on the first try) is unchanged — one round trip, no
+added latency. **Not yet re-verified on real hardware** — retest the same dense-sidebar sequence
+("security", "activity") and confirm either a correct click or a clean failure, never a
+wrong-row click.
+
+### Sixth real-hardware test: self-reported `label` proven unreliable as a check; switched to an independent read-back (2026-09-28)
+
+The label-verification fix above did not help — logs showed the model's own `label` field
+reliably echoing the requested description ("general" → `label:"General"`, "screen time" →
+`label:"Screen Time"`) even while `x_pct`/`y_pct` landed on a completely different row (Network,
+Sound respectively). This isn't a wrong-row *semantic* pick, it's the model failing to ground its
+own correct answer to a pixel — asking it to "find X" and trusting its self-reported label for
+the same call shares that bias, so `labelMatches()` never fired.
+
+**Fix**: added `readLabelAtPoint()` (`src/decision/vision-client.ts`) — a second, separately-
+framed call with no "find X" hint. It's given a small crop (6% width / 3.5% height of the window,
+`VERIFY_CROP_MARGIN` in `src/main/pipeline.ts`) centered on the candidate point and asked "what
+text is here?", forcing an independent read instead of a repeat of the target. `executeScreenClick()`
+now verifies every point this way (not just on a self-reported mismatch), and only falls back to
+the wider re-localization crop (`RELOCATE_CROP_MARGIN`, previously the whole fix) when the
+independent read disagrees. The original `locateElement().label` field is kept for logging only,
+no longer trusted for verification. Adds one extra vision call on the common path (every click is
+now verified, not just retried on suspicion) — acceptable latency/cost tradeoff for correctness on
+an alpha. **Not yet re-verified on real hardware** — retest "general"/"screen time"/"focus" in
+System Settings and confirm the independent read-back actually disagrees when the point is wrong
+(check `vision.read_label_at_point` in the logs), and that a correct point is never rejected.
+
+### Seventh real-hardware test: independent verification works, but the retry crop assumed the wrong failure mode (2026-09-28)
+
+The read-back verification above worked as intended — it correctly rejected a bad point ("Harshit"
+→ landed on Slack's "DMs" tab, verification caught the mismatch and refused to click it). But the
+retry then failed too: `locateElement`'s wrong point (5.4%, 20.5%) was near Slack's top tab bar,
+while "Harshit Agarwal" is a row further down in the Activity list — the `RELOCATE_CROP_MARGIN`
+crop centered on the *wrong* point never contained the real target, so re-asking on it deterministically
+returned `found: false`, and `screen_click` failed outright instead of clicking anything.
+
+This is a different failure mode than the one the relocate-crop retry was designed for: a
+*close-but-imprecise* miss (row N-1 instead of row N, still inside the crop) is fixed by a tighter
+crop; a *wrong-region* miss (tab bar instead of list) is not, because the target was never in
+frame. **Fix** (`executeScreenClick` in `src/main/pipeline.ts`): after the relocate-crop retry
+still doesn't verify (either `found: false` or the read-back still mismatches), fall back to one
+more fresh full-image `locateElement` call before giving up — gpt-4o's point-picking is stochastic
+enough that a second independent full pass often lands correctly (seen earlier with "focus"
+landing right on a second full attempt). No new dependencies or grid/tiling scheme; reuses the
+same `locateElement`/`readLabelAtPoint` building blocks. Only adds latency on the (already rare)
+double-failure path. **Not yet re-verified on real hardware** — retest the Slack "Harshit"/dense-list
+case and confirm it either clicks correctly or fails cleanly, and that the common one-shot-correct
+path is unaffected.
+
+### Retested same day: fallback fires correctly, but 3 independent attempts still all miss (2026-09-28)
+
+Retested "Harshit" in the same dense Slack Activity list right after the fix above. Log:
+
+```
+locate_element  xPct:90.5 yPct:14.2 label:"Click \"Harshit\""   (attempt 1, full image)
+read_label_at_point  label:""                                   (verify: empty — correctly rejected)
+locate_element  found:false                                      (relocate-crop retry — target wasn't in that crop at all)
+locate_element  xPct:4.5  yPct:8.5  label:"Harshit Agarwal"      (fallback: fresh full-image attempt)
+read_label_at_point  label:"Activity"                            (verify: reads the panel header, not the row — correctly rejected)
+→ error: Could not confidently locate "Harshit" on screen (found "Activity" instead).
+```
+
+Good news: the independent verification worked exactly as designed on *every* attempt — it never
+clicked the wrong thing, it just ran out of attempts and failed cleanly. Bad news: the fresh
+full-image fallback (the new 3rd attempt) is subject to the *exact same* grounding weakness as
+attempt 1 — gpt-4o landed on the "Activity" header (y≈8.5%, near the top of the panel) instead of
+the "Harshit Agarwal" row beneath it. One extra fresh attempt isn't consistently enough for this
+specific case (dense list, low-frequency target); it happened to work for "focus" (2-of-2) but not
+here (3-of-3 failed).
+
+**Options for tomorrow, cheapest first:**
+1. **Bump the fresh-attempt retry budget** (e.g. loop the fresh full-image attempt up to 2-3 times
+   instead of once) before giving up — same building blocks, zero new code paths, just a bigger
+   budget on the already-rare multi-failure branch. Cheapest, but doesn't fix the underlying
+   grounding weakness, just plays the stochastic odds harder; latency grows on hard cases.
+2. **Parallel multi-sample + agreement**: fire 2-3 fresh `locateElement` calls concurrently (instead
+   of serially retrying), verify each with `readLabelAtPoint`, click the first (or majority-clustered)
+   one that verifies. Same latency as one round-trip since parallel; better odds than serial retry
+   at the same call budget.
+3. **Structural alternative (bigger change, not for tomorrow without discussion)**: read the target
+   element's on-screen position from the OS accessibility tree instead of vision coordinates, for
+   apps where it's available — sidesteps LLM grounding entirely for text lookups. `DECISIONS.md`
+   (2026-09-28) already rejected building AX traversal for *clicking* (hangs on Electron), but that
+   was about `AXUIElement`-driven clicks specifically; whether read-only AX tree *lookup* (find the
+   element, get its frame, then click via the existing `CGEvent`-based `clickAt`) also hangs on
+   Electron/Slack is untested and would need its own investigation before reopening that decision.
+
+Leaning toward option 2 (parallel multi-sample) as the next thing to try — same call budget as a
+naive retry-budget bump, but should improve hit rate faster since it's not betting on a single
+stochastic redraw. Not yet implemented — to be built and tested tomorrow.
+
+### Multi-match discovery + Jev disambiguation for `screen_click` (2026-09-29)
+
+Implemented the plan at `plan-screen-click-disambiguation-2026-09-29.md` — a different angle on
+the wrong-row problem above: instead of asking the vision model for one point and retrying when
+it's wrong, ask it for *every* on-screen match up front, verify each independently, and only
+fall back to single-point retry/disambiguation logic when that's ambiguous or empty.
+
+- `src/decision/vision-client.ts`: `locateElement()` → `locateElements()`, returning up to
+  `MAX_LOCATE_MATCHES = 5` scored `{x, y, label}` points from one vision call instead of one.
+- `src/decision/jev-client.ts`: added `askDisambiguationChoice()` + `DisambiguationAnswer` — an
+  ad-hoc single-question follow-up (reuses `callDecisionProvider`'s provider/endpoint plumbing
+  but a minimal one-question schema, since the fixed 5-question bundle requires
+  intent/target/direction/complete that don't apply here).
+- `src/main/pipeline.ts`'s `executeScreenClick()`: calls `locateElements()`, independently
+  verifies each candidate via the existing `readLabelAtPoint()` read-back, then:
+  - 0 verified → falls back to the existing single-point recovery path (`recoverScreenClickPoint()`,
+    logic unchanged from the prior single-point retry/relocate-crop/fresh-attempt chain).
+  - 1 verified → click it directly, no extra round trip.
+  - 2+ verified → `disambiguateScreenClickCandidates()` asks Jev to choose using the full
+    utterance transcript plus a coarse position description per candidate (`describeRegion()`:
+    top/middle/bottom × left/center/right of the window). Falls back to a deterministic pick
+    (topmost, then leftmost) if Jev can't be asked, times out, or answers below
+    `SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD = 0.35` — a click should still happen even
+    with no disambiguating signal.
+- `executeCommand()`/`executeScreenClick()` now take `transcript`/`signal` params (threaded from
+  `runDecisionInternal`'s existing `effectiveText`/`controller.signal`) so disambiguation can use
+  the full utterance and respect in-flight cancellation.
+
+`npx tsc --noEmit` and `npm run typecheck` (main + renderer) both pass. **Not yet run on real
+hardware** — same caveat as the rest of this section: no GUI/macOS/Windows machine in this
+sandbox, so the actual OpenRouter multi-match vision call and the Jev disambiguation round trip
+are unverified end-to-end. Retest the dense-list cases above ("Harshit" in Slack's Activity list,
+"General"/repeated-label cases) and confirm: a single unambiguous match still clicks in one round
+trip (no regression on the common path), 2+ genuinely distinct matches trigger disambiguation and
+land on the one matching the spoken transcript's intent, and the zero-verified-match path still
+fails cleanly via the unchanged recovery logic.
+
+### `screen_click` accuracy + latency pass (2026-09-29)
+
+Implemented `plan-screen-click-perf-and-correctness-2026-09-29.md`. Accuracy first: the wrong-row
+misses trace to the vision model's grounding ability (see DECISIONS.md 2026-09-29), so the model
+changed; the rest are latency/robustness fixes that apply whichever model wins.
+
+- `src/decision/vision-client.ts`:
+  - `VISION_MODEL` = `google/gemini-3-flash-preview` (was `openai/gpt-4o`); single switch for all vision calls.
+  - `locateElements()` asks for `box_2d` ([ymin,xmin,ymax,xmax], 0–1000) instead of `x_pct/y_pct`;
+    `LocatedPoint` gains `box` (image px), `x,y` = box centre. `temperature:0`,
+    `reasoning.effort:"low"`, `response_format: json_object`. Logs `model` + `imageBytes`.
+  - `readLabelAtPoint()`: `detail:"low"`, `temperature:0`, `reasoning.effort:"minimal"`.
+  - `labelMatches()` ignores filler words (`the, and, click, tap, press, button, on, icon, link,
+    tab`) and 1–2 letter tokens; new `labelExact()`; new `dedupeMatches()` (IoU > 0.5 or centre
+    inside a higher-ranked box).
+- `src/automation/macos.ts` / `windows.ts`: screenshot is JPEG (q85 / GDI+ default) instead of PNG.
+- `src/main/pipeline.ts`:
+  - Screenshot decoded once per click; crops are JPEG.
+  - Verify crop = element box + 8px pad (never smaller than the old fixed margin).
+  - All candidates verified concurrently (`Promise.allSettled`); one failed read-back drops only
+    that candidate, all failing rethrows the first error.
+  - Recovery runs the relocate-crop and fresh full-image attempts concurrently.
+  - Disambiguation skips Jev when exactly one verified label equals the spoken target.
+  - Failed / ambiguous clicks save the frontmost-window screenshot to
+    `os.tmpdir()/dragon-screenclick-<ts>.jpg` (logged as `screen_click.debug_image`, deleted
+    after 24h) for offline model comparison.
+
+Expected round trips: unambiguous = 1 locate + 1 parallel verify; ambiguous adds 1 Jev call only
+when no label matches exactly; zero-verified adds 1 parallel recovery round.
+
+**Verified here:** `npm run typecheck` passes; a throwaway harness (electron stubbed) asserted
+`labelMatches`/`labelExact`, `box2dToPixels` y/x order, and `dedupeMatches`. **Not run on real
+hardware**: the Gemini calls through OpenRouter (including whether `reasoning`/`response_format`
+are accepted together with an image), JPEG capture on Windows, and actual hit rate. Retest Slack
+"Harshit" (Activity list) and System Settings "General"/"Screen Time"; compare
+`pipeline.execution.executionMs` with the 2026-09-28 logs. To compare models on saved
+screenshots, a throwaway replay script lives at `/tmp/dragon-replay/replay.mjs` (outside the
+repo; usage in its header). Success bar: ≥ 90% correct click or clean failure, 0 wrong-row clicks.
+If Gemini still misses dense lists, next levers are a numbered-grid overlay, then local OCR
+(which would need an AGENTS.md invariant change).
+
+
+## 2026-09-29 — screen_click accessibility-tree toggle
+
+- Settings → "Screen click lookup": Vision model (default) or Accessibility tree (experimental).
+- `automation.findAccessibleElements(terms)` (macOS: JXA + AX C API; Windows: UIA) returns
+  labelled elements whose label contains a search term. `executeAccessibilityClick()` in
+  `src/main/pipeline.ts` filters with `labelMatches`, keeps on-screen ones, dedupes, and reuses Jev
+  disambiguation when several remain.
+
+**Verified here (real macOS):** `npm run typecheck` passes. The exact embedded JXA script was run
+against live apps: System Settings "general" → one element, "General" at (293,409) 74×24, 567ms;
+Slack "harshit" → Activity rows, 297ms; frontmost Warp → 0 elements (no AX tree). **Not run:** a
+full voice-to-click through Dragon in this mode, and anything on Windows (UIA script unverified).
+Next: try Slack "Harshit" and System Settings "General"/"Screen Time" in both modes; compare hit
+rate and `pipeline.execution.executionMs`.
+
+
+## 2026-09-29 - auto mode
+
+- Added `"auto"` screen click mode (default), Electron-only AX retry, and the Jev app-intent override fix. Typecheck passes; not run end-to-end. To test: Warp "click Spring Boot" (falls back to vision), System Settings "click General" (accessibility), "click on Chrome" (focuses Chrome).
+
+## 2026-10-01 - implicit click verbs, numbered picker, keyterms
+
+- **Decision:** (1) "select/choose/pick/change to/set to/turn on/turn off/toggle X" route to `screen_click` (`extractImplicitClickTarget`); "go to"/"switch to" excluded (app launch / search_in_app own them), "select all" excluded. (2) When 2+ matches remain and Jev is not confident, Dragon no longer clicks the first; it sets `pendingChoice` and shows "Which one? Say a number" in the overlay. The next final utterance "1".."5" clicks, "cancel" clears, anything else clears. (3) Added select/choose/toggle/cancel to `STT_KEYTERMS`.
+- **Reason:** user had to say "click" every time, and Slack duplicate names clicked the wrong row. Wispr Flow has no developer API (cloud consumer app), so it cannot replace Deepgram; local Whisper deferred.
+- **Consequences:** picker is text in the overlay (no on-screen badges). "Click this" cursor hit-test, dynamic app-name keyterms and `stt.low_confidence` logging are not done. Typechecked only; not run through Dragon. Unknown whether numeric replies pass the always-listening addressed gate.
+
+## 2026-10-01 - picker hardening
+
+- **Decision:** Ambiguous click prompt throws ChoiceRequiredError (overlay listening, outcome ignored, not an error). Reply path dedupes via executedUtterances, records history, surfaces clickAt failures, accepts homophones (won/to/too/for), drops the choice if the frontmost app changed, and ignores non-final turns while a choice is live.
+- **Reason:** Prompt looked like a failure; reply path skipped duplicate suppression; stale coordinates and misheard numbers.
+- **Consequences:** Typechecked only; not run on hardware.
+
+## 2026-10-01 - Windows corporate TLS interception fix
+
+**Symptom:** certificate failure running the built app on a Windows machine. The macOS fix from
+2026-09-28 turned out never to have applied on Windows: `src/main/system-ca.ts` opened with
+`if (process.platform !== "darwin") return;`, so `trustSystemCaCerts()` was a no-op there and
+Dragon connected with Node's bundled CAs only. Same root cause as the macOS report — Node doesn't
+read the OS trust store, so an MDM/TLS-inspection root is invisible to it.
+
+**Change** (`src/main/system-ca.ts` only; no other file touched). The cert source is now chosen
+per platform and the existing `tls.createSecureContext` merge is shared by both:
+- `win32` (new): reads `Cert:\CurrentUser\Root` and `Cert:\LocalMachine\Root` via
+  `powershell.exe -NoProfile -NonInteractive -Command`, deduped by thumbprint, emitted as PEM.
+  Reading `LocalMachine\Root` needs no elevation.
+- `darwin`: unchanged (`security find-certificate -a -p /Library/Keychains/System.keychain`).
+- `main.system_ca_loaded` now carries `platform` as well as `certCount`, so one log line says
+  which branch ran.
+
+**Verified here (Linux, no Windows machine available).** Throwaway harness in `/tmp/opencode`
+(never committed; AGENTS.md forbids test suites) stubs `electron`, forces `process.platform`,
+and stubs `execFileSync` to return a PowerShell-shaped PEM. Against a locally generated
+root -> intermediate -> leaf chain shaped like real interception:
+- Before the patch, handshake fails `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` (the real symptom).
+- After, `tls.connect` succeeds, `https.get` returns 200 (the `ws`/Deepgram path) and global
+  `fetch()` returns 200 (the Jev/vision path).
+- The merged `ca` array held all 121 Node bundled roots plus the injected one, so public CAs
+  were not un-trusted by the merge.
+- A server signed by an unrelated CA is still rejected (`DEPTH_ZERO_SELF_SIGNED_CERT`) — roots
+  are merged, verification is not disabled.
+- An explicit caller-supplied `ca` is still passed through untouched.
+- macOS branch re-checked after the refactor: same `security find-certificate` call, certs
+  merged, bundled roots intact.
+
+**Not verified:** no real `powershell.exe` ran (none on this host), so the script is correct by
+inspection only, and nothing has run on Windows hardware. `npm run package:win` also can't run
+here — `scripts/build-release.js` refuses a Windows target on Linux without `wine` because
+electron-builder needs `rcedit` to stamp the icon, and without it Windows won't launch the exe.
+Build on the Windows machine instead.
+
+**Trap found while verifying, worth not re-introducing:** if a PEM's last base64 line isn't
+newline-separated from the `-----END CERTIFICATE-----` armour, Node **silently ignores that
+certificate** — no throw, just `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` at connect time (confirmed:
+`ERR_OSSL_PEM_BAD_END_LINE`). `[Convert]::ToBase64String(bytes, "InsertLineBreaks")` breaks every
+64 chars but emits no trailing break, so the script's `AppendLine($b64)` is load-bearing. A plain
+`Append` there would make the whole fix a silent no-op.
+
+**To verify on Windows:** run the app, then check `%APPDATA%\Dragon\logs\dragon-*.jsonl` for
+`main.system_ca_loaded` (`platform: "win32"`, `certCount` in the hundreds) followed by
+`stt.connected` -> `stt.session_connected` -> `decision.response`. `main.system_ca_load_failed`
+means the PowerShell read threw; no line at all means the store held nothing extra.
+
+### Follow-up: first Windows log was ambiguous (2026-10-01, later same day)
+
+The first build carrying the Windows branch produced logs with **no** `main.system_ca_*` line at
+all: neither `loaded` nor `load_failed`, on either of two sessions. `stt.socket_error` was
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` as before. That absence was undiagnosable because the code had
+`if (certs.length === 0) return;` — a zero-cert read logged nothing, which is byte-identical to
+the code not having run (stale build). Removed the early return; zero is now a logged result.
+
+Also observed in that log, independent of the fix: on 2026-09-29 the same machine had
+`stt.connected` at 20:21/20:22 **and** `stt.socket_error` at 20:25. So the failure is
+intermittent on a per-run basis, which fits a network-dependent TLS-inspecting proxy (different
+network/VPN state) rather than a permanently missing root.
+
+Second change in the same pass, for robustness: the Windows read now uses .NET's `X509Store`
+directly instead of the `Cert:` PowerShell drive. The drive is a module-provided convenience layer
+and can be unavailable under AppLocker/WDAC, which failed silently; the API cannot. Each store is
+independently try/caught so one unreadable store can't hide the other's certs, and a failure
+message rides on stdout as `#error <store> <message>` (stderr is only reachable through a thrown
+error's message, i.e. never on the success path).
+
+**Verified on Linux** (harnesses in `/tmp/opencode`, not committed):
+- Empty stores -> `main.system_ca_loaded` `certCount:0` `LocalMachine:0` `CurrentUser:0` is
+  logged (previously silent). This is the regression guard for the ambiguity above.
+- One store errors -> the other still contributes: `certCount:1` plus
+  `CurrentUser_error:"The system cannot find the file specified"`.
+- `#store`/`#error` lines are parsed out of stdout into the log and never reach the `ca` array.
+- All prior TLS checks still pass: fails `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` before the patch;
+  succeeds after via `tls.connect`, `https.get` and global `fetch()`; all 121 Node bundled roots
+  retained; an unrelated CA still rejected; explicit caller `ca` untouched.
+- macOS branch re-checked: unchanged.
+
+**Still not verified:** no real `powershell.exe`, no Windows hardware. The next Windows log now
+distinguishes all three cases that were previously conflated:
+`certCount` in the hundreds = loaded; `certCount:0` = read succeeded, store genuinely held nothing
+extra (interception then isn't the cause and the diagnosis must be revisited); `*_error` or
+`main.system_ca_load_failed` = the read itself failed, with the reason.
+
+### Resolved on Windows hardware (2026-10-02)
+
+Reported working on the user's Windows machine after a clean rebuild
+(`%LOCALAPPDATA%\Programs\Dragon` and `release\` removed first, then `npm run package:win` from
+current source). The Deepgram `wss://` connects and Jev/OpenRouter responds, no
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE`.
+
+**The earlier "still broken after installing the latest build" was a stale binary, not a failed
+fix.** Two causes compounded: `artifactName` is `Dragon-${version}-${arch}-Setup.exe` and the
+version was still `0.1.1`, so every rebuild had an identical filename with nothing to signal it
+was new; and installing the same version over an existing same-version install is a reliable way
+to keep running the old binary on Windows. `scripts/build-release.js` also does not clear
+`release/` before packaging. The log settled it: that build emitted no `main.system_ca_*` line
+at all, which the current code makes impossible on Windows (every launch logs exactly one of
+`..._loaded` / `..._load_failed`). Version was deliberately NOT bumped to work around this.
+
+Worth remembering for any future "I rebuilt and it still fails" report on this project: check
+whether the log shows the code's own fingerprint before believing the fix was exercised. The
+earlier round of this same issue was spent chasing a stale binary partly because the zero-cert
+path logged nothing, making old and new code indistinguishable in the log.
+
+**Caveat on the causal claim.** Intermittent by nature: on 2026-09-29 the packaged build logged
+`stt.connected` at 20:21/20:22 and `stt.socket_error` at 20:25 on the same machine, so the
+failure tracked network/VPN state rather than the binary. Whether the corporate root was actually
+present in the Windows store on the working run is not yet confirmed from the log's `certCount` —
+if that value turns out to have been 0, the fix was not the cause and the original failure needs
+re-diagnosis. Worth one `Select-String` for `system_ca` over `dragon-2026-10-02.jsonl`.
+
+### Confirmed: 59 roots merged, interception was the cause (2026-10-02)
+
+The working packaged build's log:
+
+```
+{"stage":"main.system_ca_loaded","platform":"win32","certCount":59,"LocalMachine":59,"CurrentUser":0}
+```
+
+This closes the open item above, and in the direction that confirms the fix:
+
+- The new code definitely ran (`main.system_ca_loaded` is a fingerprint the old code cannot emit).
+- The PowerShell read worked. Both stores were attempted and **neither errored**; `CurrentUser: 0`
+  means CurrentUser was read and genuinely empty, not silently skipped — which the old
+  `Cert:`-drive version could not distinguish from a failure.
+- 59 roots were merged into Node's CA set alongside its bundled 121, all from `LocalMachine`,
+  which is where MDM/inspection agents install theirs.
+
+The trust store is the only functional difference between the failing build and this one (same
+Electron 33.4.11, same Node 20.18.3, same machine), and the outcome went fail -> pass, so one of
+those 59 was the missing chain anchor. That is the causal claim, and it now rests on the log
+rather than on inference.
+
+**Residual, stated honestly:** which of the 59 is the inspection root isn't recorded, so the
+identification is "one of these 59" rather than a named cert. Naming it would mean logging
+certificate subjects (or an admin-scope PowerShell query on the Windows box), which isn't worth
+another build-and-run cycle for an app that now works. The 09-29 intermittency — same binary
+connecting at 20:21 and failing at 20:25 — also means network/VPN state was a possible
+co-factor; the fix removed the cert problem, but the trigger may still be network-dependent.
+
+## Windows accessibility click matched nothing (2026-10-02)
+
+**Symptom:** accessibility-based `screen_click` never worked on Windows; the same commands worked
+smoothly on macOS. `auto` mode hid it completely, because a miss just logs
+`screen_click.fallback` and silently uses vision instead — so "accessibility is broken" was never
+visible as an error.
+
+**How it was found.** Not by reading the code. Component probes were run against the reported
+machine first, and two plausible theories were killed by measurement rather than argument:
+
+- *"Chrome doesn't expose page content to UIA"* — true, but irrelevant: the user was testing
+  native OS UI (Windows Settings), not a webpage.
+- *"the unbounded `Descendants`/`TrueCondition` walk blows the 10s timeout"* — false on this
+  machine: 148 elements read in ~33ms against a 10,000ms budget.
+
+Reproducing `findAccessibleElements()` verbatim (same `Add-Type` block, same
+`GetForegroundWindow()`, same filter loop, same `ConvertTo-Json`) with instrumentation at each
+stage then showed the real cause in one line.
+
+**Root cause.** The terms line was
+
+```powershell
+$terms = @('["a","b"]' | ConvertFrom-Json)
+```
+
+`ConvertFrom-Json` emits a JSON array as a *single* pipeline object, and `@()` wraps that object
+without flattening it. So `$terms` was a 1-element array whose element is an `Object[]`, not two
+strings — the run printed `terms parsed: System.Object[]  count=1`. The filter then called
+`$label.Contains($_)`, and `String.Contains(String)` cannot accept an `Object[]`, so every
+comparison threw, nothing matched, and the result was always an empty list.
+
+macOS never hit this: it passes the JSON as an `osascript` **argument** (`run("osascript", [...,
+JSON.stringify(terms)])`), where JXA parses it into a proper flat array. Only the Windows path
+inlined the JSON into a script string and piped it through `ConvertFrom-Json`.
+
+Measured against a real Windows Settings window: **144 elements, 120 named labels** — including
+`System`, `Bluetooth & devices`, `Accessibility`, `Privacy & security` — and **0 matches**. The
+accessibility read was never the problem; matching was.
+
+**Fix** (`src/automation/windows.ts`): inline the terms as a flat PowerShell array literal,
+`@('system','bluetooth')`, which removes the pipeline-flattening subtlety entirely. `psQuote`
+already doubles embedded single quotes and single-quoted PowerShell strings treat backticks
+literally, so inlining has no other escape to get wrong. Also added the guard macOS already had:
+empty stdout or a zero-size window now throws a message naming the cause instead of
+`JSON.parse("")` -> `Unexpected end of JSON input`.
+
+**Verified on the reported machine** (fixed script, real Windows Settings window):
+
+```
+### terms count=2 type=String values=system,bluetooth
+### window=[Settings]
+### elements=148  MATCHED=4
+    'System' at 1409,795 419x54
+    'Bluetooth & devices' at 1409,855 419x54
+    'Bluetooth devices' at 1910,1341 744x126
+    'Bluetooth devices' at 1948,1379 668x40
+```
+
+**Still to do:** rebuild and confirm end-to-end through Dragon itself ("click Bluetooth" in
+Settings, in accessibility mode). Note that substring matching legitimately returns several
+candidates here (sidebar item plus page content), which is what the numbered picker
+(`pendingChoice`, see the 2026-10-01 picker entries) exists to resolve.
+
+**Lesson worth keeping:** the two most confident theories were both wrong, and both were cheap to
+test directly. Two earlier probes were also thrown off by measuring the wrong window — the
+foreground window was the terminal running the probe. Target windows by process handle instead of
+by focus when probing this code.
+
+### Verified end-to-end on Windows; three residual misses (2026-10-02)
+
+Read the real Windows logs directly (this dev host is WSL2 with `/mnt/c` mounted, so
+`%APPDATA%\Dragon\logs` is readable from here — no need to paste).
+
+**Accessibility matching is fixed.** Nine `automation.click_at` events with
+`method:"accessibility"` and no vision fallback, across two sessions:
+
+- maximized Settings (`-7,-7 2575x1455`): `Gaming` rel(242,730), `Windows Update` rel(242,909)
+- restored Settings (`915,346 1415x641`): `System` rel(704,476), `Bluetooth & devices`
+  rel(704,536) — `Bluetooth` matched **5** labels, deduped to 1 candidate, clicked cleanly, which
+  is exactly what the standalone verify script predicted
+- earlier session: `System`, `Home`, `Personalization`, all correct sidebar positions
+
+`main.system_ca_loaded` also appears once per session, so the CA-trust fix is live in the
+packaged build.
+
+**Three misses remain, all in `accessibility` mode** (so they surface as errors rather than silent
+vision fallbacks, per `executeScreenClick`'s `AccessibilityMissError` handling):
+
+```
+20:41:17  Could not find "Windows Update"
+20:41:35  Could not find "gaming"
+20:41:39  Could not find "accounts"
+```
+
+Each follows a successful click that navigated Settings to a new page, and the window changed
+from maximized to restored mid-sequence. The most likely explanation is that a narrower Settings
+window collapses its navigation pane, so those sidebar labels are genuinely absent from the UIA
+tree. **Not proven from this log**: whether UIA returned 0 labels or the window-bounds /
+`labelMatches` filters dropped them. That distinction is precisely what the `screen_click.ax_lookup`
+event added in commit `7d26bee` records, and that commit landed *after* the run being read here —
+so the next attempt answers it directly.
+
+**Not yet done:** no confirmed root cause for the three misses, and no fix attempted for them.
+
+## 2026-10-02 Windows scroll-into-view + literal click override
+
+- `src/automation/windows.ts` `findAccessibleElements`: if a matched element is `IsOffscreen`, empty, or outside the window rect, call UIA `ScrollItemPattern.ScrollIntoView()` and re-read its bounds. Targets the `matchCount:1, candidateCount:0` misses in the restored window (session `sess_muq1lven_g5h4hy`).
+- `src/decision/resolve.ts` `isDeterministicScreenClick` + `src/main/pipeline.ts`: a literal "click/tap X" on a final turn (not in dictation/workflow) skips the not-addressed gate and the `none`/low-confidence drop. Fixes "Click system." being ignored.
+- Verified: `npx tsc --noEmit` clean. **Not run on Windows hardware.** Does not help if the nav pane collapses into a hamburger menu.
+- `activateApp` (`windows.ts`): UWP apps such as Settings (`SystemSettings`) have no `MainWindowHandle` on their own process, so activation relaunched, polled the full 6s and logged `focused:false`. It now falls back to an `ApplicationFrameHost` window whose `MainWindowTitle` equals the alias label. `tsc` clean; not run on Windows.
+- Open: merging lookup + click into one PowerShell call.
+
+
+## 2026-10-02 Windows DPI awareness, WhatsApp.Root, Chrome-only page elements
+
+- CLICK_WIN32_TYPE (src/automation/windows.ts) now calls SetProcessDPIAware() in a static constructor. UIA returned physical pixels while GetWindowRect/SetCursorPos used scaled ones on a >100% display (Settings "Dark" at y=1834 vs a 1455px-tall window), so lower elements were filtered out and clicks were mis-positioned. Unverified on Windows.
+- registry-windows.ts: whatsapp now uses process WhatsApp.Root and launch token whatsapp:. Process name is a guess until confirmed by Get-Process.
+- pipeline.ts: Chrome page elements are ignored unless Chrome is frontmost (lastActiveApp reused on cache hits), so "click add device" in a native app no longer becomes chrome_click.
+
+## 2026-10-02 Windows UIA lookup: scroll only when nothing visible, WebView2 retry
+- findAccessibleElements (windows.ts) now collects matches without scrolling and only calls ScrollIntoView when no match is already on-screen (scrolling every off-screen match shifted the page before the click; Settings sections).
+- Retries FindAll once after 700ms when <10 elements are named (WebView2/WhatsApp builds its UIA tree lazily). Unverified on Windows; if WhatsApp still returns 0 matches, dump its UIA tree.
+- Note: the "try Vision screen-click mode" error with no fallback means screenClickMethod is "accessibility", not "auto".
+
+## 2026-10-03 screen click: macOS menu bar + double-click
+- macOS AX lookup also scans the frontmost app menu bar (AXMenuBar top-level items, flagged menu:true so the window-bounds filter keeps them). Submenu items are not built until opened, so only top-level (File, Edit...) are clickable.
+- New "double click X" / "open file X" -> screen_click with double:true; clickAt(x, y, clicks) posts 2 clicks (macOS CGEvent clickState, Windows 2x mouse_event). Pending numbered-choice picks stay single-click.
+- Observed from logs: the Mac log was Cursor, where "click on file" matched "Search Files" because the menu bar was outside the window walk. Type-checked only; not run on a real app, Windows untested.
+- Bare "open package dot json" / "open main.ts [file]" now also double-clicks (OPEN_FILENAME_RE in resolve.ts). Only when no app alias or URL matched and the extension is not a web TLD, so "open google dot com" still navigates. Type-checked and regex-checked on sample phrases; not run in a real app.
+- Numbered-choice picks now keep the original click count (pendingChoice.clicks), so an ambiguous "double click X" still double-clicks after "1".. "5". Supersedes the earlier "picks stay single-click" note. Type-checked only.

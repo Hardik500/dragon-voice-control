@@ -43,7 +43,8 @@ export const APP_ALIASES: Record<string, WinAppAlias> = {
   slack: { launchToken: "slack", processName: "slack", label: "Slack" },
   discord: { launchToken: "discord", processName: "Discord", label: "Discord" },
   zoom: { launchToken: "zoom", processName: "Zoom", label: "Zoom" },
-  whatsapp: { launchToken: "whatsapp", processName: "WhatsApp", label: "WhatsApp" },
+  // Store/WebView2 build runs as WhatsApp.Root (seen in Get-Process 2026-10-02) and registers the whatsapp: protocol.
+  whatsapp: { launchToken: "whatsapp:", processName: "WhatsApp.Root", label: "WhatsApp" },
   telegram: { launchToken: "telegram", processName: "Telegram", label: "Telegram" },
   notion: { launchToken: "notion", processName: "Notion", label: "Notion" },
   obsidian: { launchToken: "obsidian", processName: "Obsidian", label: "Obsidian" },

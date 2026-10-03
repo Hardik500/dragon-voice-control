@@ -1130,3 +1130,265 @@ latter silently patches a throwaway copy. Not yet re-verified against a full `np
 package:mac` build (only the same compiled `dist/` output via `npm run dev`), and not reported
 or reproducible on Windows (no equivalent report there, and no Windows machine available to
 test).
+
+## 2026-09-28 — Added `screen_click`: screenshot + vision-LLM click, scoped to the frontmost window
+
+**Decision:** Added a new `screen_click` intent that screenshots only the frontmost/focused
+app window (`automation.captureFrontmostWindow()`), sends it to a vision-capable model
+(`openai/gpt-4o-mini` via OpenRouter's standard `/api/v1/chat/completions` endpoint — distinct
+from the Jev System One `/systemone` endpoint) asking for the pixel coordinates of a described
+element, then moves the mouse and clicks there in one combined action
+(`automation.clickAt()`). This is an intentional, user-approved exception to the
+"no Accessibility text APIs, no vision" invariant in `AGENTS.md`: the vision call only ever
+returns coordinates, never text content, and never sees more than the one frontmost window.
+
+**Reason:** There was no existing way for Dragon to click a UI element outside the Chrome DOM
+path (native app buttons/icons, menu items, etc.) without either building Accessibility-tree
+traversal per platform or invoking a vision model. Given the alpha's simplicity bias, a single
+screenshot + vision-LLM round trip was chosen over Accessibility APIs, scoped narrowly to one
+intent and one window to keep the exception auditable.
+
+**Consequences:** Requires an OpenRouter API key (reuses `settings.openRouterApiKey`, already
+required for Jev). macOS additionally needs Screen Recording permission on top of Accessibility.
+`screen_click` is deliberately excluded from `INTERIM_ELIGIBLE_INTENTS` in
+`src/decision/resolve.ts` — a screenshot + vision round trip is too slow/expensive to risk
+running twice on an interim transcript that may still change. The Windows implementation
+(`captureFrontmostWindow`/`clickAt` in `src/automation/windows.ts`) is unverified on real
+hardware, same caveat as the rest of that file — see `PROGRESS.md`.
+
+## 2026-09-28 — `clickAt()` on macOS switched from System Events to JXA CGEvent (fixes indefinite hang)
+
+**Decision:** `automation.clickAt()` on macOS now runs a JavaScript-for-Automation script
+(`osascript -l JavaScript`) that posts a raw `CGEvent` mouse click via `ObjC.import('CoreGraphics')`,
+instead of `tell application "System Events" to click at {x,y}`.
+
+**Reason:** Real-device testing of `screen_click` showed `clickAt()` hanging for the full
+osascript timeout every time, even though Accessibility/Screen Recording/Automation permissions
+were all correctly granted (verified in System Settings) and every other System Events call
+(`get name of ...`, `get position of front window`) returned instantly. Root-caused by
+reproducing the hang directly from a fully-trusted terminal (bypassing Dragon/Electron entirely):
+`click at {x,y}` hung only when the frontmost app was Slack (Electron-based), not when clicking
+the terminal's own window. This matches a documented AppleScript limitation (see Keyboard
+Maestro forum thread on `infoForUIElement`/System Events stalls): System Events' `click`
+command hit-tests the target app's accessibility tree to resolve what's under the point, which
+can hang indefinitely for Electron/Chromium-based apps with incomplete/slow-to-expose AX trees —
+not a Dragon-specific permission gap. JXA's `CGEventPost` posts the click at the HID event-tap
+level, skipping AX hit-testing entirely, gated by the same Accessibility permission already
+granted. This is a built-in macOS scripting layer (`osascript -l JavaScript`), not a new
+dependency — no Swift helper, no `cliclick`/Homebrew tool needed.
+
+**Consequences:** Verified from a terminal (`osascript -l JavaScript` posting the click)
+returning in ~0.07s with Slack frontmost, versus the old command hanging 30+ seconds in the
+same scenario. Not yet re-verified end-to-end through the full Dragon pipeline (screenshot →
+vision → click) — retest `screen_click` and check `pipeline.execution` `executionMs` in the
+logs. Only `clickAt()` was changed; all other macOS automation (`hideApp`, `pressNamedKey`,
+`deleteBackward`, window commands, `getActiveAppName`, `captureFrontmostWindow`'s window-bounds
+query) still goes through `osascript`/System Events AppleScript, since those are read-only
+queries or don't hit-test an arbitrary screen point and haven't shown this failure mode.
+
+
+## 2026-09-28 — Confirmed `screen_click` misses are vision-model imprecision, not coordinate math; switched to full `gpt-4o`
+
+**Decision:** Added logging of the raw `x_pct`/`y_pct` from `locateElement()`
+(`vision.locate_element`) and the resolved bounds/scale/screen coordinates from
+`executeScreenClick` (`automation.click_at`) to `src/main/pipeline.ts` and
+`src/decision/vision-client.ts`. Using a real log line (window bounds 1512x949,
+image 1280x803, `x_pct:8, y_pct:22`), verified `scaleX` (1.18125) and `scaleY`
+(1.18182) agree within 0.05% — no aspect distortion, no doubled/halved offset, no
+titlebar miscount. The transform itself is correct. Switched `VISION_MODEL` in
+`src/decision/vision-client.ts` from `openai/gpt-4o-mini` to `openai/gpt-4o`.
+
+**Reason:** Repeated user testing showed `screen_click` landing one row/item off in
+dense UI (Slack sidebar: "security" → "pde-all", "activity" → "my team") even after
+adding `detail: "high"`. The scale-factor math check above ruled out a coordinate
+bug, isolating the cause to `gpt-4o-mini`'s spatial-grounding accuracy on closely-
+packed small targets — the model itself returns a slightly wrong `x_pct`/`y_pct`.
+
+**Consequences:** Higher per-`screen_click` cost and latency (full `gpt-4o` vs
+mini) in exchange for better click accuracy — not yet re-verified end-to-end;
+retest the same dense-sidebar sequence and check whether misses persist. If
+`gpt-4o` still misses on dense lists, the next lever is a two-pass zoom (coarse
+locate → crop → re-locate in the crop) rather than a further model swap, since the
+underlying issue is target density/size in the source image, not model choice
+alone.
+
+## 2026-09-29 — `screen_click` vision model: `gpt-4o` → `google/gemini-3-flash-preview`, boxes instead of points
+
+**Decision:** `VISION_MODEL` in `src/decision/vision-client.ts` is now
+`google/gemini-3-flash-preview` (same OpenRouter endpoint and key). `locateElements()` asks for
+Gemini's native `box_2d` ([ymin,xmin,ymax,xmax], normalized 0–1000) and clicks the box centre.
+Also: screenshots/crops are JPEG instead of PNG; verify crops use `detail:"low"`; disambiguation
+skips Jev when exactly one verified label equals the spoken target; failed/ambiguous clicks save
+the frontmost-window screenshot to the OS temp dir (24h, never uploaded).
+
+**Reason:** The earlier assumption (entry above) that the miss was "target density, not model
+choice" doesn't hold up against published GUI-grounding results: GPT-4o scores 0.8% on
+ScreenSpot-Pro and ~18% on ScreenSpot, Gemini 3 Flash 69.1% on ScreenSpot-Pro (Benchmark Atlas
+leaderboard; GUI-Actor; arXiv 2509.11548). Boxes give the verify crop, dedup and relocate crop
+the element's real extent. JPEG cuts upload size, which dominated the measured round trip; a
+<512px crop loses nothing at `detail:"low"`.
+
+**Consequences:** Reversible by changing one constant (the prompt's `box_2d` format also works
+with other models, with their own grounding accuracy). `max_tokens` was deliberately not set:
+Gemini's reasoning tokens can count against it and truncate the answer. Not yet verified on real
+hardware — see PROGRESS.md 2026-09-29.
+
+
+## 2026-09-29 — screen_click: optional accessibility-tree lookup (toggle)
+
+**Decision:** New setting `screenClickMethod` (`"vision"` default | `"accessibility"`), shown in
+Settings as "Screen click lookup". Accessibility mode finds labelled elements in the frontmost
+window via the OS accessibility tree and clicks the centre of the exact element frame — no
+screenshot, no vision call. macOS walks the tree through the AX C API from JXA (ObjC bridge), not
+System Events; Windows uses UI Automation from PowerShell. No fallback to vision on a miss.
+
+**Reason:** User wants to compare both approaches on real apps. Vision grounding can land one row
+off; AX frames are exact where elements are labelled. System Events was measured too slow (~96
+elements in 6s on System Settings); the AX C API walked 169–504 elements in 0.3–0.8s.
+
+**Consequences:** Unlabelled icon buttons and GPU-rendered apps (Warp exposed 7 elements) aren't
+findable in this mode. Electron apps get `AXManualAccessibility` set (tree built on demand; the
+first walk can be near-empty, so one retry after 0.7s). Slack row descriptions include message
+previews, so labels are capped at 80 chars before logging/Jev. No auto-fallback keeps the two
+methods separately measurable; add one if the experiment favours a hybrid.
+
+
+## 2026-09-29 - screen_click "auto" default; respect Jev app-launch intent
+
+- **Decision:** `screenClickMethod` gains `"auto"` (default): accessibility lookup first, vision on an `AccessibilityMissError`. Logs `screen_click.fallback`. macOS AX retry (0.7s) now only for Electron apps (checks `Electron Framework.framework`). `screenClickOverride` no longer overrides Jev `open_app`/`activate_app` when an app alias matched ("Click on Chrome" was forced to screen_click).
+- **Reason:** Warp exposes 7 unlabelled elements (0/10 hits, ~790ms wasted); 9/9 accessibility clicks in Slack/System Settings were correct.
+- **Consequences:** loose label matches click without vision confirmation. Not yet run through Dragon.
+
+## 2026-10-01 - implicit click verbs, numbered picker, keyterms
+
+- **Decision:** (1) "select/choose/pick/change to/set to/turn on/turn off/toggle X" route to `screen_click` (`extractImplicitClickTarget`); "go to"/"switch to" excluded (app launch / search_in_app own them), "select all" excluded. (2) When 2+ matches remain and Jev is not confident, Dragon no longer clicks the first; it sets `pendingChoice` and shows "Which one? Say a number" in the overlay. The next final utterance "1".."5" clicks, "cancel" clears, anything else clears. (3) Added select/choose/toggle/cancel to `STT_KEYTERMS`.
+- **Reason:** user had to say "click" every time, and Slack duplicate names clicked the wrong row. Wispr Flow has no developer API (cloud consumer app), so it cannot replace Deepgram; local Whisper deferred.
+- **Consequences:** picker is text in the overlay (no on-screen badges). "Click this" cursor hit-test, dynamic app-name keyterms and `stt.low_confidence` logging are not done. Typechecked only; not run through Dragon. Unknown whether numeric replies pass the always-listening addressed gate.
+
+## 2026-10-01 - picker hardening
+
+- **Decision:** Ambiguous click prompt throws ChoiceRequiredError (overlay listening, outcome ignored, not an error). Reply path dedupes via executedUtterances, records history, surfaces clickAt failures, accepts homophones (won/to/too/for), drops the choice if the frontmost app changed, and ignores non-final turns while a choice is live.
+- **Reason:** Prompt looked like a failure; reply path skipped duplicate suppression; stale coordinates and misheard numbers.
+- **Consequences:** Typechecked only; not run on hardware.
+
+## 2026-10-01 - Trust the Windows certificate stores for Node TLS too
+
+**Decision:** `src/main/system-ca.ts` no longer returns early on non-darwin hosts. The
+cert source is chosen per platform — `darwin` keeps `security find-certificate -a -p
+/Library/Keychains/System.keychain` unchanged, `win32` shells out to `powershell.exe -NoProfile
+-NonInteractive -Command` and emits `Cert:\CurrentUser\Root` + `Cert:\LocalMachine\Root` as PEM
+(thumbprint-deduped) — and both feed the *same* existing `tls.createSecureContext` monkey-patch
+that merges them into `tls.rootCertificates`. `main.system_ca_loaded` now also logs `platform`.
+
+**Reason:** The 2026-09-28 macOS fix was gated on `process.platform !== "darwin"`, so Windows got
+no OS trust store at all and Dragon connected with Node's bundled CAs only — reported as a
+certificate failure on the built app on a Windows machine. Identical root cause to the macOS
+report (Node doesn't read the OS trust store, so an MDM/TLS-inspection root is invisible to it),
+which is why the same remedy applies rather than a Windows-specific one. The earlier DECISIONS.md
+entry said this "was not reported or reproducible on Windows"; that was only ever true because
+nothing on Windows implemented it.
+
+**Why PowerShell and not something else:** Node has no API for the Windows certificate store
+(`--use-system-ca` needs Node 22.9+; Electron 33 ships Node 20), `certutil` can't emit a whole
+store as PEM, and `Export-Certificate` takes one file path per certificate, which is untenable
+for a 300-400 entry store. `Get-ChildItem Cert:\...` + `[Convert]::ToBase64String($_.RawData,
+"InsertLineBreaks")` gets the DER bytes directly and stays consistent with this repo's
+"everything on Windows goes through PowerShell" decision. Reading `LocalMachine\Root` does not
+require elevation. Both stores are read because a locally-installed root can land in either.
+
+**The non-obvious part:** a PEM whose last base64 line is not newline-separated from the
+`-----END CERTIFICATE-----` armour is *silently* dropped by Node — no throw at load, just
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY` when connecting. `InsertLineBreaks` emits no trailing break,
+so `$sb.AppendLine($b64)` is load-bearing; a plain `Append` would turn the whole fix into a
+silent no-op that looks exactly like the bug it was meant to fix. Noted in a comment on the
+script so it survives a future "cleanup".
+
+**Consequences:** Stays synchronous on the startup path (before `app.whenReady()`) so there is no
+race with the first TLS connection; the visible cost is a ~1s delay before the tray icon appears
+on Windows, and `timeout: 20_000` bounds it if `powershell.exe` is policy-blocked or wedged (that
+throw is caught and logged as `main.system_ca_load_failed`, not left to hang app launch). Verified
+on Linux only, against a simulated interception chain with a stubbed PowerShell response — see
+PROGRESS.md for exactly what passed and what did not. **No real `powershell.exe` and no Windows
+hardware were involved**, so the script is correct by inspection and the fix is unverified in
+production until run on the reported machine.
+
+## 2026-10-01 - Never let the CA-trust read fail silently
+
+**Decision:** `trustSystemCaCerts()` no longer returns early when it finds zero certificates — it
+logs `main.system_ca_loaded` with `certCount: 0` either way. The Windows read additionally emits
+`#store <location> <count>` / `#error <location> <message>` lines on stdout, parsed into the same
+log event, and reports PowerShell's stderr on the throw path. The Windows read moved from the
+`Cert:` PowerShell drive to .NET's `X509Store`, with each store independently try/caught.
+
+**Reason:** The first build with the Windows branch produced a log with no `main.system_ca_*` line
+at all, which is consistent with three very different situations: the read threw, the read
+succeeded and found nothing, or the build predates the change. A silent zero-cert path was
+converted into an untestable one, and the previous "keep it simplest" instinct — dropping the
+`noop` event — is what caused it. Diagnostics on a code path that only runs at startup, on one
+platform, in a packaged app, are the cheapest possible debugging; silence there is the expensive
+kind.
+
+**Also:** `Cert:` is a module-provided PowerShell drive and can be unavailable under
+AppLocker/WDAC on a locked-down machine, which failed silently and looked identical to "no
+corporate root installed". `X509Store` is the same data via the API with no module dependency.
+
+**Consequences:** The log event's shape is now platform-dependent on Windows (extra `LocalMachine`
+/ `CurrentUser` fields). Startup cost is unchanged (still synchronous, still one PowerShell
+process). Verified on Linux with stubbed PowerShell output only — the script itself has still
+never been executed by a real `powershell.exe`.
+
+## 2026-10-02 - Version stays 0.1.1; verify builds by log fingerprint instead
+
+**Decision:** Do not bump the version to make rebuilds distinguishable. Confirmed by the user.
+
+**Reason:** `scripts/release.js` owns versioning, tagging and publishing, so the version is not a
+tool for diagnosing a stale local build. Hand-editing it would cut across that.
+
+**Consequences:** `artifactName` stays `Dragon-${version}-${arch}-Setup.exe`, so rebuilding at an
+unchanged version yields an identically-named installer and nothing signals that a new binary was
+produced — this is what made a stale build look like a failed fix here. Until the release process
+is revisited, a rebuild should be verified by (a) deleting `%LOCALAPPDATA%\Programs\Dragon` and
+`release/` before building, and (b) checking the log for the code's own fingerprint
+(`main.system_ca_loaded` / `main.system_ca_load_failed`, which every Windows launch now emits)
+rather than trusting the installer filename.
+
+## 2026-10-02 - Inline Windows AX terms as a flat literal, never JSON | ConvertFrom-Json
+
+**Decision:** `findAccessibleElements()` builds `$terms` as a flat PowerShell array literal,
+`@('system','bluetooth')`, instead of `@('["system","bluetooth"]' | ConvertFrom-Json)`. Also added
+the "no usable frontmost window" guard that macOS already had.
+
+**Reason:** `ConvertFrom-Json` emits a JSON array as a single pipeline object, and `@()` wraps it
+without flattening, so `$terms` was a 1-element array containing an `Object[]`. The filter's
+`$label.Contains($_)` therefore passed an `Object[]` to a `String` parameter, which throws — every
+element was skipped, so accessibility mode matched nothing on Windows and `auto` mode silently
+used vision instead. Measured on the reported machine: 120 named labels available, 0 matched.
+macOS was unaffected only because it passes the JSON as an `osascript` argument, where JXA parses
+it flat.
+
+**Consequences:** A PowerShell array literal has no pipeline-enumeration semantics to get wrong,
+which is the property that matters here — the previous form looked correct and was silently wrong
+for the entire life of the feature. Separately: `auto` mode makes any accessibility failure
+invisible by design (it falls back to vision), so accessibility bugs must be reproduced in
+`accessibility` mode or they cannot be observed at all. Worth remembering next time a
+platform-specific path "works on macOS and not on Windows": reproduce the exact script against the
+real machine before theorising. Two confident theories here (Chrome's UIA tree, and the 10s
+timeout) were both wrong, and both were falsified in a single measurement each. Not yet re-run
+end-to-end through Dragon.
+
+## 2026-10-02 Literal "click X" bypasses Jev's confidence gate
+
+**Decision:** `isDeterministicScreenClick` exempts the explicit click/tap verb (not implicit verbs like "select") from the `none`/low-confidence gate on final turns outside dictation/workflow.
+
+**Reason:** Jev scored "Click system." as `none` 0.45 and it was dropped, the same class of miss as plain "open <app>".
+
+**Consequences:** A spoken "click X" always attempts a screen click when there are no page-element candidates. Don't generalize this to other verbs.
+
+
+## 2026-10-02 Windows scripts are DPI-aware; page elements only when Chrome is frontmost
+
+- Decision: DragonClickWin32 calls SetProcessDPIAware() so lookup, capture and click all use physical pixels. Reason: UIA vs GetWindowRect/SetCursorPos mismatch at >100% scaling. Consequence: coordinates are physical pixels throughout the Windows path.
+- Decision: extractPayload gets the browser page only when the frontmost app is Chrome (or unknown). Reason: stale tab elements hijacked native-app clicks. Consequence: browser DOM actions need Chrome focused.
+
+## 2026-10-02 Scroll only when no visible match
+Decision: two-pass UIA lookup, scroll off-screen matches only if no on-screen match exists. Reason: scrolling for every match moved the page under the chosen target. Consequence: a target that exists both visible and hidden never triggers scrolling. WebView2 retry added (700ms, once).

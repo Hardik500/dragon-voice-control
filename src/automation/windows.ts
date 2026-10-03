@@ -57,6 +57,30 @@ const WIN32_TYPE = `Add-Type -Namespace Dragon -Name Win32 -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 '@`;
 
+/** Second, self-contained P/Invoke type block for vision-based clicking. Kept separate from
+ * `WIN32_TYPE`'s lightweight `-MemberDefinition` form because `GetWindowRect` needs a `RECT`
+ * struct, which requires a full `-TypeDefinition` class. */
+const CLICK_WIN32_TYPE = `Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class DragonClickWin32 {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  // Without this, UIA returns physical pixels while GetWindowRect/SetCursorPos use scaled ones on a
+  // >100% display, so lower elements looked outside the window and clicks landed off-target
+  // (observed 2026-10-02: "Dark" at y=1834 vs a 1455px-tall window). The static constructor runs
+  // before the first call into this class, making all three agree on physical pixels.
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  static DragonClickWin32() { SetProcessDPIAware(); }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern void SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, UIntPtr dwExtraInfo);
+}
+'@`;
+const MOUSEEVENTF_LEFTDOWN = 0x0002;
+const MOUSEEVENTF_LEFTUP = 0x0004;
+
 const KEYEVENTF_EXTENDEDKEY = 0x0001;
 const KEYEVENTF_KEYUP = 0x0002;
 const SW_MINIMIZE = 6;
@@ -200,14 +224,19 @@ export async function activateApp(aliasKey: string): Promise<void> {
     const exe = findChromeExe();
     if (exe) launchTarget = exe;
   }
+  // UWP apps (Settings, Photos, ...) have no MainWindowHandle on their own process: the visible
+  // window is owned by ApplicationFrameHost and titled with the app's label. Without this
+  // fallback "open settings" relaunched, polled the full 6s and reported focused:false.
+  const findProcs = `$procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+  if (-not $procs) { $procs = Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq '${psQuote(alias.label ?? alias.processName)}' } }`;
   const script = `${WIN32_TYPE}
-$procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+${findProcs}
 if (-not $procs) {
   Start-Process '${psQuote(launchTarget)}'
   $deadline = (Get-Date).AddSeconds(${ACTIVATE_LAUNCH_WAIT_SECONDS})
   do {
     Start-Sleep -Milliseconds 150
-    $procs = Get-Process -Name ${procName} -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+    ${findProcs}
   } while (-not $procs -and (Get-Date) -lt $deadline)
 }
 $procs = ${preferLabeledWindow(alias.label)}
@@ -471,4 +500,134 @@ if ($procId -ne 0) {
     logger.error("automation.get_active_app", err);
     return null;
   }
+}
+
+/** Unverified on real Windows hardware — see PROGRESS.md. */
+export async function captureFrontmostWindow(): Promise<{
+  imageBase64: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  imageWidth: number;
+  imageHeight: number;
+}> {
+  const script = `${CLICK_WIN32_TYPE}
+Add-Type -AssemblyName System.Drawing
+$h = [DragonClickWin32]::GetForegroundWindow()
+$rect = New-Object DragonClickWin32+RECT
+[void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
+$x = $rect.Left; $y = $rect.Top; $w = $rect.Right - $rect.Left; $ht = $rect.Bottom - $rect.Top
+$bmp = New-Object System.Drawing.Bitmap $w, $ht
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $ht))
+$tmpFile = [System.IO.Path]::GetTempFileName() + '.jpg'
+$bmp.Save($tmpFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+Write-Output "$x|$y|$w|$ht|$tmpFile"`;
+  const { stdout } = await runPowerShell(script);
+  const parts = stdout.trim().split("|");
+  if (parts.length !== 5) throw new Error("Could not capture the frontmost window.");
+  const [xs, ys, ws, hs, tmpFile] = parts;
+  try {
+    const buf = await fs.promises.readFile(tmpFile);
+    const width = parseInt(ws, 10);
+    const height = parseInt(hs, 10);
+    return {
+      imageBase64: buf.toString("base64"),
+      bounds: { x: parseInt(xs, 10), y: parseInt(ys, 10), width, height },
+      // CopyFromScreen captured exactly width x height pixels, so this is a 1:1 ratio today —
+      // unverified on a real HiDPI Windows display (see PROGRESS.md), but keeps the interface
+      // consistent with macOS's captureFrontmostWindow().
+      imageWidth: width,
+      imageHeight: height,
+    };
+  } finally {
+    fs.promises.unlink(tmpFile).catch(() => {});
+  }
+}
+
+/** Unverified on real Windows hardware — see PROGRESS.md. */
+export async function clickAt(x: number, y: number, clicks = 1): Promise<void> {
+  const script = `${CLICK_WIN32_TYPE}
+[DragonClickWin32]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})
+Start-Sleep -Milliseconds 50
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTDOWN}, 0, 0, 0, [UIntPtr]::Zero)
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)`.concat(
+    clicks > 1 ? `
+Start-Sleep -Milliseconds 60
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTDOWN}, 0, 0, 0, [UIntPtr]::Zero)
+[DragonClickWin32]::mouse_event(${MOUSEEVENTF_LEFTUP}, 0, 0, 0, [UIntPtr]::Zero)` : ""
+  );
+  await runPowerShell(script);
+}
+
+/** UI Automation counterpart of macOS's AX lookup: descendants of the foreground window whose
+ * Name contains any term.
+ *
+ * **The terms must be inlined as a flat PowerShell array literal, never as JSON piped through
+ * `ConvertFrom-Json`.** That is the bug this function shipped with, and it made accessibility
+ * mode silently dead on Windows while macOS worked: `ConvertFrom-Json` emits a JSON array as a
+ * *single* pipeline object, so `$terms = @('["a","b"]' | ConvertFrom-Json)` yields a 1-element
+ * array whose one element is itself an `Object[]` — not 2 strings. The filter below then calls
+ * `$label.Contains($_)`, and `String.Contains(String)` cannot accept an `Object[]`, so every
+ * comparison threw, nothing ever matched, and "auto" mode quietly fell back to vision. Observed
+ * 2026-10-02: a real Windows Settings window exposed 144 elements / 120 named labels including
+ * "System", "Bluetooth & devices" and "Accessibility", and still matched 0 of them.
+ *
+ * macOS never hit this because it passes the JSON as an `osascript` *argument*, where JXA parses
+ * it into a proper flat array. Only the Windows path inlines it into a script string.
+ *
+ * `psQuote` doubles embedded single quotes, which is all inlining needs: PowerShell
+ * single-quoted strings treat backticks literally, so there is no other escape to get wrong. */
+export async function findAccessibleElements(terms: string[]): Promise<{
+  window: { x: number; y: number; width: number; height: number };
+  elements: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+}> {
+  const script = `${CLICK_WIN32_TYPE}
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$terms = @(${terms.map((t) => `'${psQuote(t)}'`).join(",")})
+$h = [DragonClickWin32]::GetForegroundWindow()
+$rect = New-Object DragonClickWin32+RECT
+[void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+$cond = [System.Windows.Automation.Condition]::TrueCondition
+$scope = [System.Windows.Automation.TreeScope]::Descendants
+$all = $root.FindAll($scope, $cond)
+# WebView2/Electron apps (WhatsApp) build their UIA tree lazily after the first query; the first FindAll can come back nearly empty. Retry once if almost nothing is named.
+if (@($all | Where-Object { $_.Current.Name }).Count -lt 10) { Start-Sleep -Milliseconds 700; $all = $root.FindAll($scope, $cond) }
+$good = @(); $bad = @()
+foreach ($e in $all) {
+  $n = $e.Current.Name
+  if (-not $n) { continue }
+  $l = $n.ToLower()
+  if (-not ($terms | Where-Object { $l.Contains($_) })) { continue }
+  $r = $e.Current.BoundingRectangle
+  if (-not ($e.Current.IsOffscreen -or $r.IsEmpty -or $r.Left -lt $rect.Left -or $r.Top -lt $rect.Top -or $r.Right -gt $rect.Right -or $r.Bottom -gt $rect.Bottom)) { $good += ,@{ label = $n; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height } }
+  else { $bad += ,$e }
+}
+$els = $good
+# Only scroll when nothing matching is already visible: scrolling shifts the page, so doing it for every off-screen match moved the on-screen target before the click (observed 2026-10-02, Settings sections).
+if ($good.Count -eq 0) {
+  $els = @(foreach ($e in $bad) {
+    $r = $e.Current.BoundingRectangle
+    try {
+      $sp = $null
+      if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$sp)) { $sp.ScrollIntoView(); Start-Sleep -Milliseconds 80; $r = $e.Current.BoundingRectangle }
+    } catch {}
+    if ($r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0) { continue }
+    @{ label = $e.Current.Name; x = $r.X; y = $r.Y; width = $r.Width; height = $r.Height }
+  })
+}
+ConvertTo-Json -Compress -Depth 4 -InputObject @{ window = @{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top }; elements = $els }`;
+  const { stdout } = await runPowerShell(script);
+  // macOS already guards its parsed result (`macos.ts`); without this, a zero HWND or any PowerShell
+  // error on stdout produced `JSON.parse("")` -> "Unexpected end of JSON input", which names
+  // neither the cause nor the platform. See the term-inlining note above for why silent failure
+  // here cost a full debugging round.
+  const out = stdout.trim();
+  if (!out) {
+    throw new Error("The accessibility lookup returned no output — the frontmost window may have closed, or PowerShell failed before producing JSON.");
+  }
+  const parsed = JSON.parse(out);
+  if (!parsed?.window || parsed.window.width <= 0 || parsed.window.height <= 0) {
+    throw new Error("The accessibility lookup found no usable frontmost window — GetForegroundWindow() may have returned a hidden or zero-size window.");
+  }
+  return parsed;
 }
