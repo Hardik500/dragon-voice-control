@@ -234,7 +234,7 @@ export class DragonPipeline {
    * as any other command continue being typed verbatim, without repeating "type" each time. */
   private dictationActive = false;
   /** Ambiguous screen_click awaiting a spoken number; screen coordinates, cleared on next utterance. */
-  private pendingChoice: { app: string | null; expiresAt: number; options: { label: string; x: number; y: number }[] } | null = null;
+  private pendingChoice: { app: string | null; expiresAt: number; clicks: number; options: { label: string; x: number; y: number }[] } | null = null;
   /** Everything typed in the current dictation session, kept in sync with what's on screen
    * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
    * instead of guessing. Cleared when dictation ends. */
@@ -1585,7 +1585,7 @@ export class DragonPipeline {
       // PROGRESS.md 2026-09-29.
       disambiguated = true;
       saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
-      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal);
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal, clicks);
     }
 
     // The vision model's point is in the sent image's pixel space, which can differ from
@@ -1660,7 +1660,7 @@ export class DragonPipeline {
       throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
     }
     const point =
-      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal);
+      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal, clicks);
     const screenX = window.x + point.x;
     const screenY = window.y + point.y;
     logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
@@ -1721,7 +1721,8 @@ export class DragonPipeline {
     area: { width: number; height: number },
     toScreen: (p: ScreenPoint) => { x: number; y: number },
     settings: DragonSettings,
-    signal: AbortSignal
+    signal: AbortSignal,
+    clicks = 1
   ): Promise<ScreenPoint> {
     // Exactly one read-back equals the spoken target (e.g. "Harshit" vs "Harshit Agarwal") —
     // no need to ask Jev.
@@ -1766,6 +1767,7 @@ export class DragonPipeline {
     this.pendingChoice = {
       app: await automation.getActiveAppName().catch(() => null),
       expiresAt: Date.now() + PENDING_CHOICE_TTL_MS,
+      clicks,
       options: ordered.map((c) => ({ label: c.label, ...toScreen(c) })),
     };
     const list = ordered.map((c, i) => `${i + 1}: "${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`).join("; ");
@@ -1793,7 +1795,7 @@ export class DragonPipeline {
         return { error: "Window changed, try again" };
       }
       logger.event("screen_click.choice_picked", { n, label: choice.label });
-      await automation.clickAt(choice.x, choice.y);
+      await automation.clickAt(choice.x, choice.y, pending.clicks);
       return { error: null };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
