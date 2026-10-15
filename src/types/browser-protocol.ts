@@ -26,6 +26,7 @@ export type ExtensionToServerMessage =
       title: string;
       focusedElementId: string | null;
       elements: WireElement[];
+      error?: string;
     }
   | { type: "action_result"; requestId: string; ok: boolean; error?: string };
 
@@ -44,4 +45,4 @@ export type BrowserAction =
   | { kind: "reload" }
   | { kind: "new_tab" }
   | { kind: "close_tab" }
-  | { kind: "switch_tab"; direction: string };
+  | { kind: "switch_tab"; direction: string; index?: number; title?: string };

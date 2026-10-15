@@ -1,10 +1,11 @@
-import { clipboard, nativeImage } from "electron";
+import { nativeImage } from "electron";
 import { execFile, spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { APP_ALIASES, KEY_SPECS, LOCATIONS, SETTINGS_PANES } from "../commands/registry-macos";
 import { logger } from "../logging/logger";
+import { pasteText } from "./clipboard";
 
 /**
  * All macOS execution goes through `open` and `osascript`/System Events per
@@ -95,33 +96,21 @@ export async function switchToPreviousApp(): Promise<void> {
 }
 
 export async function typeText(text: string): Promise<void> {
-  const previous = clipboard.readText();
-  clipboard.writeText(text);
-  try {
+  return pasteText(text, async () => {
     await osascript('tell application "System Events" to keystroke "v" using {command down}');
-  } finally {
-    // Restore the user's previous clipboard shortly after the paste completes.
-    setTimeout(() => {
-      try {
-        clipboard.writeText(previous);
-      } catch (err) {
-        logger.error("automation.clipboard_restore", err);
-      }
-    }, 400);
-  }
+  });
 }
 
 export async function pressNamedKey(keyName: string): Promise<void> {
   const spec = KEY_SPECS[keyName];
   if (!spec) throw new Error(`Unknown key phrase: ${keyName}`);
-  const mods = spec.modifiers.length > 0 ? ` using {${spec.modifiers.join(", ")}}` : "";
-  if (spec.keyCode != null) {
-    await osascript(`tell application "System Events" to key code ${spec.keyCode}${mods}`);
-  } else if (spec.character) {
-    await osascript(`tell application "System Events" to keystroke "${escapeAS(spec.character)}"${mods}`);
-  } else {
+  const commands = (spec.sequence ?? [spec]).map((step) => {
+    const mods = step.modifiers.length ? ` using {${step.modifiers.join(", ")}}` : "";
+    if (step.keyCode != null) return `key code ${step.keyCode}${mods}`;
+    if (step.character) return `keystroke "${escapeAS(step.character)}"${mods}`;
     throw new Error(`Key phrase has no keyCode or character: ${keyName}`);
-  }
+  });
+  await osascript(`tell application "System Events"\n${commands.join("\n")}\nend tell`);
 }
 
 /** Presses plain Backspace `count` times in a single osascript call. */
@@ -195,7 +184,7 @@ async function mediaCommand(verb: "playpause" | "next track" | "previous track")
     }
   }
   // Neither a known player is running; log and no-op rather than guessing.
-  logger.event("automation.media_no_player", { verb });
+  throw new Error("No supported media player is running. Open Spotify or Music, then try again.");
 }
 
 export async function mediaPlayPause(): Promise<void> {
@@ -233,9 +222,12 @@ let currentSay: ChildProcess | null = null;
 export function say(text: string): void {
   stopSpeaking();
   try {
-    currentSay = spawn("say", [text], { stdio: "ignore" });
-    currentSay.on("exit", () => {
-      currentSay = null;
+    const child = spawn("say", [text], { stdio: "ignore" });
+    currentSay = child;
+    child.on("exit", () => { if (currentSay === child) currentSay = null; });
+    child.on("error", (err) => {
+      if (currentSay === child) currentSay = null;
+      logger.error("automation.say_failed", err);
     });
   } catch (err) {
     logger.error("automation.say_failed", err);
@@ -277,63 +269,112 @@ export async function getActiveAppName(): Promise<string | null> {
   }
 }
 
+/** Focused AX window only: no screen pixels, editable values or other app windows. */
+export async function getActiveWindowIdentity(): Promise<string | null> {
+  const { stdout } = await jxa(`
+ObjC.import('AppKit'); ObjC.import('ApplicationServices');
+ObjC.bindFunction('AXUIElementCopyAttributeValue', ['int', ['id', 'id', 'id*']]);
+ObjC.bindFunction('AXUIElementCreateApplication', ['id', ['int']]);
+var app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+var ax = $.AXUIElementCreateApplication(app.processIdentifier), ref = Ref();
+if ($.AXUIElementCopyAttributeValue(ax, $('AXFocusedWindow'), ref) !== 0) throw new Error('No focused window');
+function frame(name) {
+  var value = Ref();
+  if ($.AXUIElementCopyAttributeValue(ref[0], $(name), value) !== 0) throw new Error('Window frame unavailable');
+  var matches = ObjC.unwrap(value[0].description).match(/[xywh]:(-?[0-9.]+)/g);
+  if (!matches) throw new Error('Window frame unavailable');
+  return matches.map(function(v){return Number(v.slice(2));});
+}
+JSON.stringify([Number(app.processIdentifier), Number($.CFHash(ref[0])), frame('AXPosition'), frame('AXSize')]);`, QUICK_QUERY_TIMEOUT_MS);
+  return stdout.trim() || null;
+}
+
+/** Reads only the focused AX window's identity/frame and matching WindowServer ID.
+ * Other windows contribute metadata only; no titles or pixel buffers are read. */
+async function getFrontmostCaptureTarget(): Promise<{
+  windowId: number;
+  identity: string;
+  bounds: { x: number; y: number; width: number; height: number };
+}> {
+  const { stdout } = await jxa(`
+ObjC.import('AppKit'); ObjC.import('ApplicationServices'); ObjC.import('CoreGraphics');
+ObjC.bindFunction('AXUIElementCopyAttributeValue', ['int', ['id', 'id', 'id*']]);
+ObjC.bindFunction('AXUIElementCreateApplication', ['id', ['int']]);
+var app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+var pid = Number(app.processIdentifier);
+var ax = $.AXUIElementCreateApplication(pid), focused = Ref();
+if ($.AXUIElementCopyAttributeValue(ax, $('AXFocusedWindow'), focused) !== 0) throw new Error('No focused window');
+function frame(name) {
+  var value = Ref();
+  if ($.AXUIElementCopyAttributeValue(focused[0], $(name), value) !== 0) throw new Error('Window frame unavailable');
+  var matches = ObjC.unwrap(value[0].description).match(/[xywh]:(-?[0-9.]+)/g);
+  if (!matches || matches.length !== 2) throw new Error('Window frame unavailable');
+  return matches.map(function(v) { return Number(v.slice(2)); });
+}
+var position = frame('AXPosition'), size = frame('AXSize');
+if (size[0] <= 0 || size[1] <= 0) throw new Error('Focused window has no visible frame');
+var windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(
+  $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID));
+if (!Array.isArray(windows)) throw new Error('Window list unavailable');
+var matches = windows.filter(function(win) {
+  if (Number(win.kCGWindowOwnerPID) !== pid || Number(win.kCGWindowLayer) !== 0 || !win.kCGWindowIsOnscreen) return false;
+  var b = win.kCGWindowBounds;
+  return b && Math.abs(Number(b.X) - position[0]) < 0.5 && Math.abs(Number(b.Y) - position[1]) < 0.5 &&
+    Math.abs(Number(b.Width) - size[0]) < 0.5 && Math.abs(Number(b.Height) - size[1]) < 0.5;
+});
+if (matches.length !== 1) throw new Error('Could not uniquely identify the focused window for capture; try accessibility clicking');
+JSON.stringify({
+  windowId: Number(matches[0].kCGWindowNumber),
+  identity: JSON.stringify([pid, Number($.CFHash(focused[0])), position, size]),
+  bounds: { x: position[0], y: position[1], width: size[0], height: size[1] }
+});`, QUICK_QUERY_TIMEOUT_MS);
+  const target = JSON.parse(stdout);
+  if (!Number.isInteger(target.windowId) || target.windowId <= 0 || typeof target.identity !== "string" ||
+      !target.bounds || !["x", "y", "width", "height"].every(key => Number.isFinite(target.bounds[key])) ||
+      target.bounds.width <= 0 || target.bounds.height <= 0) {
+    throw new Error("Could not identify the focused window for capture.");
+  }
+  return target;
+}
+
 export async function captureFrontmostWindow(): Promise<{
   imageBase64: string;
   bounds: { x: number; y: number; width: number; height: number };
   imageWidth: number;
   imageHeight: number;
 }> {
-  const NO_WINDOW_MSG = "Could not find a window to click in — the frontmost app may not have an open window.";
-  let stdout: string;
+  const target = await getFrontmostCaptureTarget();
+  const tmpFile = path.join(os.tmpdir(), `dragon-click-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
   try {
-    ({ stdout } = await osascript(
-      'tell application "System Events" to tell (first application process whose frontmost is true) to get {position, size} of front window',
-      QUICK_QUERY_TIMEOUT_MS
-    ));
-  } catch (err) {
-    // Surface a real permission/timeout diagnosis instead of masking it as "no window" —
-    // friendlyOsascriptError() already turned Accessibility/timeout failures into an actionable
-    // message; only fall back to the generic message for an actual "no window" case.
-    throw err instanceof Error && /Accessibility|timed out/i.test(err.message) ? err : new Error(NO_WINDOW_MSG);
-  }
-  const nums = stdout.trim().split(",").map((s) => parseInt(s.trim(), 10));
-  if (nums.length !== 4 || nums.some((n) => Number.isNaN(n))) throw new Error(NO_WINDOW_MSG);
-  const [x, y, width, height] = nums;
-
-  const tmpFile = path.join(os.tmpdir(), `dragon-click-${Date.now()}.png`);
-  try {
-    await run("screencapture", ["-x", "-R", `${x},${y},${width},${height}`, tmpFile]);
-  } catch {
-    throw new Error(
-      "macOS blocked the screenshot needed for clicking — grant Dragon Screen Recording " +
-        "permission in System Settings -> Privacy & Security -> Screen Recording, then try again."
-    );
-  }
-  try {
+    try {
+      // Capture the window's own surface, excluding its shadow. A rectangle
+      // capture would include Dragon's overlay and other overlapping windows.
+      await run("screencapture", ["-x", "-o", "-l" + target.windowId, tmpFile]);
+    } catch {
+      throw new Error("Could not capture this window. Check Dragon's Screen Recording permission in System Settings -> Privacy & Security, or try accessibility clicking.");
+    }
+    const after = await getFrontmostCaptureTarget();
+    if (after.windowId !== target.windowId || after.identity !== target.identity) {
+      throw new Error("The focused window moved or changed during capture. Say the command again.");
+    }
     const buf = await fs.promises.readFile(tmpFile);
-    // screencapture's -R region is in points, but on Retina displays the PNG it writes is 2x
-    // that in pixels — sending the full-resolution image to the vision model costs more tokens
-    // (slower + pricier) for no benefit, and previously left clickAt() adding a pixel-space
-    // offset onto point-space bounds (a real click-accuracy bug). Downscaling once here and
-    // returning the actual sent pixel dimensions lets the caller compute one correct scale
-    // factor back to points, instead of assuming a 1:1 (or fixed 2x) ratio.
     const MAX_IMAGE_WIDTH = 1280;
     let image = nativeImage.createFromBuffer(buf);
     const original = image.getSize();
+    if (image.isEmpty() || original.width <= 0 || original.height <= 0) throw new Error("The focused window returned an empty capture.");
     if (original.width > MAX_IMAGE_WIDTH) {
       const scale = MAX_IMAGE_WIDTH / original.width;
       image = image.resize({ width: MAX_IMAGE_WIDTH, height: Math.round(original.height * scale) });
     }
     const sent = image.getSize();
     return {
-      // JPEG: ~5-10x smaller upload than PNG; upload time dominated the vision round trip.
       imageBase64: image.toJPEG(85).toString("base64"),
-      bounds: { x, y, width, height },
+      bounds: target.bounds,
       imageWidth: sent.width,
       imageHeight: sent.height,
     };
   } finally {
-    fs.promises.unlink(tmpFile).catch(() => {});
+    await fs.promises.unlink(tmpFile).catch(() => {});
   }
 }
 

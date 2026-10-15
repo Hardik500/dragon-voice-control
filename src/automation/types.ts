@@ -39,6 +39,8 @@ export interface PlatformAutomation {
 
   openUrlInChrome(url: string): Promise<void>;
   getActiveAppName(): Promise<string | null>;
+  /** Opaque frontmost-window identity + frame, for detecting changed target coordinates. */
+  getActiveWindowIdentity(): Promise<string | null>;
 
   /** Screenshots the frontmost/focused app's window only (never the whole screen, never other
    * windows) for vision-based UI targeting. Throws if no window/permission is available. */

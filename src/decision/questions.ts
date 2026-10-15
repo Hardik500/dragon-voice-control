@@ -24,20 +24,20 @@ export const INTENT_CRITERIA: Record<Intent, string> = {
   media_play_pause: "Toggle play/pause of the current media player.",
   media_next: "Skip to the next media track.",
   media_previous: "Go to the previous media track.",
-  open_settings_pane: "Open a named macOS System Settings pane.",
-  open_finder_location: "Open a named Finder location such as Downloads or Desktop.",
+  open_settings_pane: "Open a named system Settings pane on the current OS.",
+  open_finder_location: "Open a named file-manager location such as Downloads or Desktop.",
   chrome_open_url: "Open a specific URL or a named website in Chrome.",
   chrome_search: "Perform a web search (or search the current site) in Chrome.",
   chrome_click: "Click a specific visible link, button, or other interactive element in the Chrome page.",
   chrome_type: "Type dictated text into a specific visible field in the Chrome page.",
   chrome_select: "Select an option in a specific visible dropdown/select element in the Chrome page.",
-  chrome_scroll: "Scroll the current Chrome page up, down, to the top, or to the bottom.",
+  chrome_scroll: "Scroll the focused view up, down, left, right, top or bottom; use Chrome DOM scrolling when available, otherwise native keyboard paging.",
   chrome_back: "Navigate the current Chrome tab back in history.",
   chrome_forward: "Navigate the current Chrome tab forward in history.",
   chrome_reload: "Reload the current Chrome tab.",
   chrome_new_tab: "Open a new Chrome tab.",
   chrome_close_tab: "Close the current Chrome tab.",
-  chrome_switch_tab: "Switch to the next or previous Chrome tab.",
+  chrome_switch_tab: "Switch Chrome tabs by a spoken number/title, or next, previous, first or last.",
   screen_click:
     'Click a specific visible button, icon, or UI control described by the user, that is NOT a ' +
     'web page element inside Chrome — anywhere in the frontmost application\'s window (e.g. ' +
@@ -53,6 +53,8 @@ export const INTENT_CRITERIA: Record<Intent, string> = {
 };
 
 export const DIRECTION_CRITERIA: Record<string, string> = {
+  first: "The first tab/item.",
+  last: "The last tab/item.",
   up: "Upward, increase, or scroll toward the top.",
   down: "Downward, decrease, or scroll toward the bottom.",
   left: "Toward the left.",

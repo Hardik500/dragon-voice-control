@@ -1,4 +1,5 @@
-import { ipcMain, shell, BrowserWindow } from "electron";
+import { app, ipcMain, shell, BrowserWindow } from "electron";
+import * as path from "path";
 import { ActivationMode, DragonSettings, toRendererSafe } from "../types/settings";
 import { SettingsStore } from "./settings-store";
 import { DragonPipeline } from "./pipeline";
@@ -15,6 +16,13 @@ export interface IpcDeps {
   onSettingsChanged: (settings: DragonSettings, changedMode?: ActivationMode) => void;
   openDashboard: () => void;
   getStatus: () => Record<string, unknown>;
+  setListening: (enabled: boolean) => Promise<void>;
+  retryListening: () => Promise<void>;
+  setMode: (mode: "normal" | "insert" | "workflow") => void;
+  emergencyStop: () => void;
+  listMicrophones: () => Promise<Array<{ deviceId: string; label: string }>>;
+  onMicStatus: (status: string, detail: string | undefined, generation: number) => void;
+  onMicChunk: (chunk: Buffer, generation: number) => void;
 }
 
 export function registerIpc(deps: IpcDeps) {
@@ -24,8 +32,8 @@ export function registerIpc(deps: IpcDeps) {
     const previous = deps.settingsStore.get();
     const updated = deps.settingsStore.update(partial);
     logger.event("settings.updated", { fields: Object.keys(partial), persisted: deps.settingsStore.persistedLast });
-    const modeChanged = partial.activationMode != null && partial.activationMode !== previous.activationMode;
-    deps.onSettingsChanged(updated, modeChanged ? partial.activationMode : undefined);
+    const modeChanged = updated.activationMode !== previous.activationMode;
+    if (deps.settingsStore.persistedLast) deps.onSettingsChanged(updated, modeChanged ? updated.activationMode : undefined);
     return { ...toRendererSafe(updated), persisted: deps.settingsStore.persistedLast };
   });
 
@@ -47,6 +55,11 @@ export function registerIpc(deps: IpcDeps) {
     shell.openPath(logger.logDir);
   });
   ipcMain.handle("settings:openDashboard", () => deps.openDashboard());
+  ipcMain.handle("settings:openExtensionFolder", async () => {
+    const directory = app.isPackaged ? path.join(process.resourcesPath, "chrome-extension") : path.join(__dirname, "..", "..", "chrome-extension");
+    const error = await shell.openPath(directory);
+    if (error) throw new Error("Could not open the extension folder. Use the displayed path to select it in Chrome.");
+  });
 
   ipcMain.handle("history:get", () => deps.pipeline.getHistory());
   ipcMain.handle("history:clear", () => {
@@ -55,13 +68,32 @@ export function registerIpc(deps: IpcDeps) {
   });
 
   ipcMain.handle("status:get", () => deps.getStatus());
-
-  ipcMain.on("mic:chunk", (_e, chunk: Uint8Array) => {
-    deps.pipeline.handleMicChunk(Buffer.from(chunk));
+  ipcMain.handle("voice:setListening", async (_e, enabled: boolean) => {
+    await deps.setListening(enabled);
+    return deps.getStatus();
+  });
+  ipcMain.handle("voice:setMode", (_e, mode: "normal" | "insert" | "workflow") => {
+    if (!["normal", "insert", "workflow"].includes(mode)) throw new Error("Unknown interaction mode.");
+    deps.setMode(mode);
+    return deps.getStatus();
+  });
+  ipcMain.handle("voice:emergencyStop", () => {
+    deps.emergencyStop();
+    return deps.getStatus();
+  });
+  ipcMain.handle("voice:listMicrophones", () => deps.listMicrophones());
+  ipcMain.handle("voice:retry", async () => {
+    await deps.retryListening();
+    return deps.getStatus();
   });
 
-  ipcMain.on("mic:status", (_e, status: string, detail?: string) => {
-    logger.event("mic.status", { status, detail });
+  ipcMain.on("mic:chunk", (_e, chunk: Uint8Array, generation: number) => {
+    deps.onMicChunk(Buffer.from(chunk), generation);
+  });
+
+  ipcMain.on("mic:status", (_e, status: string, detail: string | undefined, generation: number) => {
+    logger.event("mic.status", { status, detail, generation });
+    deps.onMicStatus(status, detail, generation);
   });
 }
 

@@ -44,7 +44,9 @@ export class DashboardServer {
   }
 
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const pathname = new URL(req.url ?? "/", this.url()).pathname;
+    let pathname: string;
+    try { pathname = new URL(req.url ?? "/", this.url()).pathname; }
+    catch { this.sendJson(res, { error: "Invalid request URL" }, 400); return; }
     if (pathname === "/") {
       res.writeHead(302, { Location: "/dashboard" });
       res.end();

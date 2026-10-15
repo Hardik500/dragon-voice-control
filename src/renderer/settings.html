@@ -1,137 +1,228 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Dragon Settings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dragon</title>
 <style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    background: #1b1b1f;
-    color: #eee;
-    padding: 20px;
-    overflow-y: auto;
-  }
-  h1 { font-size: 16px; margin: 0 0 16px; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #999; margin: 20px 0 8px; }
-  label { display: block; font-size: 13px; margin-bottom: 4px; color: #ccc; }
-  input[type=text], input[type=password], select {
-    width: 100%; box-sizing: border-box; padding: 6px 8px; margin-bottom: 12px;
-    background: #2a2a30; border: 1px solid #3a3a42; color: #eee; border-radius: 6px; font-size: 13px;
-  }
-  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  .row label { margin-bottom: 0; }
-  /* A saved key must not look like an empty field. The stored secret is never sent to the
-     renderer, so a saved key is shown as a mask in the input itself plus an explicit line
-     of text -- an empty box reads as "not saved", which is exactly the wrong conclusion. */
-  .keyRow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .keyRow input { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
-  .keyRow button.clear { flex: 0 0 auto; margin-right: 0; }
-  .keyState { font-size: 11px; margin: 0 0 12px; min-height: 14px; color: #7dd07d; }
-  .keyState.none { color: #888; }
-  button {
-    background: #3d5afe; color: white; border: none; border-radius: 6px; padding: 8px 12px;
-    font-size: 13px; cursor: pointer; margin-right: 8px;
-  }
-  button.secondary { background: #333; }
-  .hint { font-size: 11px; color: #888; margin: -8px 0 12px; }
-  .status { font-size: 11px; color: #7dd07d; margin-top: 4px; min-height: 14px; }
-  .warning { font-size: 11px; color: #ffb347; margin: -8px 0 12px; display: none; }
-  .warning.visible { display: block; }
-  table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 8px; }
-  td, th { text-align: left; padding: 3px 4px; border-bottom: 1px solid #2a2a30; }
-  #historyBody { max-height: 160px; overflow: auto; display: block; }
+  :root { color-scheme: dark; --bg:#14151b; --surface:#1c1e27; --border:#333642; --muted:#a6acbe; --text:#f0f2fa; --accent:#b6a6ff; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  button,input,select { font:inherit; }
+  button,a,input,select,summary { -webkit-app-region:no-drag; }
+  button { cursor:pointer; border:1px solid transparent; border-radius:9px; padding:9px 14px; background:#c0b1ff; color:#201837; font-weight:600; }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.48; cursor:default; filter:none; }
+  button.secondary { background:#2a2d39; border-color:#3b3e4d; color:var(--text); }
+  button.quiet { background:transparent; border-color:var(--border); color:var(--muted); }
+  button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  .appHeader { padding:22px 28px 0; border-bottom:1px solid var(--border); background:#191a22; }
+  .brandRow { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brandMark { width:36px; height:36px; display:grid; place-items:center; background:#33304b; color:#cabdff; border:1px solid #504868; border-radius:11px; font-size:20px; font-weight:750; }
+  h1 { font-size:20px; line-height:1.2; letter-spacing:-.5px; margin:0; }
+  .brand p { margin:2px 0 0; color:var(--muted); font-size:11px; }
+  .sessionBadge { display:flex; align-items:center; gap:7px; padding:6px 10px; border:1px solid var(--border); border-radius:20px; font-size:11px; color:var(--muted); }
+  .sessionBadge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .sessionBadge[data-state=ready] { color:#9cdeb4; border-color:#3d5c4b; }
+  .sessionBadge[data-state=attention] { color:#ffca91; border-color:#69503c; }
+  .tabs { display:flex; gap:4px; margin-top:22px; }
+  .tab { flex:1; max-width:140px; padding:11px 10px 13px; background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent; border-radius:0; font-size:13px; }
+  .tab[aria-selected=true] { color:#ddd4ff; border-bottom-color:#bba8ff; }
+  main { max-width:1050px; margin:auto; }
+  .panel { padding:26px 28px 32px; }
+  .pageHead { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:22px; }
+  h2 { font-size:23px; font-weight:650; letter-spacing:-.6px; margin:0 0 5px; line-height:1.3; }
+  h3 { font-size:14px; margin:0 0 6px; font-weight:600; }
+  p { margin:0; }
+  .subtitle,.hint { color:var(--muted); font-size:12px; }
+  .card { padding:20px; border:1px solid var(--border); background:var(--surface); border-radius:13px; min-width:0; }
+  .card + .card { margin-top:16px; }
+  .cardTitle { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:12px; }
+  .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:1.3px; font-size:10px; font-weight:650; margin-bottom:8px; }
+  .hero { background:linear-gradient(120deg,#29253d,#1e222e); border-color:#49415f; }
+  .hero h3 { font-size:19px; letter-spacing:-.3px; }
+  .hero .subtitle { max-width:560px; line-height:1.7; }
+  .voiceControls { display:flex; gap:8px; flex-wrap:wrap; margin-top:17px; }
+  .modeControls { display:flex; flex-wrap:wrap; gap:7px; margin-top:13px; }
+  .modeControls button { font-size:11px; padding:6px 10px; }
+  .modeControls button[aria-pressed=true] { color:#e3d9ff; border-color:#7d67a9; background:#443754; }
+  button.stop { border-color:#7c5259; color:#ffc6ca; background:#442c33; }
+  .voiceActionStatus { color:#ffca91; font-size:12px; margin-top:10px; }
+  .voiceActionStatus:empty { display:none; }
+  .setupNote { color:var(--muted); font-size:11px; margin-top:10px; line-height:1.6; }
+  .readiness { margin:0; }
+  .readiness > div { display:grid; grid-template-columns:92px minmax(0,1fr); gap:16px; padding:10px 0; border-top:1px solid #30323f; }
+  .readiness > div:first-child { border-top:0; }
+  .readiness dt { color:var(--muted); font-size:12px; }
+  .readiness dd { font-size:12px; margin:0; overflow-wrap:anywhere; }
+  [data-state=ready] { color:#a1dfb5; }
+  [data-state=attention] { color:#ffca91; }
+  [data-state=neutral] { color:#b5bbcd; }
+  .twoColumns { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .twoColumns .card { margin:0; }
+  .modeGuide { margin:0; padding:0; list-style:none; }
+  .modeGuide li { color:var(--muted); font-size:12px; margin:14px 0 0; padding-top:14px; border-top:1px solid #30323f; }
+  .modeGuide li:first-child { margin:0; padding:0; border:0; }
+  .modeGuide strong { color:var(--text); font-weight:600; }
+  .shortcut { display:block; font-size:11px; color:#c1b5f4; overflow-wrap:anywhere; margin:4px 0; }
+  .textAction { margin-top:14px; font-size:12px; }
+  .stepList { margin:12px 0 0; padding-left:20px; color:var(--muted); font-size:12px; }
+  .stepList li { padding:0 0 10px 4px; }
+  .stepList strong { color:var(--text); font-weight:500; }
+  details.extensionGuide { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; }
+  details.extensionGuide summary { cursor:pointer; color:#d4c9f6; font-size:12px; }
+  details.extensionGuide ol { padding-left:18px; font-size:11px; color:var(--muted); line-height:1.7; }
+  .extensionDirectory { display:block; user-select:text; overflow-wrap:anywhere; white-space:pre-wrap; padding:10px; margin-top:8px; border:1px solid var(--border); border-radius:7px; background:#20222d; color:#d8dcea; font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .search { width:100%; padding:11px 13px; background:#20222d; border:1px solid var(--border); color:var(--text); border-radius:9px; }
+  .search::placeholder { color:#8d94a8; }
+  .filterRow { display:flex; gap:7px; flex-wrap:wrap; margin:12px 0 18px; }
+  .filter { background:transparent; border:1px solid var(--border); color:var(--muted); font-size:11px; padding:5px 10px; border-radius:20px; font-weight:500; }
+  .filter[aria-pressed=true] { background:#39304f; color:#e0d6ff; border-color:#635282; }
+  .resultCount { color:var(--muted); font-size:11px; margin-bottom:12px; }
+  .commandGrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .commandCard { padding:16px; background:var(--surface); border:1px solid var(--border); border-radius:11px; min-width:0; }
+  .commandCard h3 { font-size:12px; color:var(--accent); }
+  .commandPhrase { font-size:15px; color:var(--text); line-height:1.45; margin:8px 0; }
+  .commandDescription { font-size:12px; color:var(--muted); line-height:1.6; }
+  .requirement { display:inline-block; margin-top:11px; padding:3px 7px; font-size:10px; color:#acb3c8; background:#282b37; border-radius:5px; }
+  .emptyState { text-align:center; padding:35px 18px; border:1px dashed #3d4051; border-radius:12px; color:var(--muted); font-size:12px; }
+  .emptyState strong { display:block; color:var(--text); font-size:14px; margin-bottom:5px; }
+  .settingsGrid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+  .settingsGrid > .card { margin:0; }
+  .fullWidth { grid-column:1/-1; }
+  label { display:block; font-size:12px; color:#d8dcea; margin:14px 0 5px; }
+  label:first-child { margin-top:0; }
+  input[type=text],input[type=password],select { width:100%; padding:9px 10px; border:1px solid #414555; border-radius:7px; background:#222530; color:var(--text); min-width:0; }
+  .keyRow { display:flex; gap:7px; align-items:center; }
+  .keyRow input { flex:1; min-width:0; }
+  .keyRow button { padding:9px 10px; font-size:12px; }
+  .keyState { color:#a1dfb5; font-size:11px; margin:5px 0 8px; min-height:17px; }
+  .keyState.none { color:var(--muted); }
+  .hint { font-size:11px; line-height:1.6; margin-top:6px; }
+  .row { display:flex; gap:12px; align-items:center; justify-content:space-between; margin-top:16px; }
+  .row label { margin:0; }
+  .row input[type=checkbox] { width:18px; height:18px; accent-color:#baa8ff; flex-shrink:0; }
+  .warning { display:none; color:#ffca91; font-size:12px; margin-top:12px; }
+  .warning.visible { display:block; }
+  .buttonRow { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+  .buttonRow button { font-size:12px; }
+  .providerStatus { min-height:18px; margin-top:10px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+  .saveBar { position:sticky; bottom:0; display:flex; gap:14px; align-items:center; justify-content:space-between; background:#21232e; border:1px solid #444656; padding:13px 16px; margin:20px -2px -17px; border-radius:11px; box-shadow:0 -8px 30px #14151b55; }
+  .status { font-size:12px; color:var(--muted); line-height:1.5; }
+  .status[data-state=attention] { color:#ffca91; }
+  .status[data-state=ready] { color:#a1dfb5; }
+  .activityToolbar { display:flex; gap:9px; align-items:center; margin-bottom:12px; }
+  .activityToolbar .search { flex:1; }
+  .activityToolbar select { width:130px; font-size:12px; padding:11px 9px; }
+  .activityList { display:grid; gap:10px; }
+  .activityEntry { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .activityMeta { display:flex; justify-content:space-between; gap:12px; font-size:10px; color:var(--muted); margin-bottom:7px; }
+  .activityStatus { font-weight:600; }
+  .activityEntry h3 { font-size:13px; overflow-wrap:anywhere; }
+  .activityAction { font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+  .activityDetail { font-size:11px; line-height:1.6; color:#ffca91; margin-top:8px; overflow-wrap:anywhere; }
+  .historyFooter { display:flex; gap:7px; flex-wrap:wrap; margin-top:18px; }
+  .historyFooter button { font-size:12px; }
+  .srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; white-space:nowrap; }
+  @media (max-width:650px) { .appHeader { padding:18px 18px 0; } .panel { padding:22px 18px 28px; } .twoColumns,.settingsGrid,.commandGrid { grid-template-columns:1fr; } .twoColumns .card + .card { margin:0; } .fullWidth { grid-column:auto; } .card { padding:16px; } h2 { font-size:21px; } .brand p { font-size:10px; } .sessionBadge { font-size:10px; padding:5px 8px; } .tabs { margin-top:17px; } .tab { font-size:12px; padding-left:7px; padding-right:7px; } }
+  @media (prefers-reduced-motion:no-preference) { button { transition:background-color .12s,border-color .12s; } }
 </style>
 </head>
 <body>
-  <h1>Dragon — Settings</h1>
+  <header class="appHeader">
+    <div class="brandRow">
+      <div class="brand"><div class="brandMark" aria-hidden="true">D</div><div><h1>Dragon</h1><p>Your computer, at the speed of voice.</p></div></div>
+      <div id="sessionBadge" class="sessionBadge" data-state="neutral" role="status">Checking voice…</div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Dragon workspace">
+      <button id="tab-overview" class="tab" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0" data-tab="overview">Overview</button>
+      <button id="tab-commands" class="tab" role="tab" aria-selected="false" aria-controls="panel-commands" tabindex="-1" data-tab="commands">Commands</button>
+      <button id="tab-settings" class="tab" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1" data-tab="settings">Settings<span id="draftMarker" hidden aria-label="Unsaved changes"> •</span></button>
+      <button id="tab-activity" class="tab" role="tab" aria-selected="false" aria-controls="panel-activity" tabindex="-1" data-tab="activity">Activity</button>
+    </nav>
+  </header>
 
-  <h2>API Keys</h2>
-  <label for="openRouterApiKey">OpenRouter API key (used when Jev is selected)</label>
-  <div class="keyRow">
-    <input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" />
-    <button id="clearOpenRouterKey" type="button" class="secondary clear">Clear</button>
-  </div>
-  <div id="openRouterKeyState" class="keyState"></div>
-  <label for="deepgramApiKey">Deepgram API key (used for streaming transcription)</label>
-  <div class="keyRow">
-    <input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" />
-    <button id="clearDeepgramKey" type="button" class="secondary clear">Clear</button>
-  </div>
-  <div id="deepgramKeyState" class="keyState"></div>
+  <main>
+    <section id="panel-overview" class="panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+      <div class="pageHead"><div><h2>Make yourself heard.</h2><p class="subtitle">Speak one action at a time. Dragon handles the clicks and keystrokes.</p></div></div>
+      <section class="card hero" aria-labelledby="setupTitle">
+        <div class="eyebrow">Voice control</div><h3 id="setupTitle">Ready when you are</h3>
+        <p id="setupSummary" class="subtitle">Save your keys in Settings, start listening, then say “open Chrome”.</p>
+        <div class="voiceControls"><button id="toggleListeningBtn" type="button" disabled>Start listening</button><button id="retryVoiceBtn" type="button" class="secondary" disabled>Retry voice</button><button id="emergencyStopBtn" type="button" class="stop">Emergency Stop</button><button type="button" class="quiet" data-open-tab="commands">Explore commands</button><button id="reloadSetupBtn" type="button" class="secondary" hidden>Reload setup</button></div>
+        <div class="modeControls" role="group" aria-label="Interaction mode"><button type="button" class="quiet" data-mode="normal" aria-pressed="true">Command</button><button type="button" class="quiet" data-mode="insert" aria-pressed="false">Insert</button><button type="button" class="quiet" data-mode="workflow" aria-pressed="false">Workflow</button></div>
+        <div id="voiceActionStatus" class="voiceActionStatus" role="status" aria-live="polite"></div>
+        <p class="setupNote">Stop everything: <span id="setupStopShortcut"></span>. Voice controls use saved settings.</p>
+      </section>
+      <section class="card" aria-labelledby="readinessTitle">
+        <div class="cardTitle"><h3 id="readinessTitle">Connection &amp; readiness</h3><button type="button" class="quiet" data-open-tab="settings">Configure</button></div>
+        <dl class="readiness">
+          <div><dt>Credentials</dt><dd id="setupCredentials" data-state="neutral">Loading saved settings…</dd></div>
+          <div><dt>Listening</dt><dd id="setupListening" data-state="neutral">Checking status…</dd></div>
+          <div><dt>Speech</dt><dd id="setupSpeech" data-state="neutral">Checking connection…</dd></div>
+          <div><dt>Microphone</dt><dd id="setupMicrophone" data-state="neutral">Checking microphone…</dd></div>
+          <div><dt>Shortcuts</dt><dd id="setupShortcuts" data-state="neutral">Checking registration…</dd></div>
+          <div><dt>Chrome</dt><dd id="setupBrowser" data-state="neutral">Checking extension…</dd></div>
+          <div id="setupBridgeRow" hidden><dt>Bridge</dt><dd id="setupBridge" data-state="attention"></dd></div>
+        </dl>
+        <details class="extensionGuide"><summary>Connect Chrome page controls</summary><ol><li>Keep Dragon running and open <strong>chrome://extensions</strong> in Chrome.</li><li>Turn on Developer mode, choose <strong>Load unpacked</strong>, and select the extension folder shown below.</li><li>Check for “Extension connected” above. If Chrome asks you to reload the extension after a Dragon update, choose Reload on its card.</li></ol><p class="hint">Extension folder</p><code id="extensionDirectory" class="extensionDirectory">Checking extension location…</code><div class="buttonRow"><button id="openExtensionFolderBtn" type="button" class="secondary">Open extension folder</button></div><div id="extensionFolderStatus" class="providerStatus" role="status" aria-live="polite"></div><p class="hint">The extension enables page elements and tab controls. Opening websites and web searches works without it.</p></details>
+      </section>
+      <div class="twoColumns" style="margin-top:16px">
+        <section class="card" aria-labelledby="modesTitle"><div class="eyebrow">Find your flow</div><h3 id="modesTitle">Three ways to speak</h3><ul class="modeGuide">
+          <li><strong>Command</strong><span id="setupCurrentMode" class="shortcut"></span>“Open Chrome”, “click Save”, or “press Enter”.<span id="setupListenGuide" class="shortcut"></span></li>
+          <li><strong>Insert</strong><span id="setupInsertShortcut" class="shortcut"></span>Say “start typing”, dictate into the focused field, then “stop typing”. “Delete the last 3 words” edits Dragon’s dictation.</li>
+          <li><strong>Workflow</strong><span id="setupWorkflowShortcut" class="shortcut"></span>Say “start workflow”, give one direct command per utterance, then “stop workflow”.</li>
+        </ul></section>
+        <section class="card" aria-labelledby="firstStepsTitle"><div class="eyebrow">Try it in a minute</div><h3 id="firstStepsTitle">Your first three commands</h3><ol class="stepList"><li><strong>“Open Chrome”</strong><br />Launch or focus a known app.</li><li><strong>“Open example dot com”</strong><br />Open a website without an extension.</li><li><strong>“Point to Save”</strong><br />Find a visible control before clicking. If numbers appear, say one within 15 seconds.</li></ol><p class="hint">Focus your target app first. On macOS, enable Accessibility for control and Screen Recording for vision lookup.</p><button type="button" class="quiet textAction" data-open-tab="commands">Browse everything you can say →</button></section>
+      </div>
+    </section>
 
-  <h2>Decision provider</h2>
-  <label for="decisionProvider">Provider</label>
-  <select id="decisionProvider">
-    <option value="jev">Jev via OpenRouter</option>
-    <option value="laya">Laya via local server</option>
-  </select>
-  <label for="layaBaseUrl">Laya server URL</label>
-  <input id="layaBaseUrl" type="text" placeholder="http://127.0.0.1:8000" />
-  <label for="layaModel">Laya model</label>
-  <input id="layaModel" type="text" placeholder="laya" />
-  <label for="layaServerCommand">Laya server command</label>
-  <input id="layaServerCommand" type="text" placeholder="laya-server" />
-  <div class="hint">Laya runs as a separate local process. Save settings before starting it or testing the connection. The command must be available on PATH.</div>
-  <button id="startLayaServerBtn" class="secondary">Start Laya server</button>
-  <button id="stopLayaServerBtn" class="secondary">Stop Laya server</button>
-  <div id="layaServerStatus" class="hint">Laya server is not running</div>
-  <button id="testProviderBtn" class="secondary">Test decision provider</button>
+    <section id="panel-commands" class="panel" role="tabpanel" aria-labelledby="tab-commands" tabindex="0" hidden>
+      <div class="pageHead"><div><h2>A word for every action.</h2><p class="subtitle">Find a phrase, focus the app you want to control, then say it.</p></div></div>
+      <label class="srOnly" for="commandSearch">Search commands</label><input id="commandSearch" class="search" type="search" placeholder="Search commands, like scroll, delete, or volume…" autocomplete="off" />
+      <div id="commandFilters" class="filterRow" role="group" aria-label="Command category"></div>
+      <div id="commandCount" class="resultCount" role="status" aria-live="polite"></div>
+      <div id="commandList" class="commandGrid"></div>
+      <div id="commandEmpty" class="emptyState" hidden><strong>No matching commands</strong>Try a simpler word or choose All categories.</div>
+      <p class="hint" style="margin-top:18px">Examples show supported capabilities, not guarantees for every app. Corrections apply to Dragon’s most recent text at the cursor. After typing or moving the cursor yourself, stop and restart dictation before correcting. Chrome page controls and tab management need the unpacked extension; websites and web searches can open without it.</p>
+    </section>
 
-  <h2>Activation</h2>
-  <label for="activationMode">Activation mode</label>
-  <select id="activationMode">
-    <option value="push_to_talk">Push to talk</option>
-    <option value="always_listening">Always listening</option>
-  </select>
-  <label for="pushToTalkShortcut">Push-to-talk / listen toggle shortcut</label>
-  <input id="pushToTalkShortcut" type="text" placeholder="Alt+Space" />
-  <label for="emergencyStopShortcut">Emergency stop shortcut</label>
-  <input id="emergencyStopShortcut" type="text" placeholder="Alt+Escape" />
-  <label for="insertModeShortcut">Toggle Insert Mode shortcut</label>
-  <input id="insertModeShortcut" type="text" placeholder="Control+Alt+I" />
-  <label for="workflowModeShortcut">Toggle Workflow Mode shortcut</label>
-  <input id="workflowModeShortcut" type="text" placeholder="Control+Alt+Shift+W" />
-  <div class="hint">Mode shortcuts change Dragon's interaction mode without starting or stopping the microphone. Emergency Stop always clears both modes.</div>
-  <div class="hint">Electron cannot detect key-up globally, so push-to-talk is a toggle: press once to start listening, press again (or use the tray menu) to stop.</div>
-  <div class="warning" id="shortcutWarning"></div>
-  <div class="warning" id="bridgeWarning"></div>
+    <section id="panel-settings" class="panel" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <div class="pageHead"><div><h2>Set Dragon up your way.</h2><p class="subtitle">Changes stay in this window until you save. Your keys stay on this machine.</p></div></div>
+      <div id="settingsForm" class="settingsGrid">
+        <section class="card" aria-labelledby="keysTitle"><div class="eyebrow">Connect</div><h3 id="keysTitle">API keys</h3><p class="hint">Deepgram transcribes speech. OpenRouter powers Jev decisions and vision lookup.</p>
+          <label for="deepgramApiKey">Deepgram API key</label><div class="keyRow"><input id="deepgramApiKey" type="password" placeholder="Deepgram key" autocomplete="off" spellcheck="false" aria-describedby="deepgramKeyState" /><button id="clearDeepgramKey" type="button" class="secondary">Clear</button></div><div id="deepgramKeyState" class="keyState"></div>
+          <label for="openRouterApiKey">OpenRouter API key</label><div class="keyRow"><input id="openRouterApiKey" type="password" placeholder="sk-or-..." autocomplete="off" spellcheck="false" aria-describedby="openRouterKeyState" /><button id="clearOpenRouterKey" type="button" class="secondary">Clear</button></div><div id="openRouterKeyState" class="keyState"></div>
+          <p class="hint">A saved key is masked and never read back into this window. Enter a replacement and Save, or use Clear to remove it immediately. Blanking a field keeps its saved key.</p>
+        </section>
+        <section class="card" aria-labelledby="activationTitle"><div class="eyebrow">Listen</div><h3 id="activationTitle">Activation &amp; feedback</h3>
+          <label for="audioInputDeviceId">Microphone input</label><select id="audioInputDeviceId" aria-describedby="microphoneDeviceHint microphoneDeviceStatus"><option value="">System default microphone</option></select><p id="microphoneDeviceHint" class="hint">Save to use this input. Start voice once to allow microphone access and reveal device names, then refresh.</p><div class="buttonRow"><button id="refreshMicrophonesBtn" type="button" class="secondary">Refresh inputs</button></div><div id="microphoneDeviceStatus" class="providerStatus" role="status" aria-live="polite"></div>
+          <label for="activationMode">Activation mode</label><select id="activationMode"><option value="push_to_talk">Shortcut to toggle listening</option><option value="always_listening">Always listening</option></select><p class="hint">Press the listen shortcut once to start, then again to pause. You can also use Overview or the tray menu.</p>
+          <div class="row"><label for="voiceReplyEnabled">Speak short replies</label><input id="voiceReplyEnabled" type="checkbox" /></div><p class="hint">Uses your system’s speech voice.</p>
+          <div class="row"><label for="overlayVisible">Show floating status overlay</label><input id="overlayVisible" type="checkbox" /></div><p class="hint">Keep transcripts, actions, and voice status visible above your apps.</p>
+          <label for="screenClickMethod">Find on-screen controls with</label><select id="screenClickMethod"><option value="auto">Auto · accessibility, then vision</option><option value="vision">Vision · frontmost-window screenshot</option><option value="accessibility">Accessibility labels only</option></select><p class="hint">Auto tries visible labels first. Vision requires an OpenRouter key; macOS also needs Screen Recording permission.</p>
+        </section>
+        <section class="card fullWidth" aria-labelledby="shortcutsTitle"><div class="eyebrow">Stay in control</div><h3 id="shortcutsTitle">Global shortcuts</h3><p class="hint">Use combinations such as Alt+Space or Control+Alt+I. Choose different combinations if another app already uses them.</p>
+          <div class="twoColumns"><div><label for="pushToTalkShortcut">Start / pause listening</label><input id="pushToTalkShortcut" type="text" placeholder="Alt+Space" spellcheck="false" /><label for="insertModeShortcut">Toggle Insert Mode</label><input id="insertModeShortcut" type="text" placeholder="Control+Alt+I" spellcheck="false" /></div><div><label for="emergencyStopShortcut">Emergency Stop</label><input id="emergencyStopShortcut" type="text" placeholder="Alt+Escape" spellcheck="false" /><label for="workflowModeShortcut">Toggle Workflow Mode</label><input id="workflowModeShortcut" type="text" placeholder="Control+Alt+Shift+W" spellcheck="false" /></div></div>
+          <p class="hint">Mode shortcuts switch modes without starting the microphone. Emergency Stop cancels work and clears both modes.</p><div id="shortcutWarning" class="warning" role="status"></div>
+        </section>
+        <section class="card fullWidth" aria-labelledby="providerTitle"><div class="eyebrow">Understand</div><h3 id="providerTitle">Decision provider</h3><label for="decisionProvider">Provider</label><select id="decisionProvider"><option value="jev">Jev via OpenRouter</option><option value="laya">Laya via local server</option></select>
+          <div id="layaSettings" hidden><div class="twoColumns"><div><label for="layaBaseUrl">Laya server URL</label><input id="layaBaseUrl" type="text" placeholder="http://127.0.0.1:8000" spellcheck="false" /></div><div><label for="layaModel">Laya model</label><input id="layaModel" type="text" placeholder="laya" spellcheck="false" /></div></div><label for="layaServerCommand">Laya server command</label><input id="layaServerCommand" type="text" placeholder="laya-server" spellcheck="false" /><p class="hint">Laya runs as a separate local process. The command must be on PATH. These controls use saved settings.</p><div class="buttonRow"><button id="startLayaServerBtn" type="button" class="secondary">Start Laya server</button><button id="stopLayaServerBtn" type="button" class="secondary">Stop Laya server</button></div><div id="layaServerStatus" class="providerStatus" role="status">Checking local server…</div></div>
+          <div class="buttonRow"><button id="testProviderBtn" type="button" class="secondary">Test saved provider</button></div><div id="providerStatus" class="providerStatus" role="status" aria-live="polite"></div>
+        </section>
+        <section class="card fullWidth" aria-labelledby="diagnosticsTitle"><h3 id="diagnosticsTitle">Diagnostics</h3><label for="logVerbosity">Log detail</label><select id="logVerbosity"><option value="normal">Normal</option><option value="verbose">Verbose</option></select><div id="bridgeWarning" class="warning" role="status"></div><div class="buttonRow"><button id="openDashboardBtn" type="button" class="secondary">Open decision dashboard</button><button id="openLogsBtn" type="button" class="secondary">Open logs folder</button></div><div id="diagnosticStatus" class="providerStatus" role="status"></div></section>
+      </div>
+      <div class="saveBar"><div><div id="statusLine" class="status" role="status" aria-live="polite">Loading settings…</div><div class="hint" style="margin:2px 0 0">Ctrl / ⌘ + S to save</div></div><button id="saveBtn" type="button" disabled>Save changes</button></div>
+    </section>
 
-  <div class="row">
-    <label for="voiceReplyEnabled">Speak short replies (native <code>say</code>)</label>
-    <input id="voiceReplyEnabled" type="checkbox" />
-  </div>
-  <div class="row">
-    <label for="logVerbosity">Debug log verbosity</label>
-    <select id="logVerbosity" style="width:auto;margin-bottom:0;">
-      <option value="normal">Normal</option>
-      <option value="verbose">Verbose</option>
-    </select>
-  </div>
-  <div class="row">
-    <label for="screenClickMethod">Screen click lookup</label>
-    <select id="screenClickMethod" style="width:auto;margin-bottom:0;">
-      <option value="auto">Auto (accessibility, then vision)</option>
-      <option value="vision">Vision model (screenshot)</option>
-      <option value="accessibility">Accessibility tree (experimental)</option>
-    </select>
-  </div>
-
-  <div style="margin-top:16px;">
-    <button id="saveBtn">Save</button>
-    <button id="openDashboardBtn" class="secondary">Open Dashboard</button>
-    <button id="openLogsBtn" class="secondary">Open Logs Folder</button>
-    <button id="clearHistoryBtn" class="secondary">Clear History</button>
-  </div>
-  <div class="status" id="statusLine"></div>
-
-  <h2>Recent Command History</h2>
-  <table>
-    <thead><tr><th>Time</th><th>Transcript</th><th>Action</th><th>Status</th></tr></thead>
-    <tbody id="historyBody"></tbody>
-  </table>
-
+    <section id="panel-activity" class="panel" role="tabpanel" aria-labelledby="tab-activity" tabindex="0" hidden>
+      <div class="pageHead"><div><h2>See what happened.</h2><p class="subtitle">Recent commands, their results, and details when something needs attention.</p></div><button id="refreshHistoryBtn" type="button" class="quiet">Refresh</button></div>
+      <div class="activityToolbar"><label class="srOnly" for="historySearch">Search recent commands</label><input id="historySearch" class="search" type="search" placeholder="Search recent commands…" autocomplete="off" /><label class="srOnly" for="historyFilter">Filter results</label><select id="historyFilter"><option value="all">All results</option><option value="error">Errors</option><option value="success">Completed</option><option value="ignored">Ignored</option></select></div>
+      <div id="historySummary" class="resultCount" role="status" aria-live="polite"></div><div id="historyBody" class="activityList"></div><div id="historyEmpty" class="emptyState" hidden><strong>No commands yet</strong>Start listening in Overview and say “open Chrome”. Your results will appear here.</div>
+      <div class="historyFooter"><button id="clearHistoryBtn" type="button" class="quiet">Clear command history</button><button type="button" class="quiet" data-open-tab="commands">Find a command</button></div><div id="historyStatus" class="providerStatus" role="status"></div><p class="hint">Shows up to 100 recent entries. Refreshes while this tab is open. Clearing history does not delete diagnostic logs.</p>
+    </section>
+  </main>
   <script src="../../dist-renderer/settings.js"></script>
 </body>
 </html>

@@ -1392,3 +1392,177 @@ end-to-end through Dragon.
 
 ## 2026-10-02 Scroll only when no visible match
 Decision: two-pass UIA lookup, scroll off-screen matches only if no on-screen match exists. Reason: scrolling for every match moved the page under the chosen target. Consequence: a target that exists both visible and hidden never triggers scrolling. WebView2 retry added (700ms, once).
+
+## 2026-10-15 — Adapt Clicky's visible guidance within Dragon's existing screen-target intent
+
+**Decision:** Add deterministic `point to` / `show me` / `highlight` prefixes as a
+`screen_click` preview flag. Reuse the existing frontmost-window-only accessibility / vision
+target lookup and return a temporary ring. No new intent, model, general screen context,
+editable-field access or planner. Insert Mode remains text-first; previews wait for final
+transcripts. The existing provider request is retained.
+
+**Reason:** Clicky's public product material makes on-screen guidance and understandable modes
+prominent. Dragon already locates controls and computes exact coordinates. Showing those
+results is a small useful extension of that working path, with much less scope than a
+conversational desktop agent. Public marketing and release notes do not establish Clicky's
+desktop internals; the attempted REA analysis of its public website tree failed with an I/O
+error and yielded no Evidence ID.
+
+**Consequences:** Pending choices retain only target labels/coordinates, app name, expiry and
+the action metadata required to preserve highlight/single/double-click behavior. A typed
+overlay payload keeps the choices visible for their existing 15-second lifetime. Five-second
+point hints and numbered choice markers use small click-through BrowserWindows; avoid a
+full-screen transparent layer because it can interfere with capture/sharing. Convert physical
+Windows coordinates through `screen.screenToDipPoint` and position number badges inward near
+edges. Clear markers before capture and on stop/expiry/mode changes. Keep abort controllers
+registered through execution so a pending selection cannot click after Emergency Stop.
+
+**First use:** Open Settings when required keys are absent; show existing non-secret settings
+and live status in a compact readiness card. Presence of a saved key is not network validation,
+and an STT socket is not proof of microphone capture. Use existing DOM/TypeScript and keep the
+advanced controls available. Verification was Linux typechecking/build, disposable stubs,
+isolated app startup and actual Electron renderer checks; native hardware checks remain.
+
+## 2026-10-15 — Explicit voice lifecycle instead of wrapping start/stop methods
+
+**Decision:** Model transcription intent, pending connection and actual connection separately.
+The pipeline publishes typed speech status; main starts/stops the mic from these transitions
+instead of monkey-patching `startStreaming` / `stopStreaming`. Tag renderer start/stop/status/
+audio with a capture generation and wait for a renderer-ready handshake. Serialize pending
+device acquisition and release any cancelled late stream.
+
+**Reason:** The old path could start capture after an STT failure, finish a pending connection
+after stop, and let a superseded socket close clear its successor. A microphone failure was
+only logged, then immediately masked by a `stopped` status.
+
+**Consequences:** A 15-second handshake deadline settles every pending start. Five recovery
+attempts back off at 1/2/4/8/8 seconds; only a 30-second stable connection resets the failure
+budget, preventing endless brief-open loops. Fresh initial connection failures require a new
+start/retry. A graceful toggle-off admits final transcripts for 1.5 seconds; restart/emergency
+closes that drain. Emergency Stop increments a separate decision epoch so previously queued
+final decisions cannot start afterward; ordinary pause/retry does not invalidate the intended
+final flush.
+
+**Recovery UI:** Show microphone capture independently from transcription. Keep permission/
+device errors visible, provide Start/Pause and Retry in Settings, and allow Pause while Start
+or Retry is pending. Retry may reload a crashed hidden microphone renderer. Preserve tracked
+dictation text/mode on transport pause/recovery; Emergency Stop continues to clear modes. Keep
+all existing command vocabulary, deterministic extraction and platform boundaries. Do not
+buffer/replay disconnected audio, acquire new app text, add native helpers or add dependencies.
+
+**Verification:** Disposable transport/clock/audio stubs, actual Electron DOM and full app wiring
+with Chromium synthetic audio and a fake STT service on Linux. Native permissions/devices and
+live STT were not exercised; exact commands and remaining hardware checks are in PROGRESS.md.
+
+## 2026-10-15 — Order commands and tighten existing execution contracts
+
+**Decision.** Serialize decision turns across utterances, while allowing interim/resumed speech
+and Emergency Stop to invalidate work immediately. Keep one direct command per utterance,
+including Workflow Mode; report recognizable compound commands instead of building a plan.
+Validate provider selections against code-supplied choices and propagate cancellation through
+vision calls. Never resolve an absent/invalid target to the first candidate.
+
+**Reason/consequences.** Previously local dictation edits and later decisions could overtake
+earlier execution; malformed answers could select unintended targets. The queue prioritizes
+spoken order over speculative parallel execution. Native actions already submitted remain
+non-cancellable. Bounded caches prevent indefinite session growth.
+
+## 2026-10-15 — Track the exact dictation tail and focused window
+
+**Decision.** Store actual inserted spacing/chunks, preserve whitespace in edits, count grapheme
+clusters for backspacing and apply whole-word replacement boundaries. Carry an opaque native
+window identity/frame; reset the tracked tail on window changes or untracked navigation/edit
+operations. Keep Insert Mode active so the user can resume dictation.
+
+**Reason/consequences.** An approximate buffer can erase text Dragon did not type. This does not
+read app text or detect manual caret/field changes within one window. Native editor grapheme
+deletion semantics remain a hardware check. Word/line/document navigation and selection live
+in the existing closed key registries, including two-key select-line sequences on both OSes.
+
+## 2026-10-15 — Private browser target identities and socket-scoped requests
+
+**Decision.** Keep DOM IDs in a private WeakMap/registry per document; validate node identity,
+label/href fingerprint and visible hit target before acting. Collect accessible labels without
+editable field values. Use native setters/events for controlled inputs and exact/unique select
+matches. Scope pending bridge calls to the connection that issued them.
+
+**Reason/consequences.** Page attributes/index IDs could be reused after navigation or mutation,
+and disconnected calls could wait for the old timeout. Open shadow roots are traversed; closed
+roots, iframes/protected pages and custom widgets remain limited. Existing tabs are preserved
+when a new site must be opened. Heartbeats/alarms and reinjection recover regular pages after
+extension reload; installed Chrome service-worker lifecycle is still unverified here.
+
+## 2026-10-15 — Capture a window surface instead of a composed screen region
+
+**Decision.** macOS resolves the unique own-PID, onscreen, layer-zero CGWindowID matching the
+AX focused frame, then uses screencapture -x -o -l<ID>. Windows uses checked PrintWindow(0)
+inside the existing inline User32 helper. Both recheck window identity/frame; no region fallback.
+
+**Reason/consequences.** Cropping a screen rectangle could upload overlapping windows or Dragon's
+own overlay despite the frontmost-only invariant. Window-owned capture avoids that compositor
+path but may fail/return blank for GPU/protected apps. Actual native rendering, JXA bridging,
+CLI behavior and DPI alignment are not established by generated-script probes.
+
+Primary API references: [Microsoft PrintWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow),
+[Apple CGWindowListCopyWindowInfo](https://developer.apple.com/documentation/coregraphics/cgwindowlistcopywindowinfo(_:_:)).
+Apple's archived CLI manual was unavailable; [OpenAI's published screenshot tool](https://github.com/openai/skills/blob/main/skills/.curated/screenshot/scripts/take_screenshot.py)
+corroborates -l<ID> usage but is not native Apple CLI verification.
+
+## 2026-10-15 — Windows output volume through inline Core Audio COM
+
+**Decision.** Use the existing per-action PowerShell/inline C# pattern for the default multimedia
+render endpoint's IAudioEndpointVolume. Set scalar percent directly and call SetMute(true/false)
+for distinct mute/unmute. Keep relative volume keys unchanged.
+
+**Reason/consequences.** Exact percentage and idempotent mute/unmute were missing on Windows.
+No framework/native dependency/helper process was added. HRESULT >= 0 is success; release COM
+interfaces in finally. Method order/GUIDs were checked against Microsoft's mmdeviceapi.h and
+endpointvolume.h SDK headers; C# compilation and the real endpoint were not run in WSL.
+
+Sources: [SetMasterVolumeLevelScalar](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmastervolumelevelscalar),
+[SetMute](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmute).
+
+## 2026-10-15 — Transactional stores, resilient logging and serialized clipboard paste
+
+**Decision.** Validate/whitelist settings and history; write a private temporary JSON file beside
+the destination and rename it. Commit active settings and history clear only after persistence
+succeeds. Logger stream errors are non-fatal and credential-key redaction is normalized.
+Serialize clipboard paste/restoration and retain supported text/HTML/RTF/image formats.
+
+**Reason/consequences.** False saved/cleared state and overlapping clipboard intervals were
+observable correctness bugs. Failed history append remains available in memory for the session.
+Unsupported-only file/app clipboard data fails before replacement. Electron exposes no clipboard
+change counter: identical-text user copies cannot be distinguished, and proprietary formats
+mixed with supported formats are not fully restorable. Different-content user copies are kept.
+No unverified native ownership mechanism or new persistence framework was introduced.
+
+## 2026-10-15 — Four-view workspace, microphone selection and packaged extension setup
+
+**Decision.** Keep the dependency-free DOM renderer, with Overview, searchable Commands, Settings
+and Activity tabs. Expose existing mode/Emergency Stop controls, saved microphone selection,
+accurate readiness and draft-preserving async actions. Restart capture on a saved input change
+without reconnecting speech. Include chrome-extension as an extraResource outside app.asar,
+display its directory and offer an OS folder-open action.
+
+**Reason/consequences.** Features were hidden behind a long settings form, capture could use only
+the system input and installed users had no bundled extension folder to select. Enumeration
+does not open the microphone; input names may remain unavailable until the first capture.
+Chrome still requires manual Developer mode/Load unpacked. No extension sideload/permission
+automation or renderer framework was added. Laya retains explicit user start and managed-child
+ownership across start/stop/health races, with a separate readiness deadline.
+
+## 2026-10-15 — Honor explicit browser destinations and revalidate callback-mutated controls
+
+**Decision.** Host-only opens may focus an existing compatible-origin tab unchanged; explicit
+paths, queries and fragments prefer an exact URL, otherwise navigate a reused tab to that
+destination. Protocol/port must agree. Recheck DOM identity, visibility and writable state after
+focus and cancellable beforeinput handlers; match select options after focus.
+
+**Reason/consequences.** Focusing an old Google/YouTube tab silently discarded subsequent
+searches. Page handlers can synchronously detach/disable inputs or reorder options, so a
+pre-focus check alone could report success on the wrong or detached control. Disposable browser
+and actual Electron DOM reproductions verify these fixes. Invalid numeric tabs remain numeric
+so existing range validation can reject them. URL punctuation cleanup retains balanced path
+delimiters. Dictation replacement uses original-string Unicode match offsets, since lowercasing
+can expand characters and invalidate slice indexes. Laya URL components incompatible with
+endpoint construction are rejected without echoing values.

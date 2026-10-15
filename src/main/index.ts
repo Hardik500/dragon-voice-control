@@ -1,4 +1,5 @@
 import { app, session, shell, systemPreferences, BrowserWindow, Menu, Tray } from "electron";
+import * as path from "path";
 import { logger } from "../logging/logger";
 import { trustSystemCaCerts } from "./system-ca";
 import { SettingsStore } from "./settings-store";
@@ -8,10 +9,12 @@ import { DragonPipeline } from "./pipeline";
 import { LayaServerManager } from "./laya-server";
 import { createMicWindow, createOverlayWindow, createSettingsWindow, showOverlay } from "./windows";
 import { createTray } from "./tray";
+import { TargetOverlays } from "./target-overlays";
 import { registerIpc, broadcastStatus } from "./ipc";
 import { registerShortcuts, ShortcutRegistrationStatus } from "./shortcuts";
 import { ActivationMode } from "../types/settings";
 import { OverlayUpdate } from "../types/pipeline";
+import { MicrophoneStatus } from "../types/voice";
 
 app.setName("Dragon");
 trustSystemCaCerts();
@@ -33,10 +36,20 @@ let pipeline: DragonPipeline;
 let layaServer: LayaServerManager;
 let settingsWindow: BrowserWindow;
 let overlayWindow: BrowserWindow;
+let targetOverlays: TargetOverlays;
+let lastOverlayUpdate: Record<string, unknown> | null = null;
+let lastPipelineOverlay: OverlayUpdate | null = null;
 let micWindow: BrowserWindow;
 let tray: Tray;
 let refreshTray: () => void = () => {};
 let listening = false;
+// Generation tags reject late permission results, errors and audio from an older capture.
+let micGeneration = 0;
+let micCaptureRequested = false;
+let micRendererReady = false;
+let micRendererCrashed = false;
+let configuredInputDeviceId = "";
+let microphone: MicrophoneStatus = { state: "stopped", message: null };
 let shortcutStatus: ShortcutRegistrationStatus = { pushToTalkOk: true, emergencyStopOk: true, insertModeOk: true, workflowModeOk: true };
 
 function currentStatus() {
@@ -44,11 +57,14 @@ function currentStatus() {
   return {
     listening,
     streaming: pipeline.isStreaming(),
+    speech: pipeline.getSpeechStatus(),
+    microphone: { ...microphone },
     activationMode: settings.activationMode,
     insertMode: pipeline.isInsertModeActive(),
     workflowMode: pipeline.isWorkflowModeActive(),
     workflowStep: pipeline.getWorkflowStepCount(),
     browserConnected: browserBridge.isConnected(),
+    extensionDirectory: app.isPackaged ? path.join(process.resourcesPath, "chrome-extension") : path.join(__dirname, "..", "..", "chrome-extension"),
     browserBindError: browserBridge.getBindError(),
     layaServer: layaServer.getStatus(),
     shortcutStatus,
@@ -57,28 +73,120 @@ function currentStatus() {
 
 function pushStatus() {
   broadcastStatus([settingsWindow], currentStatus());
+  const speech = pipeline.getSpeechStatus();
+  const label = microphone.state === "error" || speech.state === "error" ? "Voice needs attention"
+    : !listening ? "Paused"
+    : speech.state === "reconnecting" ? "Reconnecting transcription"
+    : speech.state !== "connected" ? "Connecting transcription"
+    : microphone.state === "capturing" ? "Listening" : "Starting microphone";
+  tray?.setToolTip(`Dragon · ${label}`);
 }
 
-function applyListeningState(opts: { gracefulStop?: boolean } = {}) {
+function publishOverlay(update: OverlayUpdate): void {
+  lastPipelineOverlay = update;
+  if (overlayWindow.isDestroyed()) return;
+  const settings = settingsStore.get();
+  const interactionMode = pipeline.getInteractionMode();
+  const status = update.status ?? (interactionMode === "workflow" ? `Workflow · Step ${pipeline.getWorkflowStepCount()}` : null);
+  lastOverlayUpdate = {
+    ...update, interactionMode, status,
+    shortcuts: { listen: settings.pushToTalkShortcut, stop: settings.emergencyStopShortcut },
+    voice: { requested: listening, speech: pipeline.getSpeechStatus(), microphone: { ...microphone } },
+  };
+  overlayWindow.webContents.send("overlay:update", lastOverlayUpdate);
+  targetOverlays.update(settings.overlayVisible ? update.screenTargets ?? null : null);
+}
+
+function requestMicrophone(capture: boolean): void {
+  if (micCaptureRequested === capture) return;
+  micCaptureRequested = capture;
+  micGeneration += 1;
+  if (capture) microphone = { state: "starting", message: null };
+  else if (microphone.state !== "error") microphone = { state: "stopped", message: null };
+  if (capture && micRendererCrashed) {
+    const generation = micGeneration;
+    queueMicrotask(() => onMicStatus("error", "Microphone capture stopped. Retry voice to restart it.", generation));
+  } else if (micRendererReady && !micWindow.isDestroyed()) {
+    micWindow.webContents.send(capture ? "mic:start" : "mic:stop", micGeneration, { deviceId: settingsStore.get().audioInputDeviceId });
+  }
+}
+
+function syncMicrophone(): void {
+  const state = pipeline.getSpeechStatus().state;
+  // Keep an already-open input warm during reconnect; audio is never buffered or replayed.
+  requestMicrophone(listening && (state === "connected" ||
+    (micCaptureRequested && (state === "connecting" || state === "reconnecting"))));
+  if (lastPipelineOverlay) publishOverlay(lastPipelineOverlay);
+  pushStatus();
+  refreshTray();
+}
+
+function onMicStatus(status: string, detail: string | undefined, generation: number): void {
+  if (status === "ready") {
+    micRendererReady = true;
+    micRendererCrashed = false;
+    micWindow.webContents.send(micCaptureRequested ? "mic:start" : "mic:stop", micGeneration, { deviceId: settingsStore.get().audioInputDeviceId });
+    return;
+  }
+  if (generation !== micGeneration) return;
+  if (status === "error" && micCaptureRequested) {
+    microphone = { state: "error", message: detail || "Microphone unavailable. Check your input and retry voice." };
+    requestMicrophone(false);
+    pipeline.stopStreaming();
+    pipeline.reportMicrophoneError(microphone.message!);
+  } else if (status === "capturing" && micCaptureRequested) {
+    microphone = { state: "capturing", message: null };
+    if (lastPipelineOverlay) publishOverlay(lastPipelineOverlay);
+  } else if (status === "starting" && micCaptureRequested) {
+    microphone = { state: "starting", message: null };
+  } else if (status === "stopped" && !micCaptureRequested && microphone.state !== "error") {
+    microphone = { state: "stopped", message: null };
+  }
+  pushStatus();
+  refreshTray();
+}
+
+async function applyListeningState(opts: { gracefulStop?: boolean } = {}): Promise<void> {
   if (!listening) {
     // Push-to-talk release: give Deepgram a moment to flush the final EndOfTurn
     // for whatever was just said instead of yanking the connection (see
     // DragonPipeline.stopStreaming).
+    requestMicrophone(false);
     pipeline.stopStreaming({ graceful: opts.gracefulStop ?? false });
     pushStatus();
     return;
   }
   // Push-to-talk (start on toggle-on) and the two continuous modes all start
   // streaming the same way; only how `listening` gets flipped differs.
-  pipeline.startStreaming();
+  await pipeline.startStreaming();
   pushStatus();
 }
 
-function toggleListening() {
-  listening = !listening;
+async function setListening(enabled: boolean): Promise<void> {
+  const wasListening = listening;
+  listening = enabled;
+  if (enabled && !wasListening) microphone = { state: "stopped", message: null };
   logger.event("app.listening_toggled", { listening });
-  const graceful = !listening && settingsStore.get().activationMode === "push_to_talk";
-  applyListeningState({ gracefulStop: graceful });
+  const graceful = !enabled && settingsStore.get().activationMode === "push_to_talk";
+  await applyListeningState({ gracefulStop: graceful });
+  refreshTray();
+}
+
+function toggleListening() {
+  void setListening(!listening);
+}
+
+async function retryListening(): Promise<void> {
+  logger.event("app.voice_retry", {});
+  pipeline.stopStreaming();
+  microphone = { state: "stopped", message: null };
+  listening = true;
+  // A crashed hidden renderer cannot receive mic:start; reload only on an explicit retry.
+  if (!micRendererReady && !micWindow.isDestroyed() && !micWindow.webContents.isLoadingMainFrame()) {
+    micRendererCrashed = false;
+    micWindow.reload();
+  }
+  await applyListeningState();
   refreshTray();
 }
 
@@ -93,22 +201,55 @@ function applyModeChange(mode: ActivationMode) {
   logger.event("app.activation_mode_changed", { mode });
   pipeline.stopStreaming();
   listening = mode !== "push_to_talk";
-  applyListeningState();
+  void applyListeningState();
   refreshTray();
 }
 
 function setActivationMode(mode: ActivationMode) {
-  settingsStore.update({ activationMode: mode });
-  applyModeChange(mode);
+  const updated = settingsStore.update({ activationMode: mode });
+  if (settingsStore.persistedLast) applyModeChange(updated.activationMode);
+  else refreshTray();
 }
 
-function toggleOverlay() {
-  const settings = settingsStore.get();
-  const next = !settings.overlayVisible;
-  settingsStore.update({ overlayVisible: next });
-  if (next) showOverlay(overlayWindow);
-  else overlayWindow.hide();
+function applyOverlayVisibility(): void {
+  if (settingsStore.get().overlayVisible) {
+    showOverlay(overlayWindow);
+    targetOverlays.update((lastOverlayUpdate?.screenTargets as OverlayUpdate["screenTargets"]) ?? null);
+  } else {
+    overlayWindow.hide();
+    targetOverlays.clear();
+  }
+}
+
+function toggleOverlay(): void {
+  settingsStore.update({ overlayVisible: !settingsStore.get().overlayVisible });
+  applyOverlayVisibility();
   refreshTray();
+}
+
+function setInteractionMode(mode: "normal" | "insert" | "workflow"): void {
+  if (mode === "insert" && !pipeline.isInsertModeActive()) pipeline.toggleInsertMode();
+  else if (mode === "workflow" && !pipeline.isWorkflowModeActive()) pipeline.toggleWorkflowMode();
+  else if (mode === "normal") {
+    if (pipeline.isInsertModeActive()) pipeline.toggleInsertMode();
+    if (pipeline.isWorkflowModeActive()) pipeline.toggleWorkflowMode();
+  }
+  pushStatus();
+  refreshTray();
+}
+
+function emergencyStop(): void {
+  listening = false;
+  pipeline.emergencyStop();
+  pushStatus();
+  refreshTray();
+}
+
+async function listMicrophones(): Promise<Array<{ deviceId: string; label: string }>> {
+  if (micWindow.isDestroyed() || !micRendererReady) throw new Error("Microphone window is not ready. Retry voice, then refresh inputs.");
+  return micWindow.webContents.executeJavaScript(
+    "navigator.mediaDevices.enumerateDevices().then(devices => devices.filter(d => d.kind === 'audioinput').map(d => ({deviceId:d.deviceId,label:d.label})))"
+  );
 }
 
 async function requestMicPermission() {
@@ -165,29 +306,43 @@ app.whenReady().then(async () => {
 
   settingsStore = new SettingsStore();
   logger.setVerbosity(settingsStore.get().logVerbosity);
+  configuredInputDeviceId = settingsStore.get().audioInputDeviceId;
   // Reflect the persisted activation mode immediately: if the user quit while in a
   // continuous mode, relaunching should resume listening, not silently sit idle until
   // they notice and manually toggle it (see PROGRESS.md/DECISIONS.md).
   listening = settingsStore.get().activationMode !== "push_to_talk";
 
   browserBridge = new BrowserBridge();
+  browserBridge.onConnectionChanged(() => {
+    if (pipeline && layaServer && settingsWindow) pushStatus();
+  });
   browserBridge.start();
 
   overlayWindow = createOverlayWindow();
   settingsWindow = createSettingsWindow();
   micWindow = createMicWindow();
+  targetOverlays = new TargetOverlays();
+  overlayWindow.webContents.on("did-finish-load", () => {
+    if (lastOverlayUpdate) overlayWindow.webContents.send("overlay:update", lastOverlayUpdate);
+  });
+  const initialSettings = settingsStore.get();
+  const needsSetup = !initialSettings.deepgramApiKey.trim() ||
+    (initialSettings.decisionProvider === "jev" && !initialSettings.openRouterApiKey.trim());
+  if (needsSetup) {
+    settingsWindow.once("ready-to-show", () => {
+      settingsWindow.show();
+      settingsWindow.focus();
+    });
+  }
 
   pipeline = new DragonPipeline(
     () => settingsStore.get(),
     browserBridge,
     (update: OverlayUpdate) => {
-      if (!overlayWindow.isDestroyed()) {
-        const interactionMode = pipeline.getInteractionMode();
-        const status = update.status ?? (interactionMode === "workflow" ? `Workflow · Step ${pipeline.getWorkflowStepCount()}` : null);
-        overlayWindow.webContents.send("overlay:update", { ...update, interactionMode, status });
-      }
+      publishOverlay(update);
       pushStatus();
-    }
+    },
+    () => syncMicrophone()
   );
   layaServer = new LayaServerManager(
     () => settingsStore.get(),
@@ -206,6 +361,11 @@ app.whenReady().then(async () => {
     layaServer,
     onSettingsChanged: (settings, changedMode) => {
       logger.setVerbosity(settings.logVerbosity);
+      applyOverlayVisibility();
+      if (settings.audioInputDeviceId !== configuredInputDeviceId) {
+        configuredInputDeviceId = settings.audioInputDeviceId;
+        if (micCaptureRequested) { requestMicrophone(false); syncMicrophone(); }
+      }
       registerAppShortcuts();
       if (changedMode) {
         applyModeChange(changedMode);
@@ -218,19 +378,21 @@ app.whenReady().then(async () => {
       void shell.openExternal(dashboardServer.url());
     },
     getStatus: () => currentStatus(),
+    setListening,
+    retryListening,
+    setMode: setInteractionMode,
+    emergencyStop,
+    listMicrophones,
+    onMicStatus,
+    onMicChunk: (chunk, generation) => {
+      if (micCaptureRequested && generation === micGeneration) pipeline.handleMicChunk(chunk);
+    },
   });
-
-  // Route hidden mic-capture window start/stop via pipeline streaming state.
-  const originalStart = pipeline.startStreaming.bind(pipeline);
-  pipeline.startStreaming = async () => {
-    await originalStart();
-    if (!micWindow.isDestroyed()) micWindow.webContents.send("mic:start");
-  };
-  const originalStop = pipeline.stopStreaming.bind(pipeline);
-  pipeline.stopStreaming = (opts) => {
-    originalStop(opts);
-    if (!micWindow.isDestroyed()) micWindow.webContents.send("mic:stop");
-  };
+  micWindow.webContents.on("render-process-gone", () => {
+    micRendererReady = false;
+    micRendererCrashed = true;
+    if (micCaptureRequested) onMicStatus("error", "Microphone capture stopped. Retry voice to restart it.", micGeneration);
+  });
 
   const trayHandle = createTray({
     getSettings: () => settingsStore.get(),
@@ -262,7 +424,10 @@ app.whenReady().then(async () => {
     openLogsFolder: () => {
       shell.openPath(logger.logDir);
     },
-    clearHistory: () => pipeline.clearHistory(),
+    clearHistory: () => {
+      try { pipeline.clearHistory(); }
+      catch (error) { logger.error("history.clear_failed", error); }
+    },
     quit: () => {
       app.quit();
     },
@@ -281,12 +446,7 @@ app.whenReady().then(async () => {
         if (settingsStore.get().activationMode !== "push_to_talk") return;
         toggleListening();
       },
-      onEmergencyStop: () => {
-        listening = false;
-        pipeline.emergencyStop();
-        pushStatus();
-        refreshTray();
-      },
+      onEmergencyStop: emergencyStop,
       onToggleInsertMode: () => {
         pipeline.toggleInsertMode();
         pushStatus();
@@ -311,7 +471,7 @@ app.whenReady().then(async () => {
 
   // Actually start streaming now if the persisted mode implies it (see the `listening`
   // seed above) — permission has been requested/granted by this point.
-  applyListeningState();
+  void applyListeningState();
   refreshTray();
 
   logger.event("app.ready", {});
@@ -329,6 +489,7 @@ app.on("before-quit", () => {
   // Logged first so a run that is stuck can be told apart from one that never started quitting.
   logger.event("app.quit", {});
   pipeline?.emergencyStop();
+  targetOverlays?.clear();
   layaServer?.dispose();
   browserBridge?.stop();
   dashboardServer?.stop();

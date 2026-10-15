@@ -64,6 +64,7 @@ export const APP_ALIASES: Record<string, string> = {
 
 /** Spoken key/shortcut phrase -> AppleScript key spec. */
 export interface MacKeySpec {
+  sequence?: MacKeySpec[];
   keyCode?: number; // System Events "key code"
   character?: string; // System Events "keystroke"
   modifiers: string[]; // "command down" | "shift down" | "option down" | "control down"
@@ -71,6 +72,21 @@ export interface MacKeySpec {
 
 /** Must cover every name in `commands/registry-common.ts`'s `KEY_PHRASE_NAMES`. */
 export const KEY_SPECS: Record<string, MacKeySpec> = {
+  "next field": {"keyCode": 48, "modifiers": []},
+  "previous field": {"keyCode": 48, "modifiers": ["shift down"]},
+  "previous tab": {"keyCode": 48, "modifiers": ["control down", "shift down"]},
+  "word left": {"keyCode": 123, "modifiers": ["option down"]},
+  "word right": {"keyCode": 124, "modifiers": ["option down"]},
+  "select word left": {"keyCode": 123, "modifiers": ["option down", "shift down"]},
+  "select word right": {"keyCode": 124, "modifiers": ["option down", "shift down"]},
+  "beginning of line": {"keyCode": 123, "modifiers": ["command down"]},
+  "end of line": {"keyCode": 124, "modifiers": ["command down"]},
+  "beginning of document": {"keyCode": 126, "modifiers": ["command down"]},
+  "end of document": {"keyCode": 125, "modifiers": ["command down"]},
+  "select to beginning": {"keyCode": 126, "modifiers": ["command down", "shift down"]},
+  "select to end": {"keyCode": 125, "modifiers": ["command down", "shift down"]},
+  "select line": {"modifiers": [], "sequence": [{"keyCode": 123, "modifiers": ["command down"]}, {"keyCode": 124, "modifiers": ["command down", "shift down"]}]},
+
   enter: { keyCode: 36, modifiers: [] },
   return: { keyCode: 36, modifiers: [] },
   escape: { keyCode: 53, modifiers: [] },

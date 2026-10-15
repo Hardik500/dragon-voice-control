@@ -40,9 +40,11 @@ export function showOverlay(win: BrowserWindow): void {
 
 export function createSettingsWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 480,
-    height: 640,
-    title: "Dragon Settings",
+    width: 880,
+    height: 760,
+    minWidth: 480,
+    minHeight: 560,
+    title: "Dragon",
     show: false,
     webPreferences: {
       preload: path.join(PRELOAD_DIR, "settings-preload.js"),
@@ -61,8 +63,8 @@ export function createSettingsWindow(): BrowserWindow {
 
 export function createOverlayWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay();
-  const width = 360;
-  const height = 220;
+  const width = 380;
+  const height = 340;
   const win = new BrowserWindow({
     width,
     height,

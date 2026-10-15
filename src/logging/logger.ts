@@ -22,6 +22,8 @@ const REDACT_KEYS = new Set([
   "audio",
   "pcm",
   "chunk",
+  "password", "secret", "clientsecret", "accesstoken", "refreshtoken",
+  "accesskeyid", "secretaccesskey", "sessiontoken", "credential", "credentials",
 ]);
 
 function redact(value: unknown, depth = 0): unknown {
@@ -39,7 +41,7 @@ function redact(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (REDACT_KEYS.has(k.toLowerCase())) {
+      if (REDACT_KEYS.has(k.toLowerCase().replace(/[_\s-]/g, ""))) {
         out[k] = "[redacted]";
       } else {
         out[k] = redact(v, depth + 1);
@@ -60,7 +62,7 @@ class Logger {
   constructor() {
     this.sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     this.logDir = path.join(app.getPath("userData"), "logs");
-    fs.mkdirSync(this.logDir, { recursive: true });
+    try { fs.mkdirSync(this.logDir, { recursive: true }); } catch { /* Logging is best effort. */ }
   }
 
   setVerbosity(v: LogVerbosity) {
@@ -73,24 +75,26 @@ class Logger {
     if (this.stream) this.stream.end();
     this.currentDay = day;
     const file = path.join(this.logDir, `dragon-${day}.jsonl`);
-    this.stream = fs.createWriteStream(file, { flags: "a" });
+    const stream = fs.createWriteStream(file, { flags: "a", mode: 0o600 });
+    this.stream = stream;
+    stream.on("error", () => {
+      if (this.stream === stream) this.stream = null;
+      stream.destroy();
+    });
   }
 
   event(stage: string, data: Record<string, unknown> = {}, opts: { verboseOnly?: boolean } = {}) {
     if (opts.verboseOnly && this.verbosity !== "verbose") return;
-    this.ensureStream();
-    const record = {
-      ts: new Date().toISOString(),
-      sessionId: this.sessionId,
-      stage,
-      ...(redact(data) as Record<string, unknown>),
-    };
     try {
+      this.ensureStream();
+      const record = {
+        ts: new Date().toISOString(),
+        sessionId: this.sessionId,
+        stage,
+        ...(redact(data) as Record<string, unknown>),
+      };
       this.stream?.write(JSON.stringify(record) + "\n");
-    } catch (err) {
-      // Logging must never crash the app.
-      console.error("log write failed", err);
-    }
+    } catch { /* Logging must never crash the app or echo sensitive errors. */ }
   }
 
   error(stage: string, err: unknown, data: Record<string, unknown> = {}) {

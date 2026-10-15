@@ -84,6 +84,7 @@ export const APP_ALIASES: Record<string, WinAppAlias> = {
 };
 
 export interface WinKeySpec {
+  sequence?: WinKeySpec[];
   vk?: number; // explicit virtual-key code, for non-letter keys
   char?: string; // single letter; VK code is its uppercase ASCII code (a documented Windows quirk)
   modifiers: Array<"ctrl" | "alt" | "shift" | "win">;
@@ -91,6 +92,21 @@ export interface WinKeySpec {
 
 /** Must cover every name in `commands/registry-common.ts`'s `KEY_PHRASE_NAMES`. */
 export const KEY_SPECS: Record<string, WinKeySpec> = {
+  "next field": {"vk": 9, "modifiers": []},
+  "previous field": {"vk": 9, "modifiers": ["shift"]},
+  "previous tab": {"vk": 9, "modifiers": ["ctrl", "shift"]},
+  "word left": {"vk": 37, "modifiers": ["ctrl"]},
+  "word right": {"vk": 39, "modifiers": ["ctrl"]},
+  "select word left": {"vk": 37, "modifiers": ["ctrl", "shift"]},
+  "select word right": {"vk": 39, "modifiers": ["ctrl", "shift"]},
+  "beginning of line": {"vk": 36, "modifiers": []},
+  "end of line": {"vk": 35, "modifiers": []},
+  "beginning of document": {"vk": 36, "modifiers": ["ctrl"]},
+  "end of document": {"vk": 35, "modifiers": ["ctrl"]},
+  "select to beginning": {"vk": 36, "modifiers": ["ctrl", "shift"]},
+  "select to end": {"vk": 35, "modifiers": ["ctrl", "shift"]},
+  "select line": {"modifiers": [], "sequence": [{"vk": 36, "modifiers": []}, {"vk": 35, "modifiers": ["shift"]}]},
+
   enter: { vk: 0x0d, modifiers: [] },
   return: { vk: 0x0d, modifiers: [] },
   escape: { vk: 0x1b, modifiers: [] },

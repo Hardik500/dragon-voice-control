@@ -12,7 +12,12 @@ files:
   - src/renderer/**/*.html
   - assets/**/*
   - package.json
-extraResources: []
+# Chrome must load unpacked files outside app.asar. Include the extension for installed users.
+extraResources:
+  - from: chrome-extension
+    to: chrome-extension
+    filter:
+      - "**/*"
 # Never let electron-builder publish. With no publish key it infers GitHub options from the git
 # remote, decides it should publish, and then dies with "GitHub Personal Access Token is not set"
 # -- after successfully building the installer, which makes it look like a packaging failure.

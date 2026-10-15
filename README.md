@@ -1,7 +1,7 @@
 # Dragon
 
 A voice-control agent for macOS and Windows. Say *"open Notepad"*, *"search for X"*, *"scroll
-down"*, *"delete the last 3 words"* — Dragon does it, and shows you its reasoning as it decides.
+down"*, *"delete the last 3 words"* — Dragon acts and shows the selected action and connection status.
 
 > **Personal alpha.** Runs on **macOS and Windows** — both work, and both are equally expected to
 > have bugs. Unsigned, no automated tests, no confirmation prompts, and deliberately conservative
@@ -18,7 +18,7 @@ Notepad, then driving Chrome.
 
 ### Decision dashboard
 
-Every command, with the reasoning left visible: the transcript, the selected intent and target,
+Decision-provider calls, with their choices visible: the transcript, the selected intent and target,
 their confidence, the runner-up choices, and the latency split between STT, the decision request,
 and execution. Served locally at `http://127.0.0.1:17873/dashboard` while Dragon is running.
 
@@ -26,7 +26,7 @@ and execution. Served locally at `http://127.0.0.1:17873/dashboard` while Dragon
 
 ## What it does
 
-Every phrase below is a real command — not a paraphrase. Punctuation is optional.
+Use the Commands tab to search examples and see which controls require the Chrome extension. Punctuation is optional.
 
 ### Apps and windows
 
@@ -46,15 +46,18 @@ Every phrase below is a real command — not a paraphrase. Punctuation is option
 |---|---|
 | `start typing` (or `start dictation`, `insert mode`, `start writing`) | Enter **Insert Mode** |
 | *anything you say* | Typed verbatim into the focused app |
-| `new line` | Newline |
+| `new line` · `new paragraph` | Line break · paragraph break |
+| `comma` · `period` · `question mark` | Insert punctuation in Insert Mode |
 | `delete the last 3 words` (default 3) | Backspace exactly N words of what Dragon typed |
-| `delete that` · `delete everything` | Undo the last dictation · clear the field |
+| `delete that` · `delete everything` | Remove the last inserted chunk · remove Dragon’s tracked dictation |
 | `replace X with Y` | Edit the text Dragon just wrote |
 | `stop typing` (or `done`, `that's it`, `exit insert mode`) | Leave Insert Mode |
 
 Insert Mode is **text-first**: app and browser commands are typed as text until you leave it.
 Key presses and shortcuts still work while you're in it. Deletions are computed from an exact
-record of what Dragon typed — it never reads the contents of the app you're in.
+record of what Dragon typed — it never reads the contents of the app you're in. Window changes,
+caret movement and untracked edits reset that record. Manual caret/field changes inside the same
+window cannot be detected; start a fresh dictation tail after making them.
 
 ### Chrome
 
@@ -65,34 +68,49 @@ record of what Dragon typed — it never reads the contents of the app you're in
 | `click on the first post` | Click a visible element by its label |
 | `scroll down` · `back` · `forward` · `reload` | Page control |
 | `new tab` · `close tab` · `switch to the previous tab` | Tab control |
+| `switch to tab 3` · `switch to the GitHub tab` · `switch to the last tab` | Tab number/title/position |
+| `type hello into Search field` · `choose Canada from Country dropdown` | Edit a labelled page field |
 | `search for cats` (in Slack, Notion, VS Code, …) | That app's own Cmd/Ctrl+K quick-open |
 
-Navigation and search work without the extension. Clicking, typing, scrolling, and tabs need it.
+Website navigation and web search work without the extension. Page-field editing and tab controls
+need it. Native paging is available when DOM scrolling is unavailable. The extension popup shows
+its live connection/page status and offers Reconnect.
 
 ### Click anything on screen (any app)
 
 | Say | Result |
 |---|---|
 | `click on Bluetooth` · `click accessibility` · `click on sign in options` | Click the labelled element in the frontmost window of **any** app (Settings, WhatsApp, VS Code, …) |
-| `click on chat` (several matches) | Dragon picks the best one, or shows a numbered list — say `1`…`5` within 15 seconds |
+| `point to Save` · `show me Save` · `highlight Save` | Highlight a control for five seconds, without clicking |
+| `click on chat` (several matches) | Dragon picks the best one, or shows numbered markers on the controls — say `1`…`5` within 15 seconds |
 
-A literal "click X" is handled deterministically, without waiting on the model's confidence. How
-the element is found depends on the **Screen click method** setting (default **Auto**): first the
+A literal "click X" supplies its target deterministically; the decision-provider request still
+runs. The lookup method depends on the **Screen click method** setting (default **Auto**): first the
 OS accessibility tree — element *labels* from the frontmost window only, clicked at their exact
 position, no screenshot — then, if nothing matches, a vision model on a screenshot of the
 frontmost window only. Windows clicks are DPI-aware, and off-screen list items are scrolled into
 view only when no match is already visible. macOS vision mode also needs **Screen Recording**
 permission.
 
+Pointing uses this same lookup and decision provider, then shows a ring instead of clicking.
+Numbered choices stay visible during speech, expire after 15 seconds, and can be dismissed with
+`cancel` or Emergency Stop. Moving or changing the focused window invalidates the coordinates.
+Capture uses the target window surface; unsupported/protected apps may reject capture or return
+blank pixels. Try Accessibility tree when available. In Insert Mode, pointing phrases are typed
+as text.
+
 ### System and media
 
 | Say | Result |
 |---|---|
-| `volume up` · `volume down` · `mute` | System volume |
+| `volume up` · `volume down` · `volume 50` · `mute` · `unmute` | System volume and explicit mute state |
 | `pause` · `next track` · `previous track` | Media keys |
 | `press enter` · `escape` · `tab` · `arrow down` | Any named key |
 | `copy` · `paste` · `undo` · `save` · `select all` | Common shortcuts |
-| `control c` | Literal key combos |
+| `control c` · `command + v` | Platform-appropriate literal key combos |
+| `next field` · `previous field` | Move keyboard focus |
+| `word left` · `select word right` · `select line` | Text movement and selection |
+| `beginning of line` · `end of document` · `select to end` | Line/document navigation |
 
 Numbers come through as digits, so `type my number is 5551234` types the digits, not the words.
 
@@ -117,6 +135,13 @@ npm start          # builds, then launches Electron
 
 First launch:
 
+The Dragon workspace opens automatically when required keys are missing. **Overview** shows
+saved-key presence, separate microphone/transcription status, shortcuts and the Chrome extension.
+**Commands** is a searchable command guide, **Settings** configures saved preferences, and
+**Activity** shows searchable command outcomes and details. Settings marks unsaved changes;
+use Save changes or Ctrl/Cmd+S to apply them.
+
+
 1. **Allow microphone access** when prompted. On Windows also check *Settings → Privacy &
    security → Microphone → Let desktop apps access your microphone*.
 2. **macOS only:** the first app-switching or keystroke command triggers an **Accessibility**
@@ -129,16 +154,35 @@ First launch:
 
 ### Load the Chrome extension
 
-Needed for click, type, scroll, and tab commands:
+Needed for page-field and tab commands:
 
-1. Go to `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and pick this
-   repo's `chrome-extension/` folder.
-2. Start Dragon *first* — the extension connects to `ws://127.0.0.1:17872` and retries until it is.
-3. Confirm by looking for `browser.extension_connected` in the log, or just try `scroll down`.
+1. Keep Dragon running. In **Overview → Connect Chrome page controls**, choose **Open extension
+   folder** or copy the displayed directory. Installed builds include this folder.
+2. Go to `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select
+   that directory. The bridge connects to `ws://127.0.0.1:17872`.
+3. Confirm Extension connected in Overview or open the extension popup. Reconnect is available
+   there. Restricted Chrome pages cannot expose normal page controls.
 
 > **After editing anything in `chrome-extension/`, press Reload on that page.** An unpacked
 > extension won't pick up changes otherwise, and the failure looks like "the extension isn't
 > loaded" rather than "it's running stale code".
+
+## Voice status and recovery
+
+Overview has **Start/Pause listening**, **Retry voice**, mode controls and **Emergency Stop**. Save any key changes before
+using them. In Settings, choose System default or a specific microphone and Save; Refresh inputs
+updates the list without starting capture. Names may appear only after the first voice start.
+A missing saved device remains visible so you can select another. “Connected” under Speech means the transcription connection is open; Dragon is
+ready to listen once Microphone also says it is capturing. The overlay shows connection,
+microphone startup and recovery states.
+
+A dropped network connection gets up to five recovery attempts. A microphone permission or
+device error stays visible with instructions; correct it, then choose **Retry voice**. Pause
+can cancel a connection attempt, and Retry can restore a crashed microphone capture window.
+
+Pause/retry keeps Insert Mode and the text Dragon has already typed, so in-session edits can
+continue after recovery. Speech spoken while disconnected is not saved or replayed. Emergency
+Stop clears modes and pending actions, including decisions queued behind an earlier transcript.
 
 ## Modes and shortcuts
 
@@ -146,7 +190,11 @@ Needed for click, type, scroll, and tab commands:
 |---|---|
 | `Control+Alt+D` (`Alt+Space` on macOS) | Toggle listening (push-to-talk **toggles** — press again to stop) |
 | `Control+Alt+I` | Toggle Insert Mode without touching the mic |
+| `Control+Alt+Shift+W` | Toggle Workflow Mode; give one command per utterance |
 | `Control+Alt+Escape` (`Alt+Escape` on macOS) | Emergency stop: abort anything in flight and clear modes |
+
+The floating overlay labels **Command**, **Insert**, or **Workflow** separately and shows
+contextual examples plus your listen/stop shortcuts.
 
 **Activation mode** is either push-to-talk (above) or always-listening, which filters out speech
 that wasn't addressed to Dragon. Push-to-talk is more predictable; always-listening is more fluid.
@@ -181,7 +229,7 @@ chrome-extension/  Unpacked MV3 extension — plain JS, identical on both OSes
 ```
 
 Shared code never imports a platform file directly. `commands/registry.ts` picks the right one
-and **throws at startup** if a name exists in the shared vocabulary but not on the running OS, so
+and **throws at startup** if a shared vocabulary name is missing from either OS registry, so
 a missing alias can't fail silently at runtime.
 
 ## Settings
@@ -192,7 +240,9 @@ a missing alias can't fail silently at runtime.
 | **API keys** | Masked after saving; leave blank on Save to keep the existing key |
 | **Screen click method** | `Auto` (default: accessibility, then vision), `Vision model`, or `Accessibility tree`. Only `Auto` falls back to vision on a miss |
 | **Activation mode** | Push to talk, or always listening |
-| **Shortcuts** | PTT, emergency stop, Insert Mode — all rebindable |
+| **Microphone** | System default or a saved input device; Refresh inputs enumerates without capture |
+| **Show floating overlay** | Applies after Save and persists across restarts |
+| **Shortcuts** | PTT, Emergency Stop, Insert Mode and Workflow Mode — all rebindable |
 | **Speak short replies** | Spoken acknowledgements (toggle off when recording) |
 | **Debug log verbosity** | `normal` drops noisy interim STT events; `verbose` keeps them |
 
@@ -206,8 +256,8 @@ Logs are one JSON object per line, rotated daily, at `<userData>/logs/dragon-YYY
 - macOS: `~/Library/Application Support/Dragon`
 - Windows: `%APPDATA%\Dragon`
 
-Open the folder from the tray (**Open Logs Folder**). Nothing sensitive is ever written — keys are
-redacted and audio is never logged.
+Open the folder from the tray (**Open Logs Folder**) or Settings. Keys are redacted and raw audio
+is never logged. Logs and Activity do contain spoken transcripts, commands and target labels.
 
 | Symptom | Look for |
 |---|---|
@@ -217,7 +267,9 @@ redacted and audio is never logged.
 | No transcripts at all | `stt.connected` / `stt.socket_error` — usually a bad Deepgram key or missing mic permission |
 | Decision errors | `pipeline.decision_failed` — usually a bad OpenRouter key or no System One access |
 | A shortcut does nothing | Settings will show a registration warning; pick another combination |
-| Windows: "not supported on Windows yet" | Known parity gap for exact volume %. Use `volume up`/`down` |
+| Selected microphone unavailable | Choose System default or another input in Settings, Save, then Retry voice |
+| Clipboard contains files or app data | Copy text first, then retry typing; unsupported-only clipboard data is preserved |
+| Window capture fails or is blank | Try Accessibility tree; check macOS Screen Recording permission |
 | macOS: "not allowed to send keystrokes" | Grant Accessibility permission, then restart Dragon |
 
 ## Publishing a release
@@ -284,7 +336,7 @@ build **must** be made on a Mac: from Linux or Windows, electron-builder emits a
 *host's* CPU architecture rather than the configured one, so an "arm64" build on an x64 host
 silently ships an x64 app that needs Rosetta. The script refuses that combination rather than
 handing you a mislabelled artifact. Building a Linux target is deliberately not supported — the
-app hard-errors off macOS and Windows.
+release targets are macOS and Windows; Linux only has a development fallback.
 
 Both builds are unsigned. macOS: right-click the `.app` → **Open** on first launch to clear
 Gatekeeper (or `xattr -dr com.apple.quarantine <path>.app`). Windows: accept the **SmartScreen**
@@ -304,7 +356,14 @@ These are real and deliberate, not oversights:
 - **No confirmation prompts or deny-lists.** A recognised command executes. That's the design.
 - **Spoken words can still be misheard** — keyterm prompting improves the common command words
   but doesn't eliminate it. "minimize" occasionally arrives as "many" or "mini mice".
-- **Windows: exact volume % and separate mute/unmute** aren't implemented; mute is a toggle.
+- **This patch needs native verification.** Exact Windows volume/mute, window-surface capture,
+  navigation keys and real device/permission behavior were checked by generated-script probes,
+  not executed on macOS/Windows. See the latest audit in [PROGRESS.md](PROGRESS.md).
+- **Clipboard paste restores common text/HTML/RTF/image formats.** Unsupported-only file/app data
+  fails before replacement. Identical-text user copies during a paste cannot be distinguished;
+  proprietary formats mixed with supported formats are not fully restorable.
+- **Browser DOM coverage is bounded.** Closed shadow roots, iframes, restricted pages and custom
+  controls may need focused keyboard navigation or screen clicking.
 - **Windows Store apps** (Calculator, Photos, Settings, WhatsApp, …) host their windows under
   `ApplicationFrameHost`. Dragon falls back to finding that window by title, which works for
   Settings and WhatsApp but is untested for other Store apps.

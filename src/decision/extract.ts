@@ -17,13 +17,14 @@ import { AppCandidate, BrowserElementCandidate, BrowserPageState, ExtractedPaylo
 
 const WORD_NUMBERS: Record<string, number> = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
 };
 
 /** Vague quantifiers used in "delete the last few words" style phrasing. */
 const VAGUE_COUNT_WORDS: Record<string, number> = {
   a: 1, an: 1, one: 1,
-  couple: 2, "couple of": 2,
+  couple: 2, "couple of": 2, "a couple": 2, "a couple of": 2,
   few: 3, "a few": 3, several: 4,
 };
 
@@ -32,20 +33,25 @@ function lower(s: string): string {
 }
 
 export function extractNumber(transcript: string): number | null {
-  const digitMatch = transcript.match(/\b(\d{1,3})\b/);
-  if (digitMatch) return parseInt(digitMatch[1], 10);
-  const lowerT = lower(transcript);
-  for (const [word, value] of Object.entries(WORD_NUMBERS)) {
-    if (new RegExp(`\\b${word}\\b`).test(lowerT)) return value;
+  const digit = transcript.match(/(?:^|[^\w.])(-?\d+(?:\.\d+)?)(?![\w.])/);
+  if (digit) { const n = Number(digit[1]); return Number.isFinite(n) ? n : null; }
+  const words = lower(transcript).replace(/-/g, " ").split(/\W+/);
+  let total = 0, group = 0, started = false;
+  for (const word of words) {
+    if (word === "and" && started) continue;
+    if (word in WORD_NUMBERS) { group += WORD_NUMBERS[word]; started = true; }
+    else if (word === "hundred") { group = (group || 1) * 100; started = true; }
+    else if (word === "thousand") { total += (group || 1) * 1000; group = 0; started = true; }
+    else if (started) break;
   }
-  return null;
+  return started ? total + group : null;
 }
 
 export function findAppCandidates(transcript: string): AppCandidate[] {
   const lowerT = lower(transcript);
   const seen = new Set<string>();
   const candidates: AppCandidate[] = [];
-  for (const aliasKey of appAliasKeys()) {
+  for (const aliasKey of appAliasKeys().sort((a,b) => b.length - a.length)) {
     // Word-boundary match, not a plain substring — a bare `.includes()` check let "mail"
     // spuriously match inside "Gmail", sending "open Gmail" to the Mail app instead of
     // gmail.com. Aliases can be multi-word ("google chrome"), so escape regex metacharacters.
@@ -77,9 +83,18 @@ export function extractDictatedText(transcript: string): string | null {
 /** "click/tap [on] [the] X" -> X. Deliberately excludes "press" (ambiguous with press_key,
  * e.g. "press enter"). Used for vision-based clicking outside the Chrome DOM path. */
 export function extractClickTarget(transcript: string): string | null {
+  const preview = extractScreenPreviewTarget(transcript);
+  if (preview) return preview;
   const m = transcript.match(/\b(?:click|tap)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i);
   if (m && m[1].trim().length > 0) return m[1].trim();
   return extractImplicitClickTarget(transcript);
+}
+
+/** Explicit screen-target preview only; this never requests a screen description or answer. */
+export function extractScreenPreviewTarget(transcript: string): string | null {
+  const m = transcript.match(/^\s*(?:please\s+)?(?:point\s+to|show\s+me|highlight)\s+(?:the\s+)?(.+?)\s*[.!?]*$/i);
+  const target = m?.[1].trim();
+  return target && /[\p{L}\p{N}]/u.test(target) ? target : null;
 }
 
 /** Implicit UI-control phrasing: "select Rose", "change to Agave", "turn on dark mode".
@@ -129,10 +144,7 @@ export function extractSearchQuery(transcript: string): string | null {
  * Normalize that pattern before running URL regexes, but only for URL extraction — dictated
  * text ("type ... dot ...") must stay verbatim. */
 function normalizeSpokenDomain(transcript: string): string {
-  return transcript.replace(
-    /\b([a-z0-9-]+)\s+dot\s+(com|org|net|io|dev|co|gov|edu|app|ai|uk|two|to)\b/gi,
-    (_match, base: string, tld: string) => `${base}.${tld.toLowerCase() === "two" ? "to" : tld.toLowerCase()}`
-  );
+  return transcript.replace(/\s+dot\s+/gi, ".").replace(/\.two\b/gi, ".to");
 }
 
 export function extractWorkflowSteps(transcript: string): string[] | null {
@@ -158,24 +170,52 @@ export interface ExtractedUrl {
   isHeuristic: boolean;
 }
 
+function cleanUrlToken(token: string): string {
+  let result = token.replace(/[.,!;]+$/, "");
+  const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  // Remove only unmatched sentence wrappers, retaining balanced URL path delimiters.
+  while (pairs[result.slice(-1)]) {
+    const close = result.slice(-1), open = pairs[close];
+    if (result.split(close).length <= result.split(open).length) break;
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
 export function extractUrl(transcript: string): ExtractedUrl {
   const normalized = normalizeSpokenDomain(transcript);
-
-  const explicit = normalized.match(/\bhttps?:\/\/\S+/i);
-  if (explicit) return { url: explicit[0], isHeuristic: false };
-
-  const domainLike = normalized.match(/\b([a-z0-9-]+\.(?:com|org|net|io|dev|to|co|gov|edu|app|ai|uk))\b/i);
-  if (domainLike) return { url: `https://${domainLike[1]}`, isHeuristic: false };
-
+  const explicit = normalized.match(/\bhttps?:\/\/[^\s<>"']+/i);
+  const bare = normalized.match(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|to|co|gov|edu|app|ai|uk|au|de|fr|in|jp|ca|us|me|gg|tv|xyz|online|site|tech|info|cloud|blog|store|design|work|live)(?![a-z0-9-]|\.+[a-z0-9-])(?::\d+)?(?:[/?#][^\s<>"']*)?/i);
+  const token = explicit ? cleanUrlToken(explicit[0]) : bare ? "https://" + cleanUrlToken(bare[0]) : null;
+  if (token) {
+    try {
+      const url = new URL(token);
+      if (url.hostname && (url.protocol === "https:" || url.protocol === "http:")) return { url: url.href, isHeuristic: false };
+    } catch { /* Fall through to known spoken site names. */ }
+  }
   const lowerT = lower(normalized);
-  // Longer keys first ("youtube music" before "youtube") so the more specific site wins.
   const sites = Object.entries(KNOWN_WEBSITES).sort((a, b) => b[0].length - a[0].length);
   for (const [site, url] of sites) {
-    if (new RegExp(`\\b${site}\\b`).test(lowerT) && /\b(go to|open|navigate to|visit|search for)\b/.test(lowerT)) {
-      return { url, isHeuristic: true };
-    }
+    if (new RegExp("\\b" + site + "\\b").test(lowerT) && /\b(go to|open|navigate to|visit|search for)\b/.test(lowerT)) return { url, isHeuristic: true };
   }
   return { url: null, isHeuristic: false };
+}
+
+export function extractTabTarget(transcript: string): { index?: number; query?: string; direction?: "first" | "last" | "next" | "previous" } | null {
+  const m = transcript.match(/^\s*(?:please\s+)?(?:switch|go|jump|move)(?:\s+to)?\s+(?:the\s+)?(?:tab\s+(?:number\s+)?(.+)|(.+?)\s+tab)\s*[.!?]*$/i);
+  if (!m) return null;
+  const target = (m[1] ?? m[2]).trim().replace(/[.!?]+$/, "").trim();
+  if (/^(first|last|next|previous)$/i.test(target)) return { direction: target.toLowerCase() as "first" | "last" | "next" | "previous" };
+  const ordinals: Record<string, number> = { second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+  if (ordinals[target.toLowerCase()]) return { index: ordinals[target.toLowerCase()] };
+  if (/^-?\d+(?:\.\d+)?$/.test(target)) return { index: Number(target) };
+  const n = extractNumber(target);
+  if (n != null && Number.isSafeInteger(n) && /^(?:-?\d+|[a-z -]+)$/i.test(target)) {
+    // Numbers only: a title such as "Project 3" must stay a title.
+    const numericWords = target.toLowerCase().split(/[\s-]+/).every(w => w === "and" || w === "hundred" || w === "thousand" || w in WORD_NUMBERS);
+    if (/^-?\d+$/.test(target) || numericWords) return { index: n };
+  }
+  return target ? { query: target } : null;
 }
 
 /** When Chrome is already on a known site, route "search for X" to that site's own search
@@ -190,7 +230,11 @@ export function computeSiteSearchUrl(query: string | null, page: BrowserPageStat
     return null;
   }
   for (const template of SITE_SEARCH_TEMPLATES) {
-    if (hostname.includes(template.hostnameIncludes)) return template.buildUrl(query);
+    const suffix = template.hostnameIncludes;
+    const matches = suffix === "amazon."
+      ? /(^|\.)amazon\.(com|in|co\.uk|de|fr|it|es|ca|co\.jp|com\.au|com\.br|com\.mx|nl|se|pl|sg|ae|sa|com\.tr)$/.test(hostname)
+      : hostname === suffix || hostname.endsWith("." + suffix);
+    if (matches) return template.buildUrl(query);
   }
   return null;
 }
@@ -205,9 +249,9 @@ const MODIFIER_LETTER_TO_ACTION: Record<string, string> = {
 
 export function isStandaloneKeyboardCommand(transcript: string, keyName: string | null): boolean {
   if (!keyName) return false;
-  const normalized = lower(transcript).replace(/[.!?]+$/, "").replace(/\s+/g, " ");
+  const normalized = lower(transcript).replace(/[.!?]+$/, "").replace(/\s*\+\s*/g, "+").replace(/\s+/g, " ");
   const key = keyName.toLowerCase();
-  if (normalized === key) return true;
+  if (normalized.replace(/^please\s+/, "") === key) return true;
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`^(?:please\\s+)?(?:press|hit|tap|key)\\s+${escapedKey}$`).test(normalized)) return true;
   // The semantic key name is "copy"/"undo"/etc., but the user may say the literal combo.
@@ -221,7 +265,7 @@ export function shouldTypeDirectlyInInsertMode(transcript: string, keyName: stri
 }
 
 export function extractKeyName(transcript: string): string | null {
-  const lowerT = lower(transcript);
+  const lowerT = lower(transcript).replace(/\s*\+\s*/g, "+");
   let best: string | null = null;
   for (const phrase of KEY_PHRASE_NAMES) {
     if (new RegExp(`\\b${phrase}\\b`).test(lowerT)) {
@@ -229,7 +273,7 @@ export function extractKeyName(transcript: string): string | null {
     }
   }
   if (best) return best;
-  const modifierMatch = lowerT.match(/\b(?:control|ctrl|command|cmd)\s+([a-z])\b/);
+  const modifierMatch = lowerT.match(/\b(?:control|ctrl|command|cmd)(?:\s+|\+)\s*([a-z])\b/);
   if (modifierMatch) {
     const action = MODIFIER_LETTER_TO_ACTION[modifierMatch[1]];
     if (action) return action;
@@ -256,17 +300,14 @@ export function extractFinderLocation(transcript: string): string | null {
 /** "delete the last 3 words" / "delete the last few words" / "delete the last word" -> a count. */
 export function extractDeleteWordCount(transcript: string): number | null {
   const lowerT = lower(transcript);
-  const m = lowerT.match(/\blast\s+([a-z0-9]+(?:\s+[a-z]+)?)\s+words?\b/);
+  const m = lowerT.match(/\blast\s+(.+?)\s+words?\b/);
   if (m) {
     const token = m[1].trim();
-    const digit = parseInt(token, 10);
-    if (!isNaN(digit)) return digit;
-    if (token in WORD_NUMBERS) return WORD_NUMBERS[token];
     if (token in VAGUE_COUNT_WORDS) return VAGUE_COUNT_WORDS[token];
-    return 3; // unrecognized quantifier word; a safe, small default
+    const n = extractNumber(token);
+    return n != null && Number.isSafeInteger(n) && n >= 0 ? n : null;
   }
-  if (/\blast\s+word\b/.test(lowerT)) return 1;
-  return null;
+  return /\blast\s+word\b/.test(lowerT) ? 1 : null;
 }
 
 /** "replace X with Y" -> [X, Y], both verbatim. */
@@ -285,7 +326,7 @@ export function extractReplacePair(transcript: string): [string, string] | null 
  * "delete the last 3 words" doesn't get swallowed by a bare "delete".
  */
 export function extractDeleteScope(transcript: string): { scope: "words" | "last_dictation" | "all"; count?: number } | null {
-  const lowerT = lower(transcript).replace(/[.!?]+$/, "");
+  const lowerT = lower(transcript).replace(/^please\s+/, "").replace(/[.!?]+$/, "");
   if (!/^(?:delete|remove|clear|undo)\b/.test(lowerT)) return null;
 
   if (/\blast\b/.test(lowerT) && /\bwords?\b/.test(lowerT)) {
@@ -309,21 +350,47 @@ function similarity(a: string, b: string): number {
   return overlap / Math.max(at.size, bt.size);
 }
 
-export function findBrowserElementCandidates(
-  transcript: string,
-  page: BrowserPageState | null
-): BrowserElementCandidate[] {
-  if (!page || !page.connected || page.elements.length === 0) return [];
-  const scored = page.elements
-    .map((el) => ({ ...el, score: similarity(transcript, el.text) }))
-    .filter((el) => el.score > 0)
-    .sort((a, b) => b.score - a.score);
+export function extractFieldEdit(transcript: string): { target: string; text: string; kind: "type" | "select" } | null {
+  const command = transcript.match(/^\s*(?:please\s+)?(type|write|enter|dictate|select|choose|pick)\s+(.+)$/i);
+  if (!command) return null;
+  const kind = /^(select|choose|pick)$/i.test(command[1]) ? "select" : "type";
+  const body = command[2];
+  const suffix = kind === "type" ? "(?:field|box|input)" : "(?:dropdown|menu|list|field)";
+  const separators = kind === "type" ? ["into", "in"] : ["from", "in"];
+  // Quoted values may themselves contain a separator. Otherwise prefer the explicit
+  // "into/from" form before "in", which is common inside dictated sentences.
+  for (const quoted of [true, false]) {
+    for (const separator of separators) {
+      const value = quoted ? `(["\'])(.+?)\\1` : `(.+?)`;
+      const match = body.match(new RegExp(`^${value}\\s+${separator}\\s+(?:the\\s+)?(.+?)(?:\\s+${suffix})?\\s*[.!?]*$`, "i"));
+      if (match) return { text: match[quoted ? 2 : 1].trim(), target: match[quoted ? 3 : 2].trim(), kind };
+    }
+  }
+  return null;
+}
+
+export function findBrowserElementCandidates(transcript: string, page: BrowserPageState | null): BrowserElementCandidate[] {
+  if (!page?.connected || !page.elements.length) return [];
+  // Match the requested label, not generic command words or dictated values.
+  const edit = extractFieldEdit(transcript);
+  const target = edit?.target ?? extractClickTarget(transcript) ??
+    transcript.match(/^\s*(?:please\s+)?(?:type|write|enter)\s+.+?\s+(?:in|into)\s+(?:the\s+)?(.+?)(?:\s+field)?[.!?]*$/i)?.[1];
+  if (!target) return [];
+  const normalized = lower(target).replace(/[.!?]+$/, "");
+  const eligible = !edit ? page.elements : page.elements.filter(el => edit.kind === "select"
+    ? el.tag === "select" || el.role === "combobox" : ["input", "textarea"].includes(el.tag) || el.role === "textbox" || el.tag === "div");
+  const scored = eligible.map(el => {
+    const label = lower(el.text).replace(/\s+/g, " ");
+    const score = label === normalized ? 1 : similarity(normalized, label);
+    return { ...el, score };
+  }).filter(el => el.score >= 0.5).sort((a,b) => b.score - a.score);
   return scored.slice(0, 8);
 }
 
 export function extractPayload(transcript: string, page: BrowserPageState | null): ExtractedPayload {
   const searchQuery = extractSearchQuery(transcript);
   const { url, isHeuristic } = extractUrl(transcript);
+  const tab = extractTabTarget(transcript);
   return {
     appCandidates: findAppCandidates(transcript),
     dictatedText: extractDictatedText(transcript),
@@ -331,6 +398,9 @@ export function extractPayload(transcript: string, page: BrowserPageState | null
     urlIsHeuristic: isHeuristic,
     siteSearchUrl: computeSiteSearchUrl(searchQuery, page),
     searchQuery,
+    tabQuery: tab?.query ?? null,
+    tabIndex: tab?.index ?? null,
+    tabDirection: tab?.direction,
     number: extractNumber(transcript),
     keyName: extractKeyName(transcript),
     browserElementCandidates: findBrowserElementCandidates(transcript, page),
@@ -339,5 +409,6 @@ export function extractPayload(transcript: string, page: BrowserPageState | null
     deleteWordCount: extractDeleteWordCount(transcript),
     replacePair: extractReplacePair(transcript),
     clickTarget: extractClickTarget(transcript),
+    fieldText: extractFieldEdit(transcript)?.text ?? null,
   };
 }

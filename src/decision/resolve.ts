@@ -1,6 +1,6 @@
 import { KEY_PHRASE_NAMES, LOCATION_NAMES, SETTINGS_PANE_NAMES } from "../commands/registry";
 import { AppCandidate, Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
-import { extractDeleteScope, extractImplicitClickTarget } from "./extract";
+import { extractDeleteScope, extractImplicitClickTarget, extractScreenPreviewTarget } from "./extract";
 import { JevAnswers } from "./jev-client";
 
 /** Intents that may execute from a confident interim transcript (closed, low-risk-of-truncation commands). */
@@ -48,7 +48,7 @@ export function summarizeAnswers(answers: JevAnswers): JevAnswerSummary {
 function findAppCandidateForTarget(target: string, payload: ExtractedPayload): AppCandidate | undefined {
   const cand = payload.appCandidates.find((c) => c.id === target);
   if (cand) return cand;
-  if (payload.appCandidates.length > 0) return payload.appCandidates[0];
+
   return undefined;
 }
 
@@ -57,7 +57,7 @@ function findElementIdForTarget(target: string, payload: ExtractedPayload): stri
     const id = target.slice("element:".length);
     if (payload.browserElementCandidates.some((c) => c.id === id)) return id;
   }
-  if (payload.browserElementCandidates.length > 0) return payload.browserElementCandidates[0].id;
+
   return undefined;
 }
 
@@ -75,9 +75,10 @@ function newTabOverride(effectiveText: string): ResolvedCommand | null {
 }
 
 function clickElementOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
-  if (payload.browserElementCandidates.length === 0) return null;
-  if (!/^\s*(?:please\s+)?click\s+on\b/i.test(effectiveText)) return null;
-  return { kind: "chrome_click", elementId: payload.browserElementCandidates[0].id };
+  if (!/^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?/i.test(effectiveText)) return null;
+  const candidates = payload.browserElementCandidates;
+  if (!candidates.length || candidates[0].score !== 1 || (candidates[1]?.score ?? 0) === 1) return null;
+  return { kind: "chrome_click", elementId: candidates[0].id };
 }
 
 const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the\s+)?.+/i;
@@ -113,12 +114,16 @@ function screenClickOverride(effectiveText: string, payload: ExtractedPayload): 
  * `none` 0.45 and was ignored). Only the explicit verb — implicit verbs ("select X") still
  * need Jev's confidence. */
 export function isDeterministicScreenClick(effectiveText: string, payload: ExtractedPayload): boolean {
-  return payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText, payload) !== null);
+  return extractScreenPreviewTarget(effectiveText) !== null ||
+    payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText, payload) !== null);
 }
 
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (!isDeterministicAppLaunch(effectiveText, payload)) return null;
-  const cand = payload.appCandidates[0];
+  const cand = payload.appCandidates.find(candidate => {
+    const alias = candidate.appAlias.replace(/[.*+?^{}()|[\]\\$]/g, "\\$&");
+    return new RegExp("\\b" + alias + "(?:\\s+app(?:lication)?)?\\s*[.!?]*$", "i").test(effectiveText);
+  })!;
   return { kind: "activate_app", appName: cand.label, appAlias: cand.appAlias };
 }
 
@@ -136,8 +141,11 @@ function openAppOverride(effectiveText: string, payload: ExtractedPayload): Reso
  *   mode (observed: "Open Warp." scored not_addressed and never ran). */
 export function isDeterministicAppLaunch(effectiveText: string, payload: ExtractedPayload): boolean {
   if (payload.appCandidates.length === 0) return false;
-  if (!OPEN_APP_PATTERN.test(effectiveText)) return false;
-  return !payload.url || payload.urlIsHeuristic;
+  if (!OPEN_APP_PATTERN.test(effectiveText) || (payload.url && !payload.urlIsHeuristic)) return false;
+  return payload.appCandidates.some(candidate => {
+    const alias = candidate.appAlias.replace(/[.*+?^{}()|[\]\\$]/g, "\\$&");
+    return new RegExp("^\\s*(?:please\\s+)?(?:open|launch|start|switch to|go to)\\s+(?:the\\s+)?" + alias + "(?:\\s+app(?:lication)?)?\\s*[.!?]*$", "i").test(effectiveText);
+  });
 }
 
 /**
@@ -151,6 +159,11 @@ export function resolveCommand(
   effectiveText: string
 ): ResolvedCommand | null {
   const { intent, target, direction } = summary;
+
+  // Preview always uses the frontmost-window target lookup, including when Chrome happens
+  // to have DOM candidates or an app alias appears inside the target's label.
+  const previewTarget = extractScreenPreviewTarget(effectiveText);
+  if (previewTarget) return { kind: "screen_click", text: previewTarget, preview: true };
 
   const newTab = newTabOverride(effectiveText);
   if (newTab) return newTab;
@@ -257,18 +270,24 @@ export function resolveCommand(
     }
     case "chrome_click": {
       const elementId = findElementIdForTarget(target, payload);
-      if (!elementId) return null;
+      if (!elementId) {
+        if (payload.clickTarget && SCREEN_CLICK_PATTERN.test(effectiveText)) return { kind: "screen_click", text: payload.clickTarget };
+        return null;
+      }
       return { kind: intent, elementId };
     }
     case "chrome_type": {
       const elementId = findElementIdForTarget(target, payload);
-      if (!elementId || !payload.dictatedText) return null;
-      return { kind: intent, elementId, text: payload.dictatedText };
+      const text = payload.fieldText ?? payload.dictatedText;
+      if (!elementId || !text) return null;
+      return { kind: intent, elementId, text };
     }
     case "chrome_select": {
       const elementId = findElementIdForTarget(target, payload);
       if (!elementId) return null;
-      return { kind: intent, elementId, text: payload.dictatedText ?? undefined };
+      const text = payload.fieldText ?? payload.dictatedText;
+      if (!text) return null;
+      return { kind: intent, elementId, text };
     }
     case "chrome_scroll":
       return { kind: intent, direction };
@@ -279,7 +298,7 @@ export function resolveCommand(
     case "chrome_close_tab":
       return { kind: intent };
     case "chrome_switch_tab":
-      return { kind: intent, direction };
+      return { kind: intent, direction: payload.tabDirection ?? direction, amount: payload.tabIndex ?? undefined, query: payload.tabQuery ?? undefined };
     case "screen_click": {
       const text = payload.clickTarget ?? effectiveText.trim();
       if (!text) return null;
