@@ -50,6 +50,10 @@ export interface ExtractedPayload {
    * used instead of a generic Google search for this utterance's search query. */
   siteSearchUrl: string | null;
   searchQuery: string | null;
+  tabQuery?: string | null;
+  fieldText?: string | null;
+  tabIndex?: number | null;
+  tabDirection?: "first" | "last" | "next" | "previous";
   number: number | null;
   keyName: string | null;
   browserElementCandidates: BrowserElementCandidate[];
@@ -63,52 +67,15 @@ export interface ExtractedPayload {
   clickTarget: string | null;
 }
 
-export type Intent =
-  | "open_app"
-  | "activate_app"
-  | "hide_app"
-  | "quit_app"
-  | "switch_previous_app"
-  | "type_text"
-  | "press_key"
-  | "shortcut"
-  | "window_minimize"
-  | "window_maximize"
-  | "window_fullscreen"
-  | "window_close"
-  | "volume_up"
-  | "volume_down"
-  | "volume_set"
-  | "volume_mute"
-  | "volume_unmute"
-  | "media_play_pause"
-  | "media_next"
-  | "media_previous"
-  | "open_settings_pane"
-  | "open_finder_location"
-  | "chrome_open_url"
-  | "chrome_search"
-  | "chrome_click"
-  | "chrome_type"
-  | "chrome_select"
-  | "chrome_scroll"
-  | "chrome_back"
-  | "chrome_forward"
-  | "chrome_reload"
-  | "chrome_new_tab"
-  | "chrome_close_tab"
-  | "chrome_switch_tab"
-  | "screen_click"
-  | "delete_text"
-  | "replace_text"
-  | "insert_newline"
-  | "search_in_app"
-  | "none";
+export const INTENT_NAMES = ["open_app", "activate_app", "hide_app", "quit_app", "switch_previous_app", "type_text", "press_key", "shortcut", "window_minimize", "window_maximize", "window_fullscreen", "window_close", "volume_up", "volume_down", "volume_set", "volume_mute", "volume_unmute", "media_play_pause", "media_next", "media_previous", "open_settings_pane", "open_finder_location", "chrome_open_url", "chrome_search", "chrome_click", "chrome_type", "chrome_select", "chrome_scroll", "chrome_back", "chrome_forward", "chrome_reload", "chrome_new_tab", "chrome_close_tab", "chrome_switch_tab", "screen_click", "delete_text", "replace_text", "insert_newline", "search_in_app", "none"] as const;
+export type Intent = typeof INTENT_NAMES[number];
 
 /** How much of the current dictation buffer a `delete_text` command should remove. */
 export type DeleteScope = "words" | "last_dictation" | "all";
 
 export type Direction =
+  | "first"
+  | "last"
   | "up"
   | "down"
   | "left"
@@ -178,6 +145,8 @@ export interface ResolvedCommand {
   text?: string;
   /** screen_click: double-click instead of single (opening files/folders in trees). */
   double?: boolean;
+  /** screen_click: identify and highlight the target without clicking it. */
+  preview?: boolean;
   url?: string;
   query?: string;
   amount?: number;
@@ -200,6 +169,12 @@ export interface PipelineStageTiming {
   executionMs?: number;
 }
 
+export interface ScreenTargetOverlay {
+  kind: "choice" | "point";
+  targets: Array<{ label: string; x: number; y: number; number?: number }>;
+  expiresAt: number;
+}
+
 export interface OverlayUpdate {
   utteranceId: string;
   state: "listening" | "thinking" | "executing" | "done" | "error" | "idle";
@@ -210,6 +185,7 @@ export interface OverlayUpdate {
   latencyMs: number | null;
   activationMode: string;
   interactionMode?: "normal" | "insert" | "workflow";
+  screenTargets?: ScreenTargetOverlay | null;
 }
 
 export interface HistoryEntry {

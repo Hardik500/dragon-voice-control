@@ -67,6 +67,9 @@ function assertLocalLayaUrl(value: string): string {
   if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname)) {
     throw new DecisionRequestError("Laya base URL must be a local http:// address");
   }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new DecisionRequestError("Laya base URL must not include credentials, a query, or a fragment");
+  }
   return baseUrl;
 }
 
@@ -95,7 +98,8 @@ function providerRequest(config: DecisionProviderConfig): { endpoint: string; mo
 function withTimeout(signal: AbortSignal, timeoutMs: number): { controller: AbortController; cleanup: () => void } {
   const controller = new AbortController();
   const onAbort = () => controller.abort();
-  signal.addEventListener("abort", onAbort);
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return {
     controller,
@@ -116,6 +120,7 @@ export async function callDecisionProvider(
   questions: JevQuestionSet,
   signal: AbortSignal
 ): Promise<DecisionResult> {
+  if (signal.aborted) throw new DecisionCancelledError("Decision request cancelled or superseded");
   const request = providerRequest(config);
   const started = Date.now();
   const timeout = withTimeout(signal, TIMEOUT_MS);
@@ -135,9 +140,19 @@ export async function callDecisionProvider(
     }
 
     const json = (await res.json()) as { model?: string; answers: JevAnswers };
-    if (!json.answers?.intent || !json.answers.target || !json.answers.direction || !json.answers.complete) {
-      throw new DecisionRequestError(`${config.provider} returned an incomplete System One response`);
+    const answers = json.answers;
+    const probability = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+    const choiceValid = (value: JevChoiceAnswer | undefined, criteria: Record<string, string>): boolean =>
+      !!value && value.type === "choice" && typeof value.choice === "string" && Object.hasOwn(criteria, value.choice) &&
+      probability(value.confidence) && !!value.probabilities && typeof value.probabilities === "object" &&
+      Object.values(value.probabilities).every(probability);
+    if (!answers || !choiceValid(answers.intent, questions.intent.criteria) ||
+      !choiceValid(answers.target, questions.target.criteria) || !choiceValid(answers.direction, questions.direction.criteria) ||
+      answers.complete?.type !== "noul" || !probability(answers.complete.noul) ||
+      (questions.addressed && (answers.addressed?.type !== "noul" || !probability(answers.addressed.noul)))) {
+      throw new DecisionRequestError(`${config.provider} returned an invalid System One response`);
     }
+    if (signal.aborted) throw new DecisionCancelledError("Decision request cancelled or superseded");
     const timingMs = Date.now() - started;
     const model = json.model || request.model;
     logger.event("decision.response", {
@@ -193,6 +208,7 @@ export async function askDisambiguationChoice(
   criteria: Record<string, string>,
   signal: AbortSignal
 ): Promise<DisambiguationAnswer | null> {
+  if (signal.aborted) return null;
   const request = providerRequest(config);
   const timeout = withTimeout(signal, TIMEOUT_MS);
   try {
@@ -205,7 +221,8 @@ export async function askDisambiguationChoice(
     if (!res.ok) return null;
     const json = (await res.json()) as { answers?: { choice?: JevChoiceAnswer } };
     const choice = json.answers?.choice;
-    if (!choice || typeof choice.choice !== "string" || typeof choice.confidence !== "number") return null;
+    if (signal.aborted || !choice || typeof choice.choice !== "string" || !Object.hasOwn(criteria, choice.choice) ||
+      typeof choice.confidence !== "number" || !Number.isFinite(choice.confidence) || choice.confidence < 0 || choice.confidence > 1) return null;
     logger.event("decision.disambiguation_response", {
       provider: config.provider,
       choice: choice.choice,

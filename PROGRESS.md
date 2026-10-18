@@ -2,6 +2,10 @@
 
 ## Current milestone
 
+**Latest patch (2026-10-15):** the comprehensive audit below supersedes older verification
+claims for changed code. Source/build, disposable probes and synthetic-audio Electron checks
+pass; this patch has not been run with native automation or live services on either OS.
+
 **Milestone 8 (Windows packaging and documentation) — implementation complete for both
 platforms, and both have been run on real hardware.**
 
@@ -2182,3 +2186,290 @@ so the next attempt answers it directly.
 - Observed from logs: the Mac log was Cursor, where "click on file" matched "Search Files" because the menu bar was outside the window walk. Type-checked only; not run on a real app, Windows untested.
 - Bare "open package dot json" / "open main.ts [file]" now also double-clicks (OPEN_FILENAME_RE in resolve.ts). Only when no app alias or URL matched and the extension is not a web TLD, so "open google dot com" still navigates. Type-checked and regex-checked on sample phrases; not run in a real app.
 - Numbered-choice picks now keep the original click count (pendingChoice.clicks), so an ambiguous "double click X" still double-clicks after "1".. "5". Supersedes the earlier "picks stay single-click" note. Type-checked only.
+
+## 2026-10-15 — Clicky-inspired target guidance and first-use clarity
+
+**Delivered.** Added explicit `point to Save`, `show me Save` and `highlight Save`
+commands. They resolve deterministically to a preview of the existing `screen_click`
+lookup: the same frontmost-window labels / vision path, then a five-second ring at the
+target instead of a click. They wait for final speech. Insert Mode continues to type these
+phrases as text. The existing decision-provider request still runs; this does not add
+general screen Q&A, conversation, screen reading, or an autonomous planner.
+
+Ambiguous screen targets now show up to five numbered rings at their actual positions and
+a matching list/countdown in the status overlay for the full 15-second choice period.
+Ordinary listening updates preserve the choices. Expiry, cancellation, Emergency Stop,
+mode changes and subsequent commands remove them; markers are destroyed before another
+screen capture. Number selection preserves highlight vs click and single vs double-click.
+Emergency Stop now clears the pending picker and can cancel a selection awaiting the
+frontmost-app read. Execution retains its abort controller until it settles.
+
+The overlay separates Command / Insert / Workflow modes, includes contextual examples and
+actual listen/stop shortcuts, and keeps meaningful new status messages ahead of an older
+completion. Marker windows are small, non-focusable and click-through. Windows physical
+coordinates are converted to Electron DIP; number badges turn inward at screen edges.
+The settings window opens when required credentials are absent and has a live readiness
+card plus an expandable command guide. Saved-key presence, STT connection and shortcut
+registration are described accurately; saving or receiving status preserves edited inputs.
+
+**Research boundary.** Read first-party [homepage](https://www.heyclicky.com/),
+[changelog](https://www.heyclicky.com/changelog) and [trust page](https://www.heyclicky.com/trust).
+These advertise voice/screen assistance, on-screen pointing, dictation and agents; the
+changelog emphasizes clearer connection states and quieter feedback. Those are vendor
+claims. Dragon's implementation choices above are our own adaptation. Captured 13 public
+website JavaScript chunks with a URL/hash manifest outside the repository at
+`/tmp/dragon-clicky-research/`. REA `analyze_javascript_application` could not open that WSL
+tree (`artifact_operation_failed/io`); no REA Evidence ID was returned. No Clicky desktop
+package was downloaded or executed. Its desktop internals, accuracy and performance remain
+unknown. Connectors, agent teams, routines and general screen conversations remain outside
+this change.
+
+**Verification actually run in Ubuntu-24.04.** Commands below ran from
+`/home/hardik/projects/dragon` with
+`export PATH=/home/hardik/.nvm/versions/node/v24.21.0/bin:$PATH`:
+
+- `npm run typecheck` — exit 0 (main and renderer).
+- `npm run build` — exit 0 (clean, main and renderer compilation).
+- `git diff --check` — exit 0.
+- `node /tmp/dragon-target-harness.cjs` — exit 0: anchored preview resolution despite
+  Chrome/app candidates, no-click accessibility preview, Insert Mode buffer, persistent
+  choice state, double-click/preview selection, cancellation during app read, expiry.
+- `node /tmp/dragon-clicky-verify/marker-controller.cjs` — exit 0 with Electron stubs:
+  simulated Windows 200% coordinate conversion, non-focus/click-through flags, no redundant
+  recreation, teardown, expired hints and late-load cleanup.
+- `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-clicky-verify/renderer-smoke.cjs`
+  — exit 0: real Electron DOM/captures, all five choices fit in 380x340, choices survive partial
+  speech, mode feedback replaces stale completion, numbered badges fit all four corners,
+  settings fit 480px without horizontal overflow and status updates preserve a draft.
+  Visually inspected the captured choice and settings images.
+- `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-clicky-verify/first-run-smoke.cjs`
+  — exit 0: full app startup with isolated temporary userData opened Settings and named the
+  missing credentials. No real user credentials were loaded.
+
+An initial `npm run typecheck` accidentally selected Windows npm from WSL's inherited PATH
+and failed with UNC/`tsc` errors. Using Linux Node fixed that environment issue. An intermediate
+check while edits were in flight failed on incomplete signatures; completed code passes.
+The first disposable Electron harness used an absolute `require` of the npm Electron package
+and failed; changing it to Electron's built-in `require("electron")` fixed the harness.
+
+**Remaining / next.** No automated suite or dependency was added. Disposable harnesses and
+captures live outside the repo. Actual macOS/Windows clicks, live STT/vision/provider requests,
+multi-monitor mixed-DPI placement, fullscreen spaces and capture/sharing behavior were not
+executed. On each native OS: try `point to Save`, compare ring and actual control, click a
+repeated label and select its number, repeat with a double-click target, then cancel/stop
+mid-lookup. Check a second display at a different scaling setting. These are the remaining
+hardware checks before treating this as verified native behavior.
+
+## 2026-10-15 — Voice-session reliability and visible recovery
+
+**Delivered.** Built on target guidance with a complete microphone/transcription lifecycle:
+single-flight connection attempts, generation-scoped callbacks, cancellation while connecting,
+a bounded 15-second connection deadline, and stale-event suppression. Ordinary pause retains
+the existing 1.5-second final-transcript flush; restart and Emergency Stop invalidate that
+drain. Emergency Stop also invalidates final decisions already queued behind an eager
+decision, before they can acquire a new controller.
+
+Recovery now makes up to five attempts at 1/2/4/8/8-second delays. Failed reconnect handshakes
+continue within that budget; brief opens do not reset it. A connection healthy for 30 seconds
+earns a fresh budget. An explicit initial failure (including missing/rejected credentials)
+does not automatically loop. A connected STT session triggers microphone capture through an
+explicit state callback; removed the main-process monkey patches that previously started the
+mic even after connection failure.
+
+Microphone start/stop, status and audio IPC carry a capture generation. A renderer-ready
+handshake prevents lost startup messages. Device acquisition is serialized, late permission
+results release their streams, stale audio/errors are ignored, and track disconnection /
+AudioContext interruptions release the graph and report an actionable error. Permission,
+missing-device and busy-device failures no longer disappear under a following `stopped` event.
+Retry can reload a crashed hidden mic renderer; a crash while paused is surfaced when the
+next start needs that renderer. No real audio or service credentials were used in verification.
+
+Settings now distinguishes speech connection from actual microphone capture, with **Start /
+Pause listening** and **Retry voice** controls. Pause remains usable while a connection
+request is pending, and late UI responses cannot undo a newer pause/status. These actions
+use saved settings and preserve unsaved form edits. The floating overlay and tray tooltip
+show connecting/reconnecting/starting/ready/error states accurately; voice errors remain
+visible until recovery. Ordinary pause/retry and transport failure preserve Dragon's existing
+dictation buffer and Insert Mode; Emergency Stop still clears modes.
+
+**Verification run in Ubuntu-24.04.** All Node/npm commands used
+`/home/hardik/.nvm/versions/node/v24.21.0/bin` first on PATH:
+
+- `npm run typecheck`, `npm run build`, `git diff --check` — exit 0.
+- `node /tmp/dragon-voice-lifecycle.cjs` — exit 0: fake WebSocket/clock checks of the
+  actual Deepgram wrapper and pipeline, covering single-flight, deadline, stale events,
+  stop/emergency during handshake, graceful final-only drain, five failed recovery handshakes,
+  flap budget, stable reset and dictation preservation.
+- `node /tmp/dragon-queued-decision-audit.cjs` — exit 0: Emergency Stop suppresses a queued
+  final decision, logs its cancellation, accepts a fresh later utterance, and preserves ordinary
+  pause/graceful-drain behavior.
+- `node /tmp/dragon-mic-lifecycle-check.cjs` — exit 0: eight groups covering pending
+  permission races, generation-tagged IPC/audio, late-stream cleanup, error latching/retry,
+  track-ended cleanup, initial resume, unexpected context suspension and partial setup failure.
+- `node /tmp/dragon-target-harness.cjs` — exit 0: previous pointing/numbered-choice,
+  Insert Mode, cancellation and timer behavior still pass.
+- `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-voice-integration/main.cjs`
+  — exit 0: actual Electron app, main/preload/mic renderer wiring, isolated temporary userData,
+  Chromium synthetic microphone and a fake STT connection. Confirmed missing keys start neither
+  mic nor transport, stop during connect ignores a late open, PCM reaches the fake transport,
+  stale generations are ignored, network recovery keeps capture, and active/paused renderer
+  crashes recover through Retry. No actual desktop app actions or external STT calls ran.
+- `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-voice-integration/overlay-smoke.cjs`
+  — exit 0: pointing UI regressions plus real DOM checks for connecting/reconnecting/starting/
+  ready labels, a microphone error remaining visible beyond five seconds, and retry replacing it.
+- `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-voice-settings-verify/settings-smoke.cjs`
+  — exit 0 with mocked IPC: ready requires both mic+speech, errors/retry actions, Pause during
+  pending Start/Retry, rejected-action cleanup, stale-response suppression, drafts and 480px
+  layout. The expected simulated IPC-rejection errors are part of the failure checks.
+
+A repeated integration run initially reused the fixture profile (which already held its dummy
+key) and waited at the fresh-install assertion. It was stopped; switching the harness to a new
+temporary profile per run restored the expected fresh-install state and the rerun passed. This
+was a fixture setup issue, not an application failure.
+
+Visually inspected the integrated settings and persistent-error overlay captures. Disposable
+harnesses/captures remain outside the repository; no suite, framework or dependency was added.
+
+**Remaining / next.** Native macOS/Windows permission flows, real input-device switching,
+sleep/audio interruptions, live Deepgram service behavior and live commands still require
+hardware/service verification. On each platform, dictate a few words, Pause/Start, then
+`delete that`; disconnect/reconnect the microphone and use Retry voice; interrupt the network
+and restore it; press Emergency Stop while connecting and during an eager/final decision.
+Dictation continuity covers text already typed, not speech spoken while disconnected: audio
+is not buffered or replayed, and Dragon does not read the focused app's text.
+
+## 2026-10-15 — Comprehensive logic, navigation and workspace audit
+
+**Delivered in this pass.** Audited the existing source and followed command paths through
+extraction, provider answers, ordered execution, native scripts, extension messages, dictation
+state, audio lifecycle, persistence and the renderer. This extends the Clicky-inspired pointing
+work above; it does not establish Clicky's desktop internals or prove Dragon is best in class.
+
+| Area | Gaps found and implemented | Evidence and remaining boundary |
+|---|---|---|
+| Command resolution | Long app aliases deduplicated incorrectly; tab commands lost number/title; multiword numbers and polite edits misparsed; browser field values could include the field instruction. Added anchored app matching, number/ordinal/title/first/last tabs, compound number parsing, quoted field values and explicit separator preference. | 150 extraction/resolution cases against actual modules pass. Provider phrasing and real recognition accuracy remain service checks. |
+| Decision contracts | Missing/invalid provider targets could silently pick the first candidate; malformed probability/vision data could reach execution. Removed candidate fallbacks, validated supplied choices and finite values/boxes, propagated abort signals through vision/recovery requests. | Pipeline/provider/vision harness passes. No live provider was called. |
+| Execution lifecycle | Different utterances and local edits could overtake one another; stale async completions could restore cancelled state. Ordered decision turns, retained immediate resume/update cancellation and emergency epochs, bounded session caches, and stop between quick-search stages. | Queue, pipeline and voice lifecycle harnesses pass. An OS action already submitted cannot be recalled. |
+| Dictation | Spacing, last-chunk deletion, Unicode deletion and replacement boundaries could drift. Track actual inserted text, preserve whitespace, count graphemes, use original-string Unicode match offsets and whole-word replacement boundaries and verify focused-window identity. Clear tracked tail after caret-changing operations/window changes while retaining Insert Mode. Added paragraph and spoken punctuation controls. | Exact-buffer cases pass with stubbed native boundaries. Real editors may treat graphemes differently; manual caret/field changes inside the same window are unobservable. |
+| Navigation | Added word movement/selection, line/document boundaries, select-line sequences, next/previous field and previous-tab keys in both OS registries. Registry checks now cover both maps. Native apps receive focused-widget paging when DOM scrolling is unavailable. | 14 new phrases/native script checks pass. Real focused-widget behavior remains OS/app dependent. |
+| Chrome | Wrong Chrome window selected; IDs could refer to replaced nodes; labels could expose editable values; controlled inputs/selects and nested/horizontal scrolling were unreliable. Added private document-scoped IDs, target fingerprints/hit testing, label-only snapshots, native setters/events, exact/unique option selection and focused-window tabs. Opening a different site preserves the old tab; repeated searches and explicit path/query/hash destinations are applied when reusing a tab. Revalidate after focus/beforeinput callbacks and resolve dropdown options after focus. | Real Electron DOM: 20 groups plus navigation namespace pass. Closed shadow roots, iframes, protected Chrome pages and custom widgets remain limited. |
+| Extension connection | Pending bridge calls waited through disconnect; service-worker reloads missed existing pages; popup status was static. Socket-scoped rejection/response validation, heartbeat/alarms, existing-page reinjection, live connection reporting and popup Reconnect now work. | Fake Chrome API and actual local WebSocket checks pass; installed Chrome/MV3 suspend/resume is not exercised. |
+| Pointing/capture | Same-app window switches/movement could invalidate coordinates; screen-region capture included overlapping windows. Check opaque focused-window identity/frame around lookup and choices. Capture a specific macOS window ID / Windows PrintWindow surface with no screen-region fallback. | Point/choice and generated native script harnesses pass. Native capture can reject/return blank for GPU/protected windows; macOS bridge/CLI and mixed-DPI mapping require hardware. |
+| Audio/media | Added saved microphone choice, refreshable enumeration, missing-device recovery and capture restart without reconnecting speech. Fixed old speech-child callbacks clearing a newer child. Windows exact volume and distinct mute/unmute now use inline Core Audio COM. | Full Electron synthetic audio switching/recovery passes; COM declarations matched Microsoft SDK headers. Real devices, native speech and C# execution remain unverified. |
+| Laya | Repeated starts, stop during health checks, stale child exits/config checks and readiness timeout ownership could race. Added single-flight/generation lifecycle, independent 120s deadline, truthful stopping/kill errors and external-server ownership. Reject URL credentials/query/fragment components that would invalidate endpoint construction. | Disposable process/HTTP stubs pass. No real Laya process/model was started. |
+| Persistence/logging | Invalid disk data, partial writes, false save/clear success and async logger errors were possible. Whitelisted settings/history, atomic private-file writes, transactional active settings/clear, defensive copies and safe logger failure/redaction. | Malformed/schema/write/rename/clear/async-stream fixtures pass. A failed history append remains visible in the current session and is logged. |
+| Clipboard | Concurrent pastes could overwrite each other's snapshots and plain-text restore lost rich data. Serialize paste intervals, preserve common text/HTML/RTF/image formats, avoid restoring over different user-copy data and reject unsupported-only clipboard data before touching it. | Actual isolated Electron clipboard and textarea paste pass. Identical-text user copies cannot be distinguished; proprietary formats accompanying known formats are not fully restorable. |
+| Workspace/setup | Replaced the long form with Overview, searchable Commands, Settings and searchable/filterable Activity. Added explicit modes/Stop, accurate readiness, keyboard tabs, responsive layout, dirty/save feedback and draft-preserving async actions. Bundle the extension outside app.asar and show its selectable folder path/open action. | Real DOM at 480/880px, full app and fresh-process preference restoration pass. Actual installer/folder picker/permissions remain native checks. |
+| Diagnostics | Dashboard showed Listening before capture and allowed overlapping refreshes. Uses real speech+microphone state and bounded sequential refresh. Malformed request URLs receive an error. | Renderer/server/config fixture passes; local API remains read-only and provider-specific. Activity holds all command history. |
+
+**Final verification, Ubuntu-24.04.** From /home/hardik/projects/dragon, with
+/home/hardik/.nvm/versions/node/v24.21.0/bin first on PATH. These are disposable probes outside
+the repo, not an added test suite or runtime dependency:
+
+- `npm run build`, `npm run typecheck`, `git diff --check` — exit 0.
+- `node /tmp/dragon-extraction-matrix.cjs` — 150/150 pass, exit 0.
+- `node /tmp/dragon-pipeline-audit.cjs` — ordering, exact dictation, Unicode, cancellation,
+  changed windows, compound-command feedback, cache bounds and provider/vision contracts pass.
+- `node /tmp/dragon-voice-lifecycle.cjs`, `node /tmp/dragon-queued-decision-audit.cjs`,
+  `node /tmp/dragon-mic-lifecycle-check.cjs` — exit 0, transport/capture/epoch regression checks.
+- `node /tmp/dragon-target-harness.cjs` — exit 0, no-click pointing, five numbered choices,
+  eager/final replies, preview/double-click metadata, expiry, cancellation and changed-window rejection.
+- `node /tmp/dragon-laya-lifecycle-audit.cjs` — exit 0, lifecycle/timeout/process ownership.
+- `node /tmp/dragon-browser-background.cjs`, `node /tmp/dragon-browser-bridge.cjs` — exit 0.
+  `node --check chrome-extension/content.js`, `node --check chrome-extension/background.js`
+  and `node --check chrome-extension/popup.js` — exit 0.
+- `node /tmp/dragon-persistence-audit.cjs`, `node /tmp/dragon-logger-audit.cjs` — exit 0.
+- `node /tmp/dragon-native-generated-check.cjs`, `node /tmp/dragon-windows-audio-check.cjs`
+  — exit 0. Generated scripts/metadata stubs and official COM header layouts; no native execution.
+- `node /tmp/dragon-dashboard-package-audit.cjs` — exit 0, dashboard state/polling,
+  development/installed extension paths, open-error propagation and bundled manifest assets.
+- Each following entry ran with the exact prefix
+  `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu`:
+  `/tmp/dragon-browser-dom.cjs`, `/tmp/dragon-browser-popup.cjs`,
+  `/tmp/dragon-workspace-verify/main.cjs`,
+  `/tmp/dragon-voice-integration/workspace-integration.cjs`,
+  `/tmp/dragon-voice-integration/workspace-relaunch.cjs`,
+  `/tmp/dragon-real-clipboard-audit.cjs`,
+  `/tmp/dragon-voice-integration/overlay-smoke.cjs` — exit 0.
+  Workspace probes intentionally emit simulated IPC errors while verifying recovery.
+  Full app uses a new temporary profile, Chromium synthetic microphone and fake STT only.
+  Relaunch rereads the saved profile in a new process.
+- Visually inspected workspace Overview at 880px and Settings at 480px; UI agent also inspected
+  all panels and extension popup captures. No horizontal overflow at either workspace width.
+
+Some old disposable fixtures initially failed because they referenced the removed private
+startOrContinueDictation method, omitted the new window identity stub, expected the previous
+input-error wording, used a button as a text field, or assumed the shorter app alias. Updated
+fixtures to current contracts and reran successfully. A stale generated microphone renderer and
+an uncloneable fixture injection also required fixture/build corrections. Source defects found
+by the expanded field-text/polite-delete cases were fixed before the final 150/150 run.
+
+**Still open, with an explicit verification boundary.** Existing historical native runs do not
+verify this patch. No macOS/Windows automation, real microphone, installed Chrome extension,
+live Deepgram/OpenRouter/Laya call, installer, code signing or release was run here. Implementation verification created no commit or publication; subsequent delivery is tracked in Git and the pull request. The highest-value next check is a native session on each OS:
+
+1. Install the build, use Overview's extension folder path, load/reload in Chrome, then restart
+   Chrome/Dragon and check popup/readiness reconnect.
+2. Select a real microphone, dictate Unicode/punctuation/paragraphs, pause/retry, unplug it and
+   recover with System default. Exercise sleep/wake and a short network outage.
+3. Move/switch windows during point/click/number selection. Test overlapping windows, a protected
+   or GPU-rendered app, two displays at different scales, and macOS Accessibility/Screen Recording.
+4. Use word/line selection, native paging, exact volume/mute/unmute and rapid speech replies.
+   Compare actual editor contents with Dragon's tracked edits; do not manually move the caret
+   while relying on that buffer.
+5. Check installed preference persistence and failure recovery. Logs/history include transcripts
+   and labels; API credentials and raw audio must remain absent.
+
+There is no cross-app planner, general screen Q&A, app-text reader, telemetry, new framework or
+automated repository test suite in this change. Unmeasured accuracy/latency and native boundaries
+above remain open rather than being inferred from static analysis.
+
+**Final independent review corrections.** Added reproductions for destination reuse dropping search
+queries, synchronous page focus/beforeinput handlers replacing or disabling targets, reordered
+select options, sentence-final domain punctuation, excess URL closing delimiters, invalid numeric
+tabs falling through to title search, Unicode lowercase expansion shifting replacement indexes,
+and malformed Laya URL components. Corrected all before the final build; the matrix expanded to
+150/150. Tray activation-mode persistence failure now refreshes the radio menu from active state
+(source inspection; native menu failure interaction not executed).
+
+Additional exact probes: `node /tmp/dragon-independent-buffer-review.cjs` — exit 0, replaces cat
+in İstanbul cat with correct original-text offsets;
+`xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-content-target-state.cjs --verify`
+— exit 0, six actual DOM regressions. Existing background and 20-group DOM probes also pass.
+
+## 2026-10-18 — Resolve PR #2 after PR #1 was squash-merged
+
+**Acceptance scope.** Update the existing voice/workspace upgrade PR for main, preserve its
+implementation and assets, preserve changes already on main, and remove merge conflicts.
+Do not merge the PR itself or add features as part of this resolution.
+
+**Source identity and resolution.** Started from PR head df7da49 and merged origin/main at
+0ff3355 (PR #1's squash merge). The main tree equals the old feature-branch tree at 0bfea59
+except for the newer YouTube demo thumbnail/link in README.md. This explains the repeated
+feature conflicts introduced by squash history. Resolved all 17 conflicted paths using the
+upgrade versions and kept main's newer demo line. Removed an automatically duplicated block
+in PlatformAutomation; the restored file matches the upgrade version exactly.
+
+**Preservation evidence.** Before this log entry, compared the full resolved working tree/index
+with df7da49: README.md's demo line was the only changed file. All code, config and assets
+were byte-identical to the reviewed upgrade. After this entry, expected differences from that
+head are README.md and this progress log only. No user settings, clipboard or other saved
+application data was accessed or changed.
+
+**Checks actually run in Ubuntu-24.04**, from /home/hardik/projects/dragon with
+/home/hardik/.nvm/versions/node/v24.21.0/bin first on PATH:
+
+- `npm run typecheck` — exit 0 (main and renderer).
+- `npm run build` — exit 0 (clean rebuild of main and renderer; Node v24.21.0).
+- `git diff --check HEAD` — exit 0.
+- `git diff --name-only --diff-filter=U` — empty; no unresolved index entries.
+- Python/subprocess preservation assertions — pass, including the expected single README
+  change before this entry and preservation of the newer main demo link.
+
+No new runtime journey or native/live-service check was run. The earlier disposable /tmp
+harnesses are no longer present; their 2026-10-15 results above remain historical, not rerun
+claims. Build artifacts were regenerated from the preserved source but no running renderer
+or deployed app was asserted to be current. Native verification limits remain unchanged.
+
+Delivery is to the existing PR #2 targeting main. Confirm the pushed SHA equals local HEAD,
+main is an ancestor, and GitHub reports the PR mergeable before reporting resolution complete.

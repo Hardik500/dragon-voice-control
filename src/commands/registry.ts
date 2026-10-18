@@ -46,9 +46,11 @@ function checkCoverage(names: string[], map: Record<string, unknown>, mapLabel: 
   if (missing.length > 0) {
     // Fail loudly at startup rather than silently no-op'ing a command at runtime — this only
     // fires if a future edit adds a common name without updating both platform registries.
-    throw new Error(`${mapLabel} on ${process.platform} is missing entries for: ${missing.join(", ")}`);
+    throw new Error(`${mapLabel} is missing entries for: ${missing.join(", ")}`);
   }
 }
-checkCoverage(common.KEY_PHRASE_NAMES, platform.KEY_SPECS, "KEY_SPECS");
-checkCoverage(common.SETTINGS_PANE_NAMES, platform.SETTINGS_PANES, "SETTINGS_PANES");
-checkCoverage(common.LOCATION_NAMES, platform.LOCATIONS, "LOCATIONS");
+for (const [name, registry] of [["macOS", mac], ["Windows", win]] as const) {
+  checkCoverage(common.KEY_PHRASE_NAMES, registry.KEY_SPECS, `${name} KEY_SPECS`);
+  checkCoverage(common.SETTINGS_PANE_NAMES, registry.SETTINGS_PANES, `${name} SETTINGS_PANES`);
+  checkCoverage(common.LOCATION_NAMES, registry.LOCATIONS, `${name} LOCATIONS`);
+}

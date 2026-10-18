@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #target { position: absolute; width: 38px; height: 38px; transform: translate(-50%, -50%); border: 3px solid #a7f3d0; border-radius: 50%; box-sizing: border-box; box-shadow: 0 0 0 2px #152921, 0 0 14px #34d39999; }
+  #target::after { content: ""; position: absolute; width: 5px; height: 5px; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #ecfdf5; border-radius: 50%; box-shadow: 0 0 0 1px #152921; }
+  #number { position: absolute; right: -10px; top: -13px; min-width: 22px; height: 22px; padding: 0 2px; box-sizing: border-box; text-align: center; font: 700 14px/22px system-ui, sans-serif; color: #06251b; background: #a7f3d0; border-radius: 7px; box-shadow: 0 0 0 2px #152921; }
+  #target.badge-left #number { right: auto; left: -10px; }
+  #target.badge-below #number { top: auto; bottom: -13px; }
+  #number:empty { display: none; }
+</style>
+</head>
+<body>
+  <div id="target" role="img"><span id="number"></span></div>
+  <script src="../../dist-renderer/target.js"></script>
+</body>
+</html>

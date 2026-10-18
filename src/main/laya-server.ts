@@ -25,12 +25,21 @@ function layaConfig(settings: DragonSettings): DecisionProviderConfig {
   };
 }
 
-function localPort(baseUrl: string): string {
+function localEndpoint(baseUrl: string): { host: string; port: string } {
+  let parsed: URL;
   try {
-    return new URL(baseUrl).port || "8000";
+    parsed = new URL(baseUrl);
   } catch {
-    return "8000";
+    throw new Error("Laya base URL is not a valid URL");
   }
+  if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname)) {
+    throw new Error("Laya base URL must be a local http:// address");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("Laya base URL must not include credentials, a query, or a fragment");
+  }
+  // Health checks use URL semantics: http://localhost without a port means 80.
+  return { host: parsed.hostname.includes(":") ? "::1" : "127.0.0.1", port: parsed.port || "80" };
 }
 
 function resolveLayaCommand(settings: DragonSettings): string {
@@ -50,7 +59,12 @@ function resolveLayaCommand(settings: DragonSettings): string {
 export class LayaServerManager {
   private child: ChildProcess | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
-  private intentionalStop = false;
+  private startupTimer: NodeJS.Timeout | null = null;
+  private startPromise: Promise<LayaServerStatus> | null = null;
+  private generation = 0;
+  private disposed = false;
+  private shutdownReason: "stop" | "timeout" | null = null;
+  private static readonly STARTUP_TIMEOUT_MS = 120_000;
   private status: LayaServerStatus = {
     state: "stopped",
     message: "Laya server is not running",
@@ -68,136 +82,170 @@ export class LayaServerManager {
     return { ...this.status };
   }
 
-  async start(): Promise<LayaServerStatus> {
-    if (this.child) return this.getStatus();
-    if (this.pollTimer) return this.getStatus();
-
-    const settings = this.getSettings();
-    const config = layaConfig(settings);
-    const existing = await checkDecisionProvider(config);
-    if (existing.ok) {
-      this.setStatus({
-        state: "ready",
-        message: `External Laya server is already ready (${existing.model ?? settings.layaModel})`,
-        pid: null,
-        model: existing.model,
-        managed: false,
-      });
-      return this.getStatus();
-    }
-
-    const command = resolveLayaCommand(settings);
-    const model = settings.layaModel.trim() || "laya";
-    const args = ["serve", model, "--host", "127.0.0.1", "--port", localPort(settings.layaBaseUrl), "--no-browser"];
-    this.intentionalStop = false;
-    this.setStatus({
-      state: "starting",
-      message: `Starting ${command}…`,
-      pid: null,
-      model,
-      managed: true,
+  /** Health checks and process creation form one attempt, including concurrent Start clicks. */
+  start(): Promise<LayaServerStatus> {
+    if (this.disposed || this.child) return Promise.resolve(this.getStatus());
+    if (this.startPromise) return this.startPromise;
+    const generation = ++this.generation;
+    const settings = { ...this.getSettings() };
+    this.setStatus({ state: "starting", message: "Checking for a running Laya server…", pid: null,
+      model: settings.layaModel.trim() || "laya", managed: false });
+    if (generation !== this.generation || this.disposed) return Promise.resolve(this.getStatus());
+    const work = this.startAttempt(settings, generation).finally(() => {
+      if (this.startPromise === work) this.startPromise = null;
     });
+    this.startPromise = work;
+    return work;
+  }
 
+  private async startAttempt(settings: DragonSettings, generation: number): Promise<LayaServerStatus> {
+    const config = layaConfig(settings);
+    const model = settings.layaModel.trim() || "laya";
+    const isCurrent = () => !this.disposed && generation === this.generation;
     try {
-      const child = spawn(command, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      const endpoint = localEndpoint(settings.layaBaseUrl);
+      const existing = await checkDecisionProvider(config);
+      if (!isCurrent()) return this.getStatus();
+      if (existing.ok) {
+        this.setStatus({
+          state: "ready",
+          message: `External Laya server is already ready (${existing.model ?? model})`,
+          pid: null,
+          model: existing.model,
+          managed: false,
+        });
+        return this.getStatus();
+      }
+
+      const base = new URL(settings.layaBaseUrl);
+      if (base.pathname !== "/" || base.search || base.hash) {
+        throw new Error("Managed Laya needs a base URL with no path, query or fragment, such as http://127.0.0.1:8000");
+      }
+      const command = resolveLayaCommand(settings);
+      const args = ["serve", model, "--host", endpoint.host, "--port", endpoint.port, "--no-browser"];
+      this.shutdownReason = null;
+      this.setStatus({ state: "starting", message: `Starting ${command}…`, pid: null, model, managed: true });
+      if (!isCurrent()) return this.getStatus();
+      const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       this.child = child;
-      child.stdout?.resume();
-      child.stderr?.resume();
-      this.setStatus({ ...this.status, pid: child.pid ?? null });
-      logger.event("laya_server.start_requested", { command, model, port: localPort(settings.layaBaseUrl) });
 
       child.once("error", (error) => {
         if (this.child !== child) return;
+        this.generation += 1;
         this.clearPoll();
-        this.child = null;
-        this.setStatus({
-          state: "error",
-          message: `Could not start ${command}: ${error.message}`,
-          pid: null,
-          model,
-          managed: true,
-        });
+        // Spawn failures have no PID. Keep an existing process owned if signalling it fails.
+        if (child.pid == null) this.child = null;
+        this.setStatus({ state: "error", message: `Could not run ${command}: ${error.message}`,
+          pid: this.child?.pid ?? null, model, managed: true });
       });
       child.once("exit", (code, signal) => {
         if (this.child !== child) return;
         this.clearPoll();
         this.child = null;
-        if (this.intentionalStop) {
+        if (this.shutdownReason === "stop") {
           this.setStatus({ state: "stopped", message: "Laya server stopped", pid: null, model, managed: true });
+        } else if (this.shutdownReason === "timeout") {
+          this.setStatus({ ...this.status, state: "error", pid: null });
         } else {
-          this.setStatus({
-            state: "error",
+          this.setStatus({ state: "error",
             message: `Laya server exited unexpectedly (${code ?? "unknown"}${signal ? `/${signal}` : ""})`,
-            pid: null,
-            model,
-            managed: true,
-          });
+            pid: null, model, managed: true });
         }
       });
-
-      this.pollUntilReady(config);
+      child.stdout?.resume();
+      child.stderr?.resume();
+      this.setStatus({ ...this.status, pid: child.pid ?? null });
+      logger.event("laya_server.start_requested", { command, model, port: endpoint.port });
+      if (isCurrent() && this.child === child && this.shutdownReason === null) this.pollUntilReady(config, child, generation);
       return this.getStatus();
     } catch (error) {
+      if (!isCurrent()) return this.getStatus();
       const message = error instanceof Error ? error.message : String(error);
-      this.setStatus({ state: "error", message: `Could not start ${command}: ${message}`, pid: null, model, managed: true });
+      this.setStatus({ state: "error", message: `Could not start Laya: ${message}`, pid: this.child?.pid ?? null,
+        model, managed: this.child !== null });
       return this.getStatus();
     }
   }
 
   stop(): LayaServerStatus {
+    this.generation += 1;
+    this.startPromise = null;
     this.clearPoll();
     const child = this.child;
     if (!child) {
       if (this.status.state === "ready" && !this.status.managed) {
         this.setStatus({ ...this.status, message: "Laya server is external and was not stopped" });
+      } else {
+        this.setStatus({ state: "stopped", message: "Laya server stopped", pid: null,
+          model: this.status.model, managed: this.status.managed });
       }
       return this.getStatus();
     }
 
-    this.intentionalStop = true;
-    this.child = null;
-    child.kill();
-    this.setStatus({ state: "stopped", message: "Laya server stopped", pid: null, model: this.status.model, managed: true });
+    this.shutdownReason = "stop";
+    this.setStatus({ ...this.status, state: "stopping", message: "Stopping Laya server…" });
+    this.terminateManagedChild(child);
     return this.getStatus();
   }
 
   dispose(): void {
+    this.disposed = true;
     this.stop();
   }
 
-  private pollUntilReady(config: DecisionProviderConfig): void {
-    if (this.pollTimer) return;
+  private terminateManagedChild(child: ChildProcess): void {
+    if (this.child !== child) return;
+    try {
+      if (!child.kill() && this.child === child) {
+        this.setStatus({ ...this.status, state: "error", message: "Could not stop the managed Laya process. Try Stop again." });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setStatus({ ...this.status, state: "error", message: `Could not stop the managed Laya process: ${message}` });
+    }
+  }
+
+  private pollUntilReady(config: DecisionProviderConfig, child: ChildProcess, generation: number): void {
+    let lastHealthMessage = "The server did not respond";
+    const isCurrent = () => generation === this.generation && this.child === child && this.shutdownReason === null;
+    this.startupTimer = setTimeout(() => {
+      if (!isCurrent()) return;
+      this.generation += 1;
+      this.clearPoll();
+      this.shutdownReason = "timeout";
+      this.setStatus({ state: "error", message: `Laya did not become ready within 120 seconds. ${lastHealthMessage}. Check the model and server command, then retry.`,
+        pid: child.pid ?? null, model: config.layaModel, managed: true });
+      this.terminateManagedChild(child);
+    }, LayaServerManager.STARTUP_TIMEOUT_MS);
+    this.startupTimer.unref();
     const poll = async () => {
-      if (!this.child) return;
-      const health: ProviderHealth = await checkDecisionProvider(config);
-      if (!this.child) return;
+      if (!isCurrent()) return;
+      let health: ProviderHealth;
+      try {
+        health = await checkDecisionProvider(config);
+      } catch (error) {
+        health = { ok: false, provider: "laya", model: null, message: error instanceof Error ? error.message : String(error) };
+      }
+      // A stopped/replaced process or a newer configuration must never inherit this result.
+      if (!isCurrent()) return;
       if (health.ok) {
         this.clearPoll();
-        this.setStatus({
-          state: "ready",
-          message: `Laya server ready (${health.model ?? config.layaModel})`,
-          pid: this.child.pid ?? null,
-          model: health.model ?? config.layaModel,
-          managed: true,
-        });
+        this.setStatus({ state: "ready", message: `Laya server ready (${health.model ?? config.layaModel})`,
+          pid: child.pid ?? null, model: health.model ?? config.layaModel, managed: true });
         return;
       }
-      this.pollTimer = setTimeout(() => {
-        this.pollTimer = null;
-        void poll();
-      }, 1000);
+      lastHealthMessage = health.message;
+      this.pollTimer = setTimeout(() => { this.pollTimer = null; void poll(); }, 1000);
+      this.pollTimer.unref();
     };
     void poll();
   }
 
   private clearPoll(): void {
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-    }
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    if (this.startupTimer) clearTimeout(this.startupTimer);
+    this.pollTimer = null;
+    this.startupTimer = null;
   }
 
   private setStatus(status: LayaServerStatus): void {

@@ -58,6 +58,7 @@ export const KEY_PHRASE_NAMES: string[] = [
   "copy", "cut", "paste", "select all", "undo", "redo", "save", "find",
   "new tab", "close tab", "close window", "quit", "refresh", "reload",
   "quick switcher",
+  "next field", "previous field", "previous tab", "word left", "word right", "select word left", "select word right", "beginning of line", "end of line", "beginning of document", "end of document", "select to beginning", "select to end", "select line",
 ];
 
 export const SETTINGS_PANE_NAMES: string[] = [

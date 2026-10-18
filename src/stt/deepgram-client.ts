@@ -3,6 +3,7 @@ import { logger } from "../logging/logger";
 import { TranscriptEvent } from "../types/pipeline";
 
 const SAMPLE_RATE = 16000;
+const CONNECT_TIMEOUT_MS = 15_000;
 const STT_MODEL = "flux-general-en";
 /** Flux end-of-turn confidence for the *eager* (preemptive) end-of-turn event. Lowered from our
  * previous 0.5 to 0.35 because this is the largest single term in the latency budget: `sttTurnMs`
@@ -72,9 +73,10 @@ export type CloseHandler = (hadOpened: boolean) => void;
  */
 export class DeepgramFluxConnection {
   private ws: WebSocket | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private rejectPendingConnect: ((error: Error) => void) | null = null;
   private turnIndexToUtterance = new Map<number, string>();
   private turnStartedAt = new Map<number, number>();
-  private opened = false;
 
   constructor(
     private apiKey: string,
@@ -85,7 +87,10 @@ export class DeepgramFluxConnection {
   ) {}
 
   connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    if (this.ws && this.connectPromise) return this.connectPromise;
+    this.turnIndexToUtterance.clear();
+    this.turnStartedAt.clear();
+    this.connectPromise = new Promise((resolve, reject) => {
       const params = new URLSearchParams({
         model: STT_MODEL,
         encoding: "linear16",
@@ -93,26 +98,44 @@ export class DeepgramFluxConnection {
         eager_eot_threshold: EAGER_EOT_THRESHOLD,
         eot_threshold: FINAL_EOT_THRESHOLD,
         eot_timeout_ms: EOT_TIMEOUT_MS,
-        // Deepgram's Numerals feature converts spoken numbers to digits ("nine hundred" -> "900").
-        // Without it every spoken number reaches the decision layer as an English word, so
-        // dictated text typed the words out ("five five five one two three…") and numeric entry
-        // into Calculator or a spreadsheet had no digit form to work with at all. This is a
-        // connection-time parameter on Flux /v2/listen — sending it in a `Configure` message
-        // instead returns UNPARSABLE_CLIENT_MESSAGE and closes the socket, so it must stay here.
+        // Numerals belongs in the connection query; Configure is unsupported by Flux.
         numerals: NUMERALS,
       });
       for (const keyterm of STT_KEYTERMS) params.append("keyterm", keyterm);
       const url = `wss://api.deepgram.com/v2/listen?${params.toString()}`;
       const ws = new WebSocket(url, { headers: { Authorization: `Token ${this.apiKey}` } });
       this.ws = ws;
-      // A reconnect replaces this.ws while the previous socket may still be tearing down, and
-      // that socket keeps its handlers. Without this guard a late error or close from a
-      // superseded socket is logged and acted on as though it were the live one -- which shows
-      // up as an STT failure for a connection that is actually fine.
       const isCurrent = () => this.ws === ws;
+      let opened = false;
+      let settled = false;
+      let connectTimer: NodeJS.Timeout | null = null;
+      const finishConnect = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (connectTimer) clearTimeout(connectTimer);
+        connectTimer = null;
+        if (this.rejectPendingConnect === rejectConnect) this.rejectPendingConnect = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const rejectConnect = (error: Error) => finishConnect(error);
+      this.rejectPendingConnect = rejectConnect;
+      connectTimer = setTimeout(() => {
+        if (!isCurrent() || opened) return;
+        const error = new Error("Deepgram connection timed out after 15 seconds");
+        finishConnect(error);
+        this.onError(error);
+        ws.terminate();
+      }, CONNECT_TIMEOUT_MS);
+      connectTimer.unref();
 
-      this.ws.on("open", () => {
-        this.opened = true;
+      ws.on("open", () => {
+        if (!isCurrent()) {
+          finishConnect(new Error("Deepgram connection was superseded"));
+          ws.close();
+          return;
+        }
+        opened = true;
         logger.event("stt.connected", {
           model: STT_MODEL,
           eagerEotThreshold: EAGER_EOT_THRESHOLD,
@@ -121,10 +144,11 @@ export class DeepgramFluxConnection {
           numerals: NUMERALS,
           keytermCount: STT_KEYTERMS.length,
         });
-        resolve();
+        finishConnect();
       });
 
-      this.ws.on("message", (raw) => {
+      ws.on("message", (raw) => {
+        if (!isCurrent()) return;
         let msg: any;
         try {
           msg = JSON.parse(raw.toString());
@@ -138,10 +162,8 @@ export class DeepgramFluxConnection {
         if (msg.type === "Error") {
           logger.event("stt.fatal_error", { code: msg.code, description: msg.description });
           this.onError(new Error(`Deepgram error ${msg.code}: ${msg.description}`));
-          // Deepgram can report a protocol/keepalive error without immediately closing the
-          // socket. Close it here so the pipeline's close handler schedules a reconnect
-          // instead of leaving a dead connection in the listening state.
-          this.ws?.close();
+          // Closing the exact socket lets the pipeline retry protocol failures too.
+          ws.close();
           return;
         }
         if (msg.type === "TurnInfo") {
@@ -184,24 +206,24 @@ export class DeepgramFluxConnection {
       });
 
       ws.on("error", (err) => {
-        if (!isCurrent()) {
-          logger.event("stt.superseded_socket_error", { error: err instanceof Error ? err.message : String(err) });
-          return;
-        }
-        logger.error("stt.socket_error", err);
-        if (!this.opened) reject(err);
-        this.onError(err instanceof Error ? err : new Error(String(err)));
+        if (!isCurrent()) return;
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error("stt.socket_error", error);
+        if (!opened) finishConnect(error);
+        this.onError(error);
       });
 
       ws.on("close", (code, reason) => {
-        if (!isCurrent()) {
-          logger.event("stt.superseded_socket_closed", { code, hadOpened: this.opened });
-          return;
-        }
-        logger.event("stt.closed", { code, reason: reason?.toString(), hadOpened: this.opened });
-        this.onClose(this.opened);
+        if (!opened) finishConnect(new Error("Deepgram connection closed before opening"));
+        if (!isCurrent()) return;
+        this.ws = null;
+        this.turnIndexToUtterance.clear();
+        this.turnStartedAt.clear();
+        logger.event("stt.closed", { code, reason: reason?.toString(), hadOpened: opened });
+        this.onClose(opened);
       });
     });
+    return this.connectPromise;
   }
 
   sendAudio(chunk: Buffer): void {
@@ -217,14 +239,23 @@ export class DeepgramFluxConnection {
   }
 
   close(): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    const ws = this.ws;
+    this.ws = null;
+    this.turnIndexToUtterance.clear();
+    this.turnStartedAt.clear();
+    this.rejectPendingConnect?.(new Error("Deepgram connection cancelled"));
+    this.rejectPendingConnect = null;
+    if (!ws) return;
+    if (ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: "CloseStream" }));
+        ws.send(JSON.stringify({ type: "CloseStream" }));
       } catch {
         /* ignore */
       }
     }
-    this.ws?.close();
-    this.ws = null;
+    // close() while CONNECTING leaves a pending upgrade in some WebSocket implementations.
+    // terminate() also releases the handshake after an intentional stop.
+    if (ws.readyState === WebSocket.CONNECTING) ws.terminate();
+    else ws.close();
   }
 }

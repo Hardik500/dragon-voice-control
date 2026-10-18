@@ -1,9 +1,10 @@
-import { clipboard } from "electron";
 import { execFile, spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { APP_ALIASES, KEY_SPECS, LOCATIONS, SETTINGS_PANES, WinAppAlias } from "../commands/registry-windows";
 import { logger } from "../logging/logger";
+import { pasteText } from "./clipboard";
+import { buildVolumeScript } from "./windows-audio";
 
 /**
  * All Windows execution goes through PowerShell (per-action processes, per DECISIONS.md) with
@@ -74,6 +75,7 @@ public class DragonClickWin32 {
   static DragonClickWin32() { SetProcessDPIAware(); }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern void SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, UIntPtr dwExtraInfo);
 }
@@ -304,20 +306,10 @@ export async function switchToPreviousApp(): Promise<void> {
 }
 
 export async function typeText(text: string): Promise<void> {
-  const previous = clipboard.readText();
-  clipboard.writeText(text);
-  try {
+  return pasteText(text, async () => {
     const script = [WIN32_TYPE, keyEventLine(VK.CONTROL, false), keyEventLine("V".charCodeAt(0), false), keyEventLine("V".charCodeAt(0), true), keyEventLine(VK.CONTROL, true)].join("\n");
     await runPowerShell(script);
-  } finally {
-    setTimeout(() => {
-      try {
-        clipboard.writeText(previous);
-      } catch (err) {
-        logger.error("automation.clipboard_restore", err);
-      }
-    }, 400);
-  }
+  });
 }
 
 function modifierVk(mod: string): number {
@@ -338,14 +330,16 @@ function modifierVk(mod: string): number {
 export async function pressNamedKey(keyName: string): Promise<void> {
   const spec = KEY_SPECS[keyName];
   if (!spec) throw new Error(`Unknown key phrase: ${keyName}`);
-  const vk = spec.vk ?? (spec.char ? spec.char.toUpperCase().charCodeAt(0) : null);
-  if (vk == null) throw new Error(`Key phrase has no vk/char: ${keyName}`);
-  const modVks = spec.modifiers.map(modifierVk);
   const lines = [WIN32_TYPE];
-  for (const m of modVks) lines.push(keyEventLine(m, false));
-  lines.push(keyEventLine(vk, false));
-  lines.push(keyEventLine(vk, true));
-  for (const m of [...modVks].reverse()) lines.push(keyEventLine(m, true));
+  for (const step of spec.sequence ?? [spec]) {
+    const vk = step.vk ?? (step.char ? step.char.toUpperCase().charCodeAt(0) : null);
+    if (vk == null) throw new Error(`Key phrase has no vk/char: ${keyName}`);
+    const modVks = step.modifiers.map(modifierVk);
+    for (const m of modVks) lines.push(keyEventLine(m, false));
+    const extended = vk >= 0x21 && vk <= 0x2e;
+    lines.push(keyEventLine(vk, false, extended), keyEventLine(vk, true, extended));
+    for (const m of [...modVks].reverse()) lines.push(keyEventLine(m, true));
+  }
   await runPowerShell(lines.join("\n"));
 }
 
@@ -388,25 +382,16 @@ export async function volumeDown(): Promise<void> {
   await runPowerShell(tapKeyScript(VK.VOLUME_DOWN, true));
 }
 
-export async function volumeSet(_percent: number): Promise<void> {
-  // Deferred per DECISIONS.md/PROGRESS.md: exact volume percentage needs Core Audio COM
-  // interop (IAudioEndpointVolume), which is easy to get subtly wrong without a Windows
-  // machine to test against. Ship up/down/mute first, as the plan explicitly allows.
-  throw new Error(
-    "Setting an exact volume percentage isn't supported on Windows yet in this alpha. Try \"volume up\"/\"volume down\" instead."
-  );
+export async function volumeSet(percent: number): Promise<void> {
+  await runPowerShell(buildVolumeScript({ percent }));
 }
 
 export async function volumeMute(): Promise<void> {
-  // Windows only exposes a single mute *toggle* key, not separate set-true/set-false, without
-  // Core Audio COM interop (deferred, same as volumeSet). This will unmute if already muted.
-  logger.event("automation.windows_mute_is_toggle", {});
-  await runPowerShell(tapKeyScript(VK.VOLUME_MUTE, true));
+  await runPowerShell(buildVolumeScript({ mute: true }));
 }
 
 export async function volumeUnmute(): Promise<void> {
-  logger.event("automation.windows_mute_is_toggle", {});
-  await runPowerShell(tapKeyScript(VK.VOLUME_MUTE, true));
+  await runPowerShell(buildVolumeScript({ mute: false }));
 }
 
 export async function mediaPlayPause(): Promise<void> {
@@ -444,9 +429,12 @@ export function say(text: string): void {
   stopSpeaking();
   try {
     const script = `Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.Speak('${psQuote(text)}')`;
-    currentSay = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "ignore", windowsHide: true });
-    currentSay.on("exit", () => {
-      currentSay = null;
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "ignore", windowsHide: true });
+    currentSay = child;
+    child.on("exit", () => { if (currentSay === child) currentSay = null; });
+    child.on("error", (err) => {
+      if (currentSay === child) currentSay = null;
+      logger.error("automation.say_failed", err);
     });
   } catch (err) {
     logger.error("automation.say_failed", err);
@@ -503,43 +491,78 @@ if ($procId -ne 0) {
 }
 
 /** Unverified on real Windows hardware — see PROGRESS.md. */
+/** Foreground handle and physical frame only; never reads editable UI text. */
+export async function getActiveWindowIdentity(): Promise<string | null> {
+  const { stdout } = await runPowerShell(`${CLICK_WIN32_TYPE}
+$h = [DragonClickWin32]::GetForegroundWindow()
+if ($h -eq [IntPtr]::Zero) { throw 'No focused window' }
+$r = New-Object DragonClickWin32+RECT
+if (-not [DragonClickWin32]::GetWindowRect($h, [ref]$r)) { throw 'Window frame unavailable' }
+Write-Output ("{0}|{1}|{2}|{3}|{4}" -f $h.ToInt64(), $r.Left, $r.Top, $r.Right, $r.Bottom)`);
+  return stdout.trim() || null;
+}
+
 export async function captureFrontmostWindow(): Promise<{
   imageBase64: string;
   bounds: { x: number; y: number; width: number; height: number };
   imageWidth: number;
   imageHeight: number;
 }> {
-  const script = `${CLICK_WIN32_TYPE}
+  const script = `$ErrorActionPreference = 'Stop'
+${CLICK_WIN32_TYPE}
 Add-Type -AssemblyName System.Drawing
 $h = [DragonClickWin32]::GetForegroundWindow()
+if ($h -eq [IntPtr]::Zero) { throw 'No focused window' }
 $rect = New-Object DragonClickWin32+RECT
-[void][DragonClickWin32]::GetWindowRect($h, [ref]$rect)
+if (-not [DragonClickWin32]::GetWindowRect($h, [ref]$rect)) { throw 'Window frame unavailable' }
 $x = $rect.Left; $y = $rect.Top; $w = $rect.Right - $rect.Left; $ht = $rect.Bottom - $rect.Top
-$bmp = New-Object System.Drawing.Bitmap $w, $ht
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $ht))
-$tmpFile = [System.IO.Path]::GetTempFileName() + '.jpg'
-$bmp.Save($tmpFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-Write-Output "$x|$y|$w|$ht|$tmpFile"`;
+if ($w -le 0 -or $ht -le 0) { throw 'Focused window has no visible frame' }
+$tmpFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'dragon-click-' + [Guid]::NewGuid().ToString('N') + '.jpg')
+$bmp = $null; $g = $null; $saved = $false
+try {
+  $bmp = New-Object System.Drawing.Bitmap $w, $ht
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $dc = $g.GetHdc()
+  try {
+    if (-not [DragonClickWin32]::PrintWindow($h, $dc, 0)) {
+      throw 'This app did not provide a window capture. Try accessibility clicking.'
+    }
+  } finally { $g.ReleaseHdc($dc) }
+  $after = [DragonClickWin32]::GetForegroundWindow()
+  $afterRect = New-Object DragonClickWin32+RECT
+  if ($after -ne $h -or -not [DragonClickWin32]::GetWindowRect($after, [ref]$afterRect) -or
+      $afterRect.Left -ne $rect.Left -or $afterRect.Top -ne $rect.Top -or
+      $afterRect.Right -ne $rect.Right -or $afterRect.Bottom -ne $rect.Bottom) {
+    throw 'The focused window moved or changed during capture. Say the command again.'
+  }
+  $bmp.Save($tmpFile, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+  $saved = $true
+  Write-Output "$x|$y|$w|$ht|$tmpFile"
+} finally {
+  try { if ($g) { $g.Dispose() } }
+  finally {
+    if ($bmp) { $bmp.Dispose() }
+    if (-not $saved -and (Test-Path -LiteralPath $tmpFile)) { Remove-Item -LiteralPath $tmpFile -Force }
+  }
+}`;
   const { stdout } = await runPowerShell(script);
   const parts = stdout.trim().split("|");
   if (parts.length !== 5) throw new Error("Could not capture the frontmost window.");
   const [xs, ys, ws, hs, tmpFile] = parts;
   try {
+    const [x, y, width, height] = [xs, ys, ws, hs].map(Number);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0 || !tmpFile) {
+      throw new Error("The focused window returned an invalid capture frame.");
+    }
     const buf = await fs.promises.readFile(tmpFile);
-    const width = parseInt(ws, 10);
-    const height = parseInt(hs, 10);
     return {
       imageBase64: buf.toString("base64"),
-      bounds: { x: parseInt(xs, 10), y: parseInt(ys, 10), width, height },
-      // CopyFromScreen captured exactly width x height pixels, so this is a 1:1 ratio today —
-      // unverified on a real HiDPI Windows display (see PROGRESS.md), but keeps the interface
-      // consistent with macOS's captureFrontmostWindow().
+      bounds: { x, y, width, height },
       imageWidth: width,
       imageHeight: height,
     };
   } finally {
-    fs.promises.unlink(tmpFile).catch(() => {});
+    await fs.promises.unlink(tmpFile).catch(() => {});
   }
 }
 

@@ -184,6 +184,16 @@ function renderExceptions(decisions: JevDecision[]) {
   }
 }
 
+function voiceState(status: Record<string, unknown>): string {
+  const speech = status.speech as { state?: string } | undefined;
+  const microphone = status.microphone as { state?: string } | undefined;
+  if (microphone?.state === "error" || speech?.state === "error") return "Voice needs attention";
+  if (!status.listening) return "Stopped";
+  if (speech?.state === "reconnecting") return "Reconnecting speech";
+  if (speech?.state !== "connected") return "Connecting speech";
+  return microphone?.state === "capturing" ? "Listening" : "Starting microphone";
+}
+
 function renderDashboard(data: DashboardResponse) {
   const decisions = visibleDecisions(data.decisions);
   const latest = decisions[0];
@@ -201,7 +211,7 @@ function renderDashboard(data: DashboardResponse) {
     setText("jevLatency", "—");
     setText("decisionLatency", "—");
     setText("decisionPreparation", "—");
-    setText("dragonState", data.status?.listening ? "Listening" : "Idle");
+    setText("dragonState", voiceState(data.status ?? {}));
     setText("latestTime", "Waiting for a command");
     setText("latestContext", "No transcript yet");
     setText("latestModel", "Decision provider");
@@ -219,7 +229,7 @@ function renderDashboard(data: DashboardResponse) {
   setText("decisionLatency", formatMs(latest.sttToDecisionMs));
   setText("jevLatency", formatMs(latest.jevMs));
   setText("decisionPreparation", formatMs(latest.decisionMs));
-  setText("dragonState", data.status?.listening ? "Listening" : "Idle");
+  setText("dragonState", voiceState(data.status ?? {}));
   setText("latestTime", new Date(latest.timestamp).toLocaleTimeString());
   setText("latestContext", `${latest.provider.toUpperCase()} · ${latest.model || "unknown model"} · ${latest.activeApp || "Unknown app"} · ${latest.activationMode.replace(/_/g, " ")} · ${latest.turnEvent}`);
   setText("latestModel", latest.model || "Decision provider");
@@ -233,18 +243,22 @@ function renderDashboard(data: DashboardResponse) {
 }
 
 async function refresh() {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 6000);
   try {
-    const response = await fetch("/api/decisions", { cache: "no-store" });
+    const response = await fetch("/api/decisions", { cache: "no-store", signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = (await response.json()) as DashboardResponse;
     renderDashboard(data);
     setText("connectionText", "Live · local Dragon");
   } catch (error) {
     setText("connectionText", "Waiting for Dragon to reconnect");
+  } finally {
+    window.clearTimeout(timeout);
+    window.setTimeout(refresh, 1500);
   }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
   refresh();
-  window.setInterval(refresh, 1500);
 });

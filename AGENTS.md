@@ -68,17 +68,25 @@ PowerShell/User32 on Windows). Read `/home/hardik/.opencode/plan/dragon-alpha-pl
   text content, and never more than the frontmost window. Don't generalize this exception to
   other intents. Keep this buffer in sync with every `typeText`/`deleteBackward` call path; if
   you add a new way text can be typed, update the buffer alongside it or these commands will
-  silently drift out of sync with what's actually on screen.
+  silently drift out of sync with what's actually on screen. The tracked tail resets after
+  untracked navigation/edits or a window change; same-window manual caret/field changes remain
+  unobservable. Backspace counts use grapheme clusters; editor-specific behavior needs native checks.
 - **`pendingChoice`** (numbered disambiguation for `screen_click`) stores only screen coordinates,
-  option labels and the frontmost app name; it expires after 15s and is dropped if the frontmost
-  app changed. The reply ("1".."5") is consumed at the top of `runDecisionInternal`, before Jev.
+  option labels, the frontmost app name, an opaque focused-window identity/frame and
+  highlight/single/double-click metadata; it expires after 15s and is dropped if the focused
+  window identity/frame changed or cannot be verified. The reply ("1".."5") is consumed at the top
+  of `runDecisionInternal`, before Jev. `point to X` / `show me X` / `highlight X` use the same
+  `screen_click` lookup
+  to show a temporary ring without clicking; this is target guidance, not general screen Q&A.
 - Dragon runs **one command per utterance** by design (no multi-step/cross-app planning). A
   request like "open Slack, search for X, and type a message" is expected to be spoken as
   separate sequential utterances, each a direct command — don't build a planner to chain them
   automatically.
 - **Vision-based clicking (`screen_click`).** The one intentional exception to "no vision" above.
   `automation.captureFrontmostWindow()` screenshots only the frontmost/focused window (never the
-  whole screen or other windows); `src/decision/vision-client.ts` sends it to a vision-capable
+  whole screen or other windows). Use target-owned capture (macOS CGWindowID + screencapture -l,
+  Windows PrintWindow), never a screen-region crop that can include overlapping windows;
+  `src/decision/vision-client.ts` sends it to a vision-capable
   model via OpenRouter's standard chat-completions API (distinct from the Jev System One
   endpoint) to get element bounding boxes, then `automation.clickAt()` moves and clicks the box
   centre in one action. `VISION_MODEL` in `vision-client.ts` is the single model switch. macOS additionally requires Screen Recording permission (System Settings -> Privacy &

@@ -1,240 +1,284 @@
-// Dragon Browser Control - background service worker.
-// Connects to the local Dragon desktop app over a localhost WebSocket and
-// relays snapshot/action requests to the active tab's content script, or
-// handles tab-level actions (navigation, tabs) directly.
-//
-// Protocol mirrors src/types/browser-protocol.ts in the desktop app.
-
+// Dragon Browser Control — MV3 background service worker.
+// The active normal Chrome window is the command target; installed app windows
+// are excluded. DOM IDs are scoped to a document and cannot target another tab.
 const BRIDGE_URL = "ws://127.0.0.1:17872";
 const RECONNECT_DELAY_MS = 2000;
+const HEARTBEAT_MS = 20000;
 
 let socket = null;
 let reconnectTimer = null;
+let heartbeatTimer = null;
+let connectionError = "";
+
+function updateBadge() {
+  const connected = socket && socket.readyState === WebSocket.OPEN;
+  chrome.action.setBadgeText({ text: connected ? "ON" : "" }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color: "#19855b" }).catch(() => {});
+  chrome.action.setTitle({ title: connected ? "Dragon — connected" : "Dragon — open the desktop app to connect" }).catch(() => {});
+}
 
 function connect() {
   if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 
   let nextSocket;
-  socket = null;
   try {
     nextSocket = new WebSocket(BRIDGE_URL);
     socket = nextSocket;
-  } catch (err) {
+    updateBadge();
+  } catch {
+    socket = null;
+    connectionError = "Could not connect. Open Dragon and check its browser connection in Settings.";
     scheduleReconnect();
+    updateBadge();
     return;
   }
 
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
-    console.log("[dragon] connected to desktop app");
-    send({ type: "hello" });
+    connectionError = "";
+    send({ type: "hello" }, nextSocket);
+    // WebSocket traffic also keeps the Chrome 116+ MV3 worker alive.
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => send({ type: "hello" }, nextSocket), HEARTBEAT_MS);
+    updateBadge();
   });
 
   nextSocket.addEventListener("message", async (event) => {
     if (socket !== nextSocket) return;
     let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!msg || typeof msg.requestId !== "string") return;
     try {
-      msg = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (msg.type === "get_snapshot") {
-      const snapshot = await getSnapshotFromActiveTab();
-      send({
-        type: "snapshot",
-        requestId: msg.requestId,
-        connected: true,
-        url: snapshot.url,
-        title: snapshot.title,
-        focusedElementId: snapshot.focusedElementId,
-        elements: snapshot.elements,
-      });
-    } else if (msg.type === "action") {
-      const result = await performAction(msg.action);
-      send({ type: "action_result", requestId: msg.requestId, ok: result.ok, error: result.error });
+      if (msg.type === "get_snapshot") {
+        const snapshot = await getSnapshotFromActiveTab();
+        send({ type: "snapshot", requestId: msg.requestId, connected: true, ...snapshot }, nextSocket);
+      } else if (msg.type === "action") {
+        const result = await performAction(msg.action);
+        send({ type: "action_result", requestId: msg.requestId, ok: result.ok, error: result.error }, nextSocket);
+      }
+    } catch (err) {
+      const error = err && err.message ? err.message : String(err);
+      if (msg.type === "get_snapshot") {
+        send({ type: "snapshot", requestId: msg.requestId, connected: true, url: "", title: "", focusedElementId: null, elements: [], error }, nextSocket);
+      } else {
+        send({ type: "action_result", requestId: msg.requestId, ok: false, error }, nextSocket);
+      }
     }
   });
 
   nextSocket.addEventListener("close", () => {
     if (socket !== nextSocket) return;
     socket = null;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    connectionError = "Desktop app disconnected. Open Dragon to reconnect.";
     scheduleReconnect();
+    updateBadge();
   });
   nextSocket.addEventListener("error", () => {
-    /* close handler will schedule reconnect */
+    connectionError = "Cannot reach Dragon. Open the desktop app; it must be running on this computer.";
+    // Closing guarantees a failed handshake cannot remain stuck in CONNECTING.
+    try { nextSocket.close(); } catch { /* close event/retry handles cleanup */ }
   });
 }
 
 function scheduleReconnect() {
   if (socket || reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connect();
-  }, RECONNECT_DELAY_MS);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, RECONNECT_DELAY_MS);
 }
 
-function send(message) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
+function send(message, expectedSocket = socket) {
+  if (socket === expectedSocket && expectedSocket && expectedSocket.readyState === WebSocket.OPEN) {
+    try { expectedSocket.send(JSON.stringify(message)); } catch { expectedSocket.close(); }
   }
 }
 
 async function getActiveTab() {
-  // Prefer a normal browser window. Chrome runs installed PWAs / "apps" (e.g. YouTube Music
-  // installed as an app) in their own window of type "app", and `lastFocusedWindow` happily
-  // returns one of those — so once a PWA window had focus, every browser command (navigate,
-  // search, new_tab, click) landed in the PWA instead of the browser (observed 2026-09-26).
-  // `windowType` is a documented tabs.query filter, so this needs no extra permission.
-  const [normal] = await chrome.tabs.query({ active: true, windowType: "normal" });
-  if (normal) return normal;
-  // No normal window open (headless-ish setups, or the user only has a PWA running): fall back
-  // to the previous behavior rather than failing.
+  // Ask Chrome for its most recently focused normal window. Querying every
+  // active tab and taking the first controls the wrong window when several
+  // browser windows are open; currentWindow can also refer to a PWA.
+  try {
+    const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    if (window && window.id != null) {
+      const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
+      if (tab) return tab;
+    }
+  } catch { /* No normal browser window is open. */ }
   const [fallback] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return fallback ?? null;
+  return fallback || null;
+}
+
+function pageError() {
+  return "This page does not support browser control (Chrome settings, Web Store, PDF, or restricted page). Open a regular web page.";
+}
+
+async function sendToPage(tab, message) {
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (err) {
+    const error = err && err.message ? err.message : String(err);
+    if (!/receiving end does not exist|could not establish connection/i.test(error)) throw err;
+    // Unpacked extensions loaded/reloaded after a page opened have no content
+    // script there yet. Inject once on ordinary pages; no manual reload needed.
+    if (!/^(https?|file):/i.test(tab.url || "")) throw new Error(pageError());
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      return await chrome.tabs.sendMessage(tab.id, message);
+    } catch {
+      throw new Error(pageError());
+    }
+  }
 }
 
 async function getSnapshotFromActiveTab() {
   const tab = await getActiveTab();
-  if (!tab || !tab.id) return { url: "", title: "", focusedElementId: null, elements: [] };
+  if (!tab || tab.id == null) return { url: "", title: "", focusedElementId: null, elements: [], error: "No Chrome tab is open." };
+  const empty = { url: tab.url || "", title: tab.title || "", focusedElementId: null, elements: [] };
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "get_snapshot" });
-    return response ?? { url: tab.url ?? "", title: tab.title ?? "", focusedElementId: null, elements: [] };
-  } catch {
-    // Content script may not be injected yet (e.g. chrome:// pages).
-    return { url: tab.url ?? "", title: tab.title ?? "", focusedElementId: null, elements: [] };
+    return await sendToPage(tab, { type: "get_snapshot" }) || { ...empty, error: "No response from this page." };
+  } catch (err) {
+    return { ...empty, error: err && err.message ? err.message : String(err) };
   }
+}
+
+async function requireActiveTab() {
+  const tab = await getActiveTab();
+  if (!tab || tab.id == null) throw new Error("No active Chrome tab.");
+  return tab;
+}
+
+async function activateTab(tab) {
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true });
+}
+
+function normalize(text) {
+  return String(text || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function hostname(url) {
+  try { return new URL(url).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; }
 }
 
 async function performAction(action) {
   try {
+    if (!action || typeof action.kind !== "string") throw new Error("Invalid browser action.");
     switch (action.kind) {
-      case "navigate": {
-        const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.update(tab.id, { url: action.url });
-        else await chrome.tabs.create({ url: action.url });
-        return { ok: true };
-      }
+      case "navigate":
       case "search": {
-        const url = `https://www.google.com/search?q=${encodeURIComponent(action.query)}`;
+        const url = action.kind === "search" ? "https://www.google.com/search?q=" + encodeURIComponent(action.query) : action.url;
         const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.update(tab.id, { url });
+        if (tab && tab.id != null) await chrome.tabs.update(tab.id, { url });
         else await chrome.tabs.create({ url });
         return { ok: true };
       }
       case "focus_or_open": {
-        // "Open my existing tabs": reuse a tab that already matches this hostname instead of
-        // always creating a new one.
-        let targetHost;
-        try {
-          targetHost = new URL(action.url).hostname.replace(/^www\./, "");
-        } catch {
-          targetHost = null;
-        }
+        const targetUrl = new URL(action.url);
+        const targetHost = hostname(action.url);
+        const hasDestination = targetUrl.pathname !== "/" || !!targetUrl.search || !!targetUrl.hash;
+        const current = await getActiveTab();
         if (targetHost) {
-          const allTabs = await chrome.tabs.query({});
-          const existing = allTabs.find((t) => {
-            if (!t.url) return false;
+          const allTabs = await chrome.tabs.query({ windowType: "normal" });
+          const matches = allTabs.filter((tab) => {
             try {
-              return new URL(t.url).hostname.replace(/^www\./, "") === targetHost;
-            } catch {
-              return false;
-            }
+              const candidate = new URL(tab.url);
+              return hostname(tab.url) === targetHost && candidate.protocol === targetUrl.protocol && candidate.port === targetUrl.port;
+            } catch { return false; }
           });
-          if (existing && existing.id != null) {
-            await chrome.tabs.update(existing.id, { active: true });
-            if (existing.windowId != null) await chrome.windows.update(existing.windowId, { focused: true });
+          matches.sort((a, b) => Number(b.windowId === current?.windowId) - Number(a.windowId === current?.windowId) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
+          if (matches.length) {
+            // An origin-only "open Google" can reuse the existing page unchanged. A search,
+            // path or fragment is a destination and must actually be applied to the tab.
+            const exact = hasDestination && matches.find((tab) => new URL(tab.url).href === targetUrl.href);
+            const chosen = exact || matches[0];
+            if (hasDestination && !exact) await chrome.tabs.update(chosen.id, { url: action.url });
+            await activateTab(chosen);
             return { ok: true };
           }
         }
-        const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.update(tab.id, { url: action.url });
-        else await chrome.tabs.create({ url: action.url });
+        // "Open" should preserve the page the user was working on.
+        await chrome.tabs.create({ url: action.url, ...(current ? { windowId: current.windowId } : {}) });
         return { ok: true };
       }
-      case "back": {
-        const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.goBack(tab.id);
-        return { ok: true };
-      }
-      case "forward": {
-        const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.goForward(tab.id);
-        return { ok: true };
-      }
-      case "reload": {
-        const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.reload(tab.id);
-        return { ok: true };
-      }
+      case "back": await chrome.tabs.goBack((await requireActiveTab()).id); return { ok: true };
+      case "forward": await chrome.tabs.goForward((await requireActiveTab()).id); return { ok: true };
+      case "reload": await chrome.tabs.reload((await requireActiveTab()).id); return { ok: true };
       case "new_tab": {
-        await chrome.tabs.create({});
-        return { ok: true };
-      }
-      case "close_tab": {
         const tab = await getActiveTab();
-        if (tab && tab.id) await chrome.tabs.remove(tab.id);
+        await chrome.tabs.create(tab ? { windowId: tab.windowId } : {});
         return { ok: true };
       }
+      case "close_tab": await chrome.tabs.remove((await requireActiveTab()).id); return { ok: true };
       case "switch_tab": {
-        const tab = await getActiveTab();
-        if (!tab) return { ok: false, error: "No active tab" };
-        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const tab = await requireActiveTab();
+        const tabs = await chrome.tabs.query({ windowId: tab.windowId });
         tabs.sort((a, b) => a.index - b.index);
-        const idx = tabs.findIndex((t) => t.id === tab.id);
-        const delta = action.direction === "previous" ? -1 : 1;
-        const nextIdx = (idx + delta + tabs.length) % tabs.length;
-        await chrome.tabs.update(tabs[nextIdx].id, { active: true });
+        if (!tabs.length) throw new Error("No Chrome tabs are open.");
+        let target;
+        if (action.index != null) {
+          if (!Number.isInteger(action.index) || action.index < 1 || action.index > tabs.length) throw new Error("There are " + tabs.length + " tabs. Say a tab number from 1 to " + tabs.length + ".");
+          target = tabs[action.index - 1];
+        } else if (normalize(action.title)) {
+          const wanted = normalize(action.title);
+          const exact = tabs.filter((candidate) => normalize(candidate.title) === wanted || hostname(candidate.url) === wanted.replace(/^www\./, ""));
+          const matches = exact.length ? exact : tabs.filter((candidate) => normalize(candidate.title).includes(wanted) || hostname(candidate.url).includes(wanted));
+          if (!matches.length) throw new Error("No tab matches that name. Say a tab number or more of its title.");
+          if (matches.length > 1) throw new Error("More than one tab matches. Say a tab number or a more specific title.");
+          target = matches[0];
+        } else {
+          if (!["next", "previous", "first", "last"].includes(action.direction)) throw new Error("Unknown tab direction.");
+          const index = tabs.findIndex((candidate) => candidate.id === tab.id);
+          if (index < 0) throw new Error("The active tab changed. Say the tab command again.");
+          target = action.direction === "first" ? tabs[0] : action.direction === "last" ? tabs[tabs.length - 1] : tabs[(index + (action.direction === "previous" ? -1 : 1) + tabs.length) % tabs.length];
+        }
+        await activateTab(target);
         return { ok: true };
       }
       case "click":
       case "type":
       case "select":
-      case "scroll": {
-        const tab = await getActiveTab();
-        if (!tab || !tab.id) return { ok: false, error: "No active tab" };
-        try {
-          const response = await chrome.tabs.sendMessage(tab.id, { type: "action", action });
-          return response ?? { ok: false, error: "No response from page" };
-        } catch (err) {
-          // "Receiving end does not exist" means no content script is running in this tab —
-          // normal on chrome:// pages, the PDF viewer, the Chrome Web Store, or a tab that
-          // hasn't finished loading yet (content scripts can't run on any of those).
-          const message = err && err.message ? err.message : String(err);
-          if (/receiving end does not exist/i.test(message)) {
-            return {
-              ok: false,
-              error: "This page doesn't support Dragon's browser control (chrome:// page, PDF viewer, or still loading) — try a regular web page.",
-            };
-          }
-          throw err;
-        }
-      }
-      default:
-        return { ok: false, error: `Unknown action kind: ${action.kind}` };
+      case "scroll":
+        return await sendToPage(await requireActiveTab(), { type: "action", action }) || { ok: false, error: "No response from page." };
+      default: throw new Error("Unknown browser action: " + action.kind);
     }
   } catch (err) {
     return { ok: false, error: err && err.message ? err.message : String(err) };
   }
 }
 
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type !== "dragon_status" && message.type !== "dragon_reconnect") return;
+  if (message.type === "dragon_reconnect") connect();
+  (async () => {
+    const tab = await getActiveTab();
+    let pageAvailable = false;
+    let pageMessage = tab ? "This page does not support browser control." : "Open a Chrome tab to use browser commands.";
+    if (tab && tab.id != null) {
+      try {
+        const status = await sendToPage(tab, { type: "get_status" });
+        pageAvailable = !!status?.available;
+        if (pageAvailable) pageMessage = "Page controls are ready for voice commands.";
+      } catch (err) { pageMessage = err && err.message ? err.message : String(err); }
+    }
+    return {
+      connected: !!socket && socket.readyState === WebSocket.OPEN,
+      connecting: !!socket && socket.readyState === WebSocket.CONNECTING,
+      error: connectionError,
+      pageAvailable,
+      pageMessage,
+      title: tab?.title || "",
+    };
+  })().then(sendResponse, () => sendResponse({ connected: false, connecting: false, error: "Chrome could not report its status. Reopen this popup." }));
+  return true;
+});
+
 connect();
-
-// Manifest V3 service workers go idle; wake on demand and keep retrying the
-// bridge connection so the desktop app can always reach a live connection.
 chrome.runtime.onStartup?.addListener(connect);
-
-// MV3 service workers are evicted after ~30s idle even with an open
-// WebSocket in some Chrome versions. `chrome.alarms` is the standard
-// keepalive: each firing wakes this worker (if it was terminated) and
-// reconnects if the socket isn't open. 0.5 minutes is Chrome's enforced
-// floor for alarm periods.
+chrome.runtime.onInstalled?.addListener(connect);
+// Alarms revive the worker after Chrome restarts or suspends it.
 chrome.alarms.create("dragon-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "dragon-keepalive" && (!socket || socket.readyState !== WebSocket.OPEN)) {
-    connect();
-  }
+  if (alarm.name === "dragon-keepalive" && (!socket || socket.readyState !== WebSocket.OPEN)) connect();
 });

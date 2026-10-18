@@ -1,52 +1,49 @@
 import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
-import { HistoryEntry } from "../types/pipeline";
+import { HistoryEntry, INTENT_NAMES } from "../types/pipeline";
 import { logger } from "../logging/logger";
+import { writeJsonAtomic } from "./json-store";
 
-const FILE_NAME = "history.json";
 const MAX_ENTRIES = 200;
+function copyEntry(row: HistoryEntry): HistoryEntry {
+  const { utteranceId, timestamp, transcript, intent, action, status, detail } = row;
+  return { utteranceId, timestamp, transcript, intent, action, status, detail };
+}
+function isEntry(value: unknown): value is HistoryEntry {
+  if (!value || typeof value !== "object") return false;
+  const row = value as HistoryEntry;
+  return INTENT_NAMES.includes(row.intent) && Number.isFinite(row.timestamp) && ["success", "error", "ignored"].includes(row.status) &&
+    ["utteranceId", "transcript", "intent", "action", "detail"].every(key => typeof (row as any)[key] === "string");
+}
 
 export class HistoryStore {
-  private filePath: string;
-  private entries: HistoryEntry[];
+  private filePath = path.join(app.getPath("userData"), "history.json");
+  private entries: HistoryEntry[] = [];
 
   constructor() {
-    this.filePath = path.join(app.getPath("userData"), FILE_NAME);
-    this.entries = this.load();
-  }
-
-  private load(): HistoryEntry[] {
     try {
       if (fs.existsSync(this.filePath)) {
-        return JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
+        const rows: unknown = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+        if (Array.isArray(rows)) this.entries = rows.filter(isEntry).slice(0, MAX_ENTRIES).map(copyEntry);
       }
-    } catch (err) {
-      logger.error("history.load", err);
+    } catch {
+      logger.event("history.load_failed", { reason: "Could not read or parse command history." });
     }
-    return [];
   }
 
-  add(entry: HistoryEntry) {
-    this.entries.unshift(entry);
-    if (this.entries.length > MAX_ENTRIES) this.entries.length = MAX_ENTRIES;
-    this.persist();
+  add(entry: HistoryEntry): void {
+    this.entries.unshift(copyEntry(entry));
+    this.entries.length = Math.min(this.entries.length, MAX_ENTRIES);
+    try { writeJsonAtomic(this.filePath, this.entries); }
+    catch { logger.event("history.persist_failed", { reason: "Recent history remains available for this session." }); }
   }
 
-  list(): HistoryEntry[] {
-    return this.entries;
-  }
+  list(): HistoryEntry[] { return this.entries.map(entry => ({ ...entry })); }
 
-  clear() {
+  clear(): void {
+    try { writeJsonAtomic(this.filePath, []); }
+    catch { throw new Error("Command history could not be cleared on disk. Check file access and try again."); }
     this.entries = [];
-    this.persist();
-  }
-
-  private persist() {
-    try {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.entries, null, 2), "utf-8");
-    } catch (err) {
-      logger.error("history.persist", err);
-    }
   }
 }

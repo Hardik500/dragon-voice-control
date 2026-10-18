@@ -1,4 +1,5 @@
 import { logger } from "../logging/logger";
+import { DecisionCancelledError } from "./jev-client";
 
 const VISION_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 // Single switch for every screen_click vision call. gpt-4o (and gpt-4o-mini before it) kept
@@ -25,6 +26,15 @@ export interface LocatedPoint {
   box: Box;
 }
 export class VisionRequestError extends Error {}
+
+function requestLifetime(signal?: AbortSignal): { controller: AbortController; cleanup: () => void } {
+  if (signal?.aborted) throw new DecisionCancelledError("Screen target request cancelled");
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  return { controller, cleanup: () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); } };
+}
 
 const LABEL_STOPWORDS = new Set(["the", "and", "click", "tap", "press", "button", "on", "icon", "link", "tab"]);
 
@@ -89,11 +99,10 @@ export function dedupeMatches(matches: LocatedPoint[]): LocatedPoint[] {
  * crop that only the actual element is in view is not subject to the same bias. See
  * PROGRESS.md 2026-09-28.
  */
-export async function readLabelAtPoint(openRouterApiKey: string, croppedImageBase64: string): Promise<string> {
+export async function readLabelAtPoint(openRouterApiKey: string, croppedImageBase64: string, signal?: AbortSignal): Promise<string> {
   if (!openRouterApiKey) throw new VisionRequestError("OpenRouter API key is not configured");
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const lifetime = requestLifetime(signal);
   try {
     const res = await fetch(VISION_ENDPOINT, {
       method: "POST",
@@ -120,22 +129,24 @@ export async function readLabelAtPoint(openRouterApiKey: string, croppedImageBas
         temperature: 0,
         reasoning: { effort: "minimal" },
       }),
-      signal: controller.signal,
+      signal: lifetime.controller.signal,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new VisionRequestError(`Vision model returned ${res.status}: ${text.slice(0, 300)}`);
     }
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    if (signal?.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     const label = (json.choices?.[0]?.message?.content ?? "").trim().replace(/^["']|["']$/g, "");
     logger.event("vision.read_label_at_point", { model: VISION_MODEL, label });
     return label;
   } catch (err: any) {
+    if (signal?.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     if (err?.name === "AbortError") throw new VisionRequestError("Vision request timed out");
     if (err instanceof VisionRequestError) throw err;
     throw new VisionRequestError(err?.message ?? String(err));
   } finally {
-    clearTimeout(timer);
+    lifetime.cleanup();
   }
 }
 
@@ -156,12 +167,15 @@ export async function locateElements(
   imageBase64: string,
   description: string,
   imageWidth: number,
-  imageHeight: number
+  imageHeight: number,
+  signal?: AbortSignal
 ): Promise<LocatedPoint[]> {
   if (!openRouterApiKey) throw new VisionRequestError("OpenRouter API key is not configured");
+  if (!Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) || imageWidth <= 0 || imageHeight <= 0) {
+    throw new VisionRequestError("Screenshot dimensions are invalid");
+  }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const lifetime = requestLifetime(signal);
   try {
     const res = await fetch(VISION_ENDPOINT, {
       method: "POST",
@@ -198,7 +212,7 @@ export async function locateElements(
         reasoning: { effort: "low" },
         response_format: { type: "json_object" },
       }),
-      signal: controller.signal,
+      signal: lifetime.controller.signal,
     });
 
     if (!res.ok) {
@@ -206,12 +220,16 @@ export async function locateElements(
       throw new VisionRequestError(`Vision model returned ${res.status}: ${text.slice(0, 300)}`);
     }
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    if (signal?.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     const raw = json.choices?.[0]?.message?.content ?? "";
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new VisionRequestError("Vision model returned no parseable JSON");
     const parsed = JSON.parse(match[0]) as { matches?: { box_2d?: number[]; label?: string }[] };
-    const matches = (parsed.matches ?? [])
-      .filter((m) => Array.isArray(m.box_2d) && m.box_2d.length === 4 && m.box_2d.every((n) => typeof n === "number"))
+    if (!Array.isArray(parsed.matches)) throw new VisionRequestError("Vision model returned an invalid match list");
+    const matches = parsed.matches
+      .filter((m) => m && Array.isArray(m.box_2d) && m.box_2d.length === 4 &&
+        m.box_2d.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1000) &&
+        m.box_2d[2] > m.box_2d[0] && m.box_2d[3] > m.box_2d[1] && typeof m.label === "string")
       .slice(0, MAX_LOCATE_MATCHES);
     logger.event("vision.locate_elements", {
       model: VISION_MODEL,
@@ -225,10 +243,11 @@ export async function locateElements(
       return { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2, label: m.label ?? "", box };
     });
   } catch (err: any) {
+    if (signal?.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     if (err?.name === "AbortError") throw new VisionRequestError("Vision request timed out");
     if (err instanceof VisionRequestError) throw err;
     throw new VisionRequestError(err?.message ?? String(err));
   } finally {
-    clearTimeout(timer);
+    lifetime.cleanup();
   }
 }

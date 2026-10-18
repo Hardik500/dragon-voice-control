@@ -17,6 +17,7 @@ export interface DragonSettings {
   insertModeShortcut: string;
   workflowModeShortcut: string;
   voiceReplyEnabled: boolean;
+  audioInputDeviceId: string;
   logVerbosity: LogVerbosity;
   screenClickMethod: ScreenClickMethod;
   overlayVisible: boolean;
@@ -44,6 +45,7 @@ export const DEFAULT_SETTINGS: DragonSettings = {
   insertModeShortcut: DEFAULT_INSERT_MODE_SHORTCUT,
   workflowModeShortcut: DEFAULT_WORKFLOW_MODE_SHORTCUT,
   voiceReplyEnabled: true,
+  audioInputDeviceId: "",
   logVerbosity: "normal",
   screenClickMethod: "auto",
   overlayVisible: true,

@@ -6,14 +6,15 @@ import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
-import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
+import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractScreenPreviewTarget, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
 import { askDisambiguationChoice, callDecisionProvider, DecisionCancelledError, DecisionProviderConfig, DecisionRequestError } from "../decision/jev-client";
 import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, labelTokens, readLabelAtPoint } from "../decision/vision-client";
 import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, isDeterministicScreenClick, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
-import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
+import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, ScreenTargetOverlay, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
+import { SpeechConnectionStatus } from "../types/voice";
 import { HistoryStore } from "./history-store";
 
 const MAX_IN_FLIGHT_DECISIONS = 2;
@@ -24,6 +25,8 @@ const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
 const DEFAULT_DELETE_WORD_COUNT = 3;
+const MAX_REMEMBERED_UTTERANCES = 500;
+const MAX_CACHED_ANSWERS = 100;
 const SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD = 0.35; // mirrors INTENT_CONFIDENCE_THRESHOLD
 
 type ScreenClickWindow = Awaited<ReturnType<typeof automation.captureFrontmostWindow>>;
@@ -147,6 +150,8 @@ type DictationControl =
   | { type: "key"; keyName: string }
   | { type: "browser_new_tab" }
   | { type: "newline" }
+  | { type: "paragraph" }
+  | { type: "punctuation"; text: string }
   | { type: "delete_all" }
   | { type: "delete_last_chunk" }
   | { type: "delete_words"; count: number }
@@ -190,6 +195,7 @@ class AccessibilityMissError extends Error {}
 /** Not a failure: the click is ambiguous and `pendingChoice` now awaits a spoken number. */
 class ChoiceRequiredError extends Error {}
 const PENDING_CHOICE_TTL_MS = 15_000;
+const POINT_HINT_TTL_MS = 5_000;
 
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
@@ -197,6 +203,11 @@ export class DragonPipeline {
   private inFlight: InFlight[] = [];
   /** Serializes Jev work per utterance so EagerEndOfTurn cannot race the final EndOfTurn. */
   private decisionInFlightByUtterance = new Map<string, Promise<void>>();
+  /** Emergency Stop invalidates decisions queued behind an in-flight eager turn too. */
+  private decisionEpoch = 0;
+  /** Preserve spoken command order, including provider decisions and local dictation edits. */
+  private commandQueue: Promise<void> = Promise.resolve();
+  private utteranceRevisions = new Map<string, number>();
   private executedUtterances = new Set<string>();
   /** Set while a resolved command is actually running (between the "executing" and "done"/
    * "error" overlay updates). Deepgram keeps streaming ambient audio during a slow command
@@ -209,18 +220,18 @@ export class DragonPipeline {
   private ignoredLoggedUtterances = new Set<string>();
   private utteranceCounter = 0;
   private micStreaming = false;
-  /** Set right before an intentional close so the connection's `onClose` handler knows not
-   * to auto-reconnect (see startStreaming's onClose callback). */
-  private intentionalClose = false;
-  /** Bumped on every startStreaming() call so a stale connection's delayed close (e.g. from
-   * a graceful push-to-talk stop) can't trigger a reconnect after a newer one has already
-   * taken over. */
+  private streamingWanted = false;
   private streamGeneration = 0;
-  /** Consecutive auto-reconnect attempts since the last successful connection; capped so a
-   * persistently failing connection (bad key, network down) doesn't retry forever. */
+  private streamStartPromise: Promise<void> | null = null;
+  private speechStatus: SpeechConnectionStatus = { state: "idle", message: null, reconnectAttempt: 0 };
+  /** Failed recovery attempts reset only after a stable connection, not every brief open. */
   private reconnectAttempts = 0;
   private static readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private static readonly STABLE_CONNECTION_MS = 30_000;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  /** A stopped push-to-talk session may deliver its final turn for at most 1.5 seconds. */
+  private drainingConnection: DeepgramFluxConnection | null = null;
+  private drainTimer: NodeJS.Timeout | null = null;
   private history = new HistoryStore();
   /** Avoids asking Jev the exact same question twice for one utterance (e.g. EagerEndOfTurn
    * then EndOfTurn arriving with identical transcript text). Keyed by `${utteranceId}::${text}`. */
@@ -234,13 +245,18 @@ export class DragonPipeline {
    * as any other command continue being typed verbatim, without repeating "type" each time. */
   private dictationActive = false;
   /** Ambiguous screen_click awaiting a spoken number; screen coordinates, cleared on next utterance. */
-  private pendingChoice: { app: string | null; expiresAt: number; clicks: number; options: { label: string; x: number; y: number }[] } | null = null;
+  private pendingChoice: { app: string | null; expiresAt: number; options: { label: string; x: number; y: number }[]; preview: boolean; clicks: number; windowIdentity: string } | null = null;
+  private screenTargets: ScreenTargetOverlay | null = null;
+  private screenTargetTimer: NodeJS.Timeout | null = null;
+  private lastOverlay: OverlayUpdate | null = null;
   /** Everything typed in the current dictation session, kept in sync with what's on screen
    * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
    * instead of guessing. Cleared when dictation ends. */
   private dictationBuffer = "";
   /** The most recently appended chunk, for "delete that"/"undo that". */
   private lastDictationChunk = "";
+  private dictationWindowIdentity: string | null = null;
+  private dictationTrackingNotice: string | null = null;
   /** Browser workflow mode accepts sequential commands until toggled off or a step fails. */
   private workflowActive = false;
   private workflowStepCount = 0;
@@ -249,8 +265,57 @@ export class DragonPipeline {
   constructor(
     private getSettings: () => DragonSettings,
     private browserBridge: BrowserBridge,
-    private onOverlay: (update: OverlayUpdate) => void
+    private publishOverlay: (update: OverlayUpdate) => void,
+    private onSpeechStatus: (status: SpeechConnectionStatus) => void = () => {}
   ) {}
+
+  /** Every pipeline update includes the current hints, so new speech cannot erase a picker. */
+  private onOverlay(update: OverlayUpdate): void {
+    this.lastOverlay = update;
+    this.publishOverlay({ ...update, interactionMode: this.getInteractionMode(), screenTargets: this.screenTargets });
+  }
+
+  private clearScreenTargets(): void {
+    if (this.screenTargetTimer) clearTimeout(this.screenTargetTimer);
+    this.screenTargetTimer = null;
+    const hadTargets = this.screenTargets !== null;
+    this.screenTargets = null;
+    this.pendingChoice = null;
+    if (hadTargets && this.lastOverlay) this.onOverlay({ ...this.lastOverlay, status: null });
+  }
+
+  private showScreenTargets(targets: ScreenTargetOverlay): void {
+    if (this.screenTargetTimer) clearTimeout(this.screenTargetTimer);
+    this.screenTargets = targets;
+    this.screenTargetTimer = setTimeout(() => this.clearScreenTargets(), Math.max(0, targets.expiresAt - Date.now()));
+    this.screenTargetTimer.unref();
+    if (this.lastOverlay) this.onOverlay(this.lastOverlay);
+  }
+
+  private async readWindowIdentity(signal: AbortSignal): Promise<string> {
+    this.assertNotCancelled(signal);
+    const identity = await automation.getActiveWindowIdentity().catch(() => null);
+    this.assertNotCancelled(signal);
+    if (!identity) throw new Error("Could not verify the focused window. Focus the target window and try again.");
+    return identity;
+  }
+
+  private async assertWindowIdentity(expected: string, signal: AbortSignal): Promise<void> {
+    if (await this.readWindowIdentity(signal) !== expected) {
+      throw new Error("The focused window moved or changed. Name the target again.");
+    }
+  }
+
+  private async finishScreenTarget(point: { x: number; y: number; label: string }, preview: boolean, signal: AbortSignal, clicks: number, windowIdentity: string): Promise<void> {
+    this.assertNotCancelled(signal);
+    await this.assertWindowIdentity(windowIdentity, signal);
+    if (preview) {
+      this.showScreenTargets({ kind: "point", targets: [point], expiresAt: Date.now() + POINT_HINT_TTL_MS });
+      logger.event("screen_click.preview", { label: point.label, x: point.x, y: point.y });
+      return Promise.resolve();
+    }
+    return automation.clickAt(point.x, point.y, clicks);
+  }
 
   getHistory(): HistoryEntry[] {
     return this.history.list();
@@ -278,7 +343,16 @@ export class DragonPipeline {
     return "normal";
   }
 
+  private invalidatePendingCommands(): void {
+    this.decisionEpoch += 1;
+    for (const request of this.inFlight) request.controller.abort();
+    this.inFlight = [];
+    this.executingUtteranceId = null;
+  }
+
   toggleInsertMode(): boolean {
+    this.invalidatePendingCommands();
+    this.clearScreenTargets();
     if (this.dictationActive) {
       this.endDictation();
     } else {
@@ -295,6 +369,8 @@ export class DragonPipeline {
   }
 
   toggleWorkflowMode(): boolean {
+    this.invalidatePendingCommands();
+    this.clearScreenTargets();
     if (this.workflowActive) {
       this.stopWorkflow();
     } else {
@@ -340,96 +416,171 @@ export class DragonPipeline {
     return `utt_${Date.now()}_${this.utteranceCounter}`;
   }
 
-  /** Starts (or restarts) a Deepgram connection and marks the mic as streaming. */
-  async startStreaming(): Promise<void> {
-    if (this.micStreaming) return;
-    const settings = this.getSettings();
-    if (!settings.deepgramApiKey) {
-      logger.event("pipeline.missing_deepgram_key", {});
-      this.onOverlay(this.baseOverlay("error", "Deepgram API key is not set"));
+  getSpeechStatus(): SpeechConnectionStatus {
+    return { ...this.speechStatus };
+  }
+
+  private setSpeechStatus(state: SpeechConnectionStatus["state"], message: string | null = null): void {
+    this.speechStatus = { state, message, reconnectAttempt: this.reconnectAttempts };
+    this.onSpeechStatus(this.getSpeechStatus());
+  }
+
+  private closeDrainingConnection(): void {
+    if (this.drainTimer) clearTimeout(this.drainTimer);
+    this.drainTimer = null;
+    const connection = this.drainingConnection;
+    this.drainingConnection = null;
+    connection?.close();
+  }
+
+  /** Starts one voice session; repeated starts share its pending connection attempt. */
+  startStreaming(): Promise<void> {
+    if (this.streamingWanted) {
+      if (this.streamStartPromise) return this.streamStartPromise;
+      if (this.micStreaming || this.reconnectTimer) return Promise.resolve();
+    }
+    this.closeDrainingConnection();
+    this.streamingWanted = true;
+    this.reconnectAttempts = 0;
+    return this.connectStreaming(false);
+  }
+
+  private scheduleReconnect(detail: string): void {
+    if (!this.streamingWanted || this.reconnectTimer) return;
+    if (this.reconnectAttempts >= DragonPipeline.MAX_RECONNECT_ATTEMPTS) {
+      this.streamingWanted = false;
+      const message = "Lost connection to Deepgram; stopped after 5 recovery attempts. Try listening again.";
+      logger.event("stt.reconnect_giving_up", { attempts: this.reconnectAttempts });
+      this.setSpeechStatus("error", message);
+      this.onOverlay(this.baseOverlay("error", message));
       return;
     }
-    this.intentionalClose = false;
-    this.streamGeneration += 1;
-    const myGeneration = this.streamGeneration;
-    this.deepgram = new DeepgramFluxConnection(
+    this.reconnectAttempts += 1;
+    const delayMs = Math.min(1000 * 2 ** (this.reconnectAttempts - 1), 8000);
+    const generation = this.streamGeneration;
+    const message = `Reconnecting to Deepgram (attempt ${this.reconnectAttempts} of ${DragonPipeline.MAX_RECONNECT_ATTEMPTS})`;
+    logger.event("stt.unexpected_close_reconnecting", { attempt: this.reconnectAttempts, delayMs, detail });
+    this.setSpeechStatus("reconnecting", message);
+    this.onOverlay(this.baseOverlay("idle", message));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.streamingWanted && generation === this.streamGeneration && !this.deepgram) {
+        void this.connectStreaming(true);
+      }
+    }, delayMs);
+    this.reconnectTimer.unref();
+  }
+
+  private connectStreaming(isReconnect: boolean): Promise<void> {
+    const settings = this.getSettings();
+    if (!settings.deepgramApiKey) {
+      this.streamingWanted = false;
+      logger.event("pipeline.missing_deepgram_key", {});
+      this.setSpeechStatus("error", "Deepgram API key is not set");
+      this.onOverlay(this.baseOverlay("error", "Deepgram API key is not set"));
+      return Promise.resolve();
+    }
+    const myGeneration = ++this.streamGeneration;
+    let connectedAt: number | null = null;
+    let lastError: string | null = null;
+    const isGenerationCurrent = () => myGeneration === this.streamGeneration && this.streamingWanted;
+    const isCurrent = () => isGenerationCurrent() && this.deepgram === connection;
+    const connection = new DeepgramFluxConnection(
       settings.deepgramApiKey,
-      (turn) => this.onTurn(turn),
+      (turn) => {
+        // Only a graceful stop may still deliver a final turn. Restart/emergency clears it.
+        if (isCurrent() || (this.drainingConnection === connection && turn.isFinal)) {
+          void this.onTurn(turn);
+        }
+      },
       (err) => {
+        if (!isCurrent()) return;
+        lastError = err.message;
         logger.error("pipeline.stt_error", err);
-        this.onOverlay(this.baseOverlay("error", err.message));
       },
       (hadOpened) => {
-        const wasIntentional = this.intentionalClose;
-        const isStaleGeneration = myGeneration !== this.streamGeneration;
+        // A superseded close must never clear a newer connection's fields.
+        if (!isCurrent()) return;
         this.micStreaming = false;
         this.deepgram = null;
-        // Reconnect automatically after an unexpected drop (network blip, idle
-        // timeout, etc.) so the mic (still capturing in the hidden renderer)
-        // doesn't end up silently talking to a dead socket while the tray/UI
-        // still reads as "listening". Requires the connection to have actually
-        // opened at least once — a connection that never opened (bad key, DNS
-        // failure, etc.) will just fail again immediately, so retrying would
-        // spin forever hammering the API. Also skip if a newer connection has
-        // already taken over (e.g. a rapid push-to-talk toggle raced this close).
-        if (!wasIntentional && !isStaleGeneration && hadOpened) {
-          if (this.reconnectAttempts >= DragonPipeline.MAX_RECONNECT_ATTEMPTS) {
-            logger.event("stt.reconnect_giving_up", { attempts: this.reconnectAttempts });
-            this.onOverlay(this.baseOverlay("error", "Lost connection to Deepgram repeatedly; stopped retrying"));
-            return;
-          }
-          this.reconnectAttempts += 1;
-          logger.event("stt.unexpected_close_reconnecting", { attempt: this.reconnectAttempts });
-          this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            if (!this.micStreaming) this.startStreaming();
-          }, 1000);
+        if (connectedAt !== null && Date.now() - connectedAt >= DragonPipeline.STABLE_CONNECTION_MS) {
+          this.reconnectAttempts = 0;
+        }
+        // An explicit initial failure stops; failed recovery handshakes keep the same budget.
+        if (hadOpened || isReconnect) {
+          this.scheduleReconnect(lastError ?? "Deepgram connection closed");
         }
       },
       () => this.newUtteranceId()
     );
-    try {
-      await this.deepgram.connect();
-      this.micStreaming = true;
-      this.reconnectAttempts = 0;
-      this.onOverlay(this.baseOverlay("listening", ""));
-    } catch (err) {
-      logger.error("pipeline.stt_connect_failed", err);
-      this.onOverlay(this.baseOverlay("error", err instanceof Error ? err.message : String(err)));
-    }
+    this.deepgram = connection;
+    this.setSpeechStatus(isReconnect ? "reconnecting" : "connecting",
+      isReconnect ? `Reconnecting to Deepgram (attempt ${this.reconnectAttempts} of ${DragonPipeline.MAX_RECONNECT_ATTEMPTS})` : "Connecting to Deepgram");
+    this.onOverlay(this.baseOverlay("idle", this.speechStatus.message ?? ""));
+    const attempt = connection.connect()
+      .then(() => {
+        if (!isCurrent()) {
+          connection.close();
+          return;
+        }
+        connectedAt = Date.now();
+        this.micStreaming = true;
+        this.setSpeechStatus("connected");
+        this.onOverlay(this.baseOverlay("listening", ""));
+      })
+      .catch((err) => {
+        if (!isGenerationCurrent()) return;
+        logger.error("pipeline.stt_connect_failed", err);
+        if (this.deepgram === connection) this.deepgram = null;
+        this.micStreaming = false;
+        connection.close();
+        const message = err instanceof Error ? err.message : String(err);
+        if (isReconnect) {
+          this.scheduleReconnect(message);
+        } else {
+          this.streamingWanted = false;
+          this.setSpeechStatus("error", message);
+          this.onOverlay(this.baseOverlay("error", message));
+        }
+      })
+      .finally(() => {
+        if (this.streamStartPromise === attempt) this.streamStartPromise = null;
+      });
+    this.streamStartPromise = attempt;
+    return attempt;
   }
 
   /**
-   * Stops streaming. When `graceful` is set (push-to-talk release), asks Flux to end the
-   * current turn immediately via `ForceEndTurn` and gives it a moment to flush the resulting
-   * `EndOfTurn` (and therefore the Jev decision for whatever was just said) before actually
-   * closing the socket, instead of yanking the connection and dropping the last utterance.
+   * A graceful push-to-talk stop flushes only the final turn before closing. Every stop
+   * invalidates pending handshakes immediately, including stop during connection setup.
    */
   stopStreaming(opts: { graceful?: boolean } = {}): void {
-    // Cancel any pending auto-reconnect (e.g. the user stopped listening in the brief gap
-    // between an unexpected drop and the scheduled retry) even if we're not "streaming"
-    // right now by this method's own bookkeeping.
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.streamingWanted = false;
+    this.streamGeneration += 1;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.reconnectAttempts = 0;
-    if (!this.micStreaming) {
-      this.onOverlay(this.baseOverlay("idle", ""));
-      return;
-    }
-    this.intentionalClose = true;
-    const dg = this.deepgram;
+    this.streamStartPromise = null;
+    this.closeDrainingConnection();
+    const connection = this.deepgram;
+    const wasStreaming = this.micStreaming;
     this.deepgram = null;
     this.micStreaming = false;
-    if (dg) {
-      if (opts.graceful) {
-        dg.forceEndTurn();
-        setTimeout(() => dg.close(), 1500);
-      } else {
-        dg.close();
+    if (connection && opts.graceful && wasStreaming) {
+      this.drainingConnection = connection;
+      try {
+        connection.forceEndTurn();
+      } catch (err) {
+        logger.error("pipeline.stt_flush_failed", err);
       }
+      this.drainTimer = setTimeout(() => {
+        if (this.drainingConnection === connection) this.closeDrainingConnection();
+      }, 1500);
+      this.drainTimer.unref();
+    } else {
+      connection?.close();
     }
+    this.setSpeechStatus("idle");
     this.onOverlay(this.baseOverlay("idle", ""));
   }
 
@@ -441,10 +592,17 @@ export class DragonPipeline {
     this.deepgram?.sendAudio(chunk);
   }
 
+  /** Capture failures keep the dictation session but replace any stale target prompt. */
+  reportMicrophoneError(message: string): void {
+    this.clearScreenTargets();
+    this.onOverlay(this.baseOverlay("error", message));
+  }
+
   /** Aborts in-flight decisions, stops any spoken reply, and stops streaming. Bound to the emergency-stop shortcut. */
   emergencyStop(): void {
-    for (const f of this.inFlight) f.controller.abort();
-    this.inFlight = [];
+    this.invalidatePendingCommands();
+    this.clearScreenTargets();
+    this.executingUtteranceId = null;
     automation.stopSpeaking();
     this.endDictation();
     this.stopWorkflow();
@@ -468,17 +626,101 @@ export class DragonPipeline {
 
   // --- Dictation session helpers -----------------------------------------------------------
 
-  private startOrContinueDictation(chunk: string) {
-    this.dictationActive = true;
-    this.dictationBuffer = this.dictationBuffer.length > 0 ? `${this.dictationBuffer} ${chunk}` : chunk;
-    this.lastDictationChunk = chunk;
+  private assertNotCancelled(signal: AbortSignal): void {
+    if (signal.aborted) throw new DecisionCancelledError("Command cancelled");
   }
 
-  private appendDictationRaw(text: string) {
-    // For control-inserted text (e.g. a newline) that shouldn't get an extra joining space.
+  private rememberUtterance(set: Set<string>, utteranceId: string): void {
+    set.add(utteranceId);
+    while (set.size > MAX_REMEMBERED_UTTERANCES) set.delete(set.values().next().value!);
+  }
+
+  /** Track the exact inserted bytes, including joining spaces, punctuation and line breaks. */
+  private appendDictationRaw(text: string): void {
     this.dictationActive = true;
     this.dictationBuffer += text;
     this.lastDictationChunk = text;
+  }
+
+  private dictationInsertion(chunk: string): string {
+    const needsSpace = this.dictationBuffer.length > 0 && !/[\s(\[{“]$/.test(this.dictationBuffer) &&
+      !/^[\s.,!?;:)}\]"'’”]/.test(chunk);
+    return needsSpace ? ` ${chunk}` : chunk;
+  }
+
+  private async syncDictationWindow(signal: AbortSignal): Promise<string | null> {
+    this.assertNotCancelled(signal);
+    const identity = await automation.getActiveWindowIdentity().catch(() => null);
+    this.assertNotCancelled(signal);
+    this.dictationTrackingNotice = null;
+    if (!identity || this.dictationWindowIdentity && identity !== this.dictationWindowIdentity) {
+      this.clearDictationTail();
+      this.dictationTrackingNotice = identity ? "Text tracking restarted in the new window" : "Typed text cannot be tracked until the focused window can be verified";
+    }
+    this.dictationWindowIdentity = identity;
+    return identity;
+  }
+
+  private async dictationWindowUnchanged(expected: string | null, signal: AbortSignal): Promise<boolean> {
+    this.assertNotCancelled(signal);
+    const identity = await automation.getActiveWindowIdentity().catch(() => null);
+    this.assertNotCancelled(signal);
+    if (!expected || identity !== expected) {
+      this.clearDictationTail();
+      this.dictationWindowIdentity = identity;
+      this.dictationTrackingNotice = "Focused window changed; text tracking restarted";
+      return false;
+    }
+    return true;
+  }
+
+  private async typeDictation(chunk: string, signal: AbortSignal): Promise<void> {
+    this.assertNotCancelled(signal);
+    if (this.workflowActive) {
+      await automation.typeText(chunk);
+      this.assertNotCancelled(signal);
+      return;
+    }
+    const identity = await this.syncDictationWindow(signal);
+    const inserted = this.dictationInsertion(chunk);
+    try {
+      await automation.typeText(inserted);
+    } catch (error) {
+      this.clearDictationTail();
+      throw error;
+    }
+    this.assertNotCancelled(signal);
+    this.dictationActive = true;
+    if (await this.dictationWindowUnchanged(identity, signal)) this.appendDictationRaw(inserted);
+  }
+
+  private clearDictationTail(): void {
+    this.dictationBuffer = "";
+    this.lastDictationChunk = "";
+    this.dictationWindowIdentity = null;
+  }
+
+  private deletionCount(text: string): number {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)).length;
+  }
+
+  private async pressTrackedKey(keyName: string, signal: AbortSignal): Promise<void> {
+    this.assertNotCancelled(signal);
+    const identity = this.dictationActive ? await this.syncDictationWindow(signal) : null;
+    try {
+      await automation.pressNamedKey(keyName);
+    } catch (error) {
+      this.clearDictationTail();
+      throw error;
+    }
+    this.assertNotCancelled(signal);
+    if (!this.dictationActive) return;
+    if (keyName === "space") {
+      if (await this.dictationWindowUnchanged(identity, signal)) this.appendDictationRaw(" ");
+    }
+    // No app text/caret reads: after selection, navigation, submission or an external edit,
+    // the old suffix can no longer be edited by a known number of Backspaces.
+    else if (keyName !== "copy" && keyName !== "save") this.clearDictationTail();
   }
 
   private stopWorkflow() {
@@ -488,8 +730,8 @@ export class DragonPipeline {
 
   private endDictation() {
     this.dictationActive = false;
-    this.dictationBuffer = "";
-    this.lastDictationChunk = "";
+    this.clearDictationTail();
+    this.dictationTrackingNotice = null;
   }
 
   /** Deterministic dictation-editing commands, matched and executed without a Jev round trip
@@ -528,6 +770,13 @@ export class DragonPipeline {
     }
     if (/^(?:please\s+)?(?:open\s+(?:a\s+)?)?new\s+tab[.!?]?$/.test(lower)) return { type: "browser_new_tab" };
     if (/^(?:new|next)\s+line$/.test(lower)) return { type: "newline" };
+    if (/^(?:new|next)\s+paragraph$/.test(lower)) return { type: "paragraph" };
+    const punctuation: Record<string, string> = {
+      comma: ",", period: ".", "full stop": ".", "question mark": "?",
+      "exclamation mark": "!", "exclamation point": "!", colon: ":", semicolon: ";",
+      "open quote": "“", "close quote": "”", "open parenthesis": "(", "close parenthesis": ")",
+    };
+    if (punctuation[lower]) return { type: "punctuation", text: punctuation[lower] };
     const keyName = extractKeyName(trimmed);
     if (keyName && isStandaloneKeyboardCommand(trimmed, keyName)) return { type: "key", keyName };
     const deleteScope = deleteScopeToControl(extractDeleteScope(trimmed));
@@ -539,8 +788,10 @@ export class DragonPipeline {
     return null;
   }
 
-  private async runDictationControl(turn: TranscriptEvent, control: DictationControl, settings: DragonSettings): Promise<void> {
-    this.deterministicUtterances.add(turn.utteranceId);
+  private async runDictationControl(turn: TranscriptEvent, control: DictationControl, settings: DragonSettings, signal: AbortSignal, record = true): Promise<void> {
+    this.assertNotCancelled(signal);
+    this.clearScreenTargets();
+    if (record) this.rememberUtterance(this.deterministicUtterances, turn.utteranceId);
     this.updateJevDecisionOutcome(
       turn.utteranceId,
       "cancelled",
@@ -550,7 +801,10 @@ export class DragonPipeline {
     const startedAt = Date.now();
     let actionLabel = "";
     let execError: string | null = null;
+    let mutationStarted = false;
     try {
+      const edits = ["newline", "paragraph", "punctuation", "delete_all", "delete_last_chunk", "delete_words", "replace"];
+      const windowIdentity = edits.includes(control.type) ? await this.syncDictationWindow(signal) : null;
       switch (control.type) {
         case "workflow_start":
           actionLabel = this.workflowActive ? "Workflow Mode already active" : "Start workflow";
@@ -574,73 +828,120 @@ export class DragonPipeline {
           break;
         case "key":
           actionLabel = `Press ${control.keyName}`;
-          await automation.pressNamedKey(control.keyName);
+          await this.pressTrackedKey(control.keyName, signal);
           break;
         case "browser_new_tab":
           actionLabel = "Open new tab";
           await this.requireBrowserAction({ kind: "new_tab" });
+          this.assertNotCancelled(signal);
           break;
         case "stop":
           actionLabel = "Stop dictation";
           this.endDictation();
           break;
         case "newline":
-          actionLabel = "New line";
-          await automation.typeText("\n");
-          this.appendDictationRaw("\n");
+        case "paragraph":
+        case "punctuation": {
+          const raw = control.type === "newline" ? "\n" : control.type === "paragraph" ? "\n\n" : control.text;
+          const text = control.type === "punctuation" && (raw === "“" || raw === "(") ? this.dictationInsertion(raw) : raw;
+          actionLabel = control.type === "newline" ? "New line" : control.type === "paragraph" ? "New paragraph" : `Insert ${text}`;
+          mutationStarted = true;
+          await automation.typeText(text);
+          this.assertNotCancelled(signal);
+          if (await this.dictationWindowUnchanged(windowIdentity, signal)) this.appendDictationRaw(text);
           break;
+        }
         case "delete_all": {
           actionLabel = "Delete everything typed";
-          await automation.deleteBackward(this.dictationBuffer.length);
-          this.dictationBuffer = "";
-          this.lastDictationChunk = "";
+          if (!this.dictationBuffer) throw new Error("No tracked text to delete. Dictate text in the current field first.");
+          mutationStarted = true;
+          await automation.deleteBackward(this.deletionCount(this.dictationBuffer));
+          this.assertNotCancelled(signal);
+          this.clearDictationTail();
+          this.dictationWindowIdentity = windowIdentity;
           break;
         }
         case "delete_last_chunk": {
           actionLabel = "Delete that";
           const chunk = this.lastDictationChunk;
-          if (chunk) {
-            const joiner = this.dictationBuffer.length > chunk.length ? 1 : 0;
-            await automation.deleteBackward(chunk.length + joiner);
-            this.dictationBuffer = this.dictationBuffer.slice(0, Math.max(0, this.dictationBuffer.length - chunk.length - joiner));
+          if (!chunk) throw new Error("No tracked dictation to undo. Dictate text in the current field first.");
+          mutationStarted = true;
+          await automation.deleteBackward(this.deletionCount(chunk));
+          this.assertNotCancelled(signal);
+          if (await this.dictationWindowUnchanged(windowIdentity, signal)) {
+            this.dictationBuffer = this.dictationBuffer.slice(0, -chunk.length);
+            this.lastDictationChunk = "";
           }
-          this.lastDictationChunk = "";
           break;
         }
         case "delete_words": {
           actionLabel = `Delete last ${control.count} word(s)`;
-          const words = this.dictationBuffer.trim().split(/\s+/).filter(Boolean);
-          const newWords = words.slice(0, Math.max(0, words.length - control.count));
-          const newBuffer = newWords.join(" ");
-          const deleteChars = this.dictationBuffer.length - newBuffer.length;
-          await automation.deleteBackward(Math.max(0, deleteChars));
-          this.dictationBuffer = newBuffer;
-          this.lastDictationChunk = "";
+          if (!this.dictationBuffer) throw new Error("No tracked text to delete. Dictate text in the current field first.");
+          const words = Array.from(this.dictationBuffer.matchAll(/\S+/gu));
+          const keep = Math.max(0, words.length - Math.max(0, control.count));
+          const last = words[keep - 1];
+          const keepEnd = last ? last.index! + last[0].length : 0;
+          const newBuffer = control.count <= 0 ? this.dictationBuffer : this.dictationBuffer.slice(0, keepEnd);
+          mutationStarted = true;
+          await automation.deleteBackward(this.deletionCount(this.dictationBuffer.slice(newBuffer.length)));
+          this.assertNotCancelled(signal);
+          if (await this.dictationWindowUnchanged(windowIdentity, signal)) {
+            this.dictationBuffer = newBuffer;
+            this.lastDictationChunk = "";
+          }
           break;
         }
         case "replace": {
           actionLabel = `Replace "${control.find}" with "${control.replacement}"`;
-          const idx = this.dictationBuffer.toLowerCase().lastIndexOf(control.find.toLowerCase());
-          if (idx === -1) {
-            throw new Error(`Nothing matching "${control.find}" in what was typed recently`);
+          // Match on the original string: lowercasing can expand characters (e.g. İ),
+          // so indexes from a lowercased copy cannot safely slice the typed text.
+          const escaped = control.find.replace(/[.*+?^{}()|[\]\\$]/g, "\\$&");
+          const wordCharacter = /[\p{L}\p{M}\p{N}_]/u;
+          const needleCharacters = Array.from(control.find);
+          let match: RegExpMatchArray | undefined;
+          for (const candidate of this.dictationBuffer.matchAll(new RegExp(escaped, "giu"))) {
+            const index = candidate.index!;
+            const previous = Array.from(this.dictationBuffer.slice(0, index)).at(-1) ?? "";
+            const next = Array.from(this.dictationBuffer.slice(index + candidate[0].length))[0] ?? "";
+            if (wordCharacter.test(needleCharacters[0] ?? "") && wordCharacter.test(previous)) continue;
+            if (wordCharacter.test(needleCharacters.at(-1) ?? "") && wordCharacter.test(next)) continue;
+            match = candidate;
           }
-          const before = this.dictationBuffer.slice(0, idx);
-          const after = this.dictationBuffer.slice(idx + control.find.length);
+          if (!match) throw new Error(`Nothing matching "${control.find}" in what was typed recently`);
+          const before = this.dictationBuffer.slice(0, match.index!);
+          const after = this.dictationBuffer.slice(match.index! + match[0].length);
           const newBuffer = before + control.replacement + after;
           let prefixLen = 0;
-          const minLen = Math.min(this.dictationBuffer.length, newBuffer.length);
-          while (prefixLen < minLen && this.dictationBuffer[prefixLen] === newBuffer[prefixLen]) prefixLen++;
-          await automation.deleteBackward(this.dictationBuffer.length - prefixLen);
-          const retype = newBuffer.slice(prefixLen);
-          if (retype) await automation.typeText(retype);
-          this.dictationBuffer = newBuffer;
+          const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+          const beforeSegments = Array.from(segmenter.segment(this.dictationBuffer), (part) => part.segment);
+          const afterSegments = Array.from(segmenter.segment(newBuffer), (part) => part.segment);
+          for (let i = 0; i < Math.min(beforeSegments.length, afterSegments.length) && beforeSegments[i] === afterSegments[i]; i++) {
+            prefixLen += beforeSegments[i].length;
+          }
+          mutationStarted = true;
+          await automation.deleteBackward(this.deletionCount(this.dictationBuffer.slice(prefixLen)));
+          this.assertNotCancelled(signal);
+          if (!await this.dictationWindowUnchanged(windowIdentity, signal)) throw new Error("Focused window changed during replacement. Focus the original field and dictate again.");
+          // Track the confirmed prefix while retyping; an interrupted edit invalidates the tail.
+          this.dictationBuffer = this.dictationBuffer.slice(0, prefixLen);
           this.lastDictationChunk = "";
+          const retype = newBuffer.slice(prefixLen);
+          if (retype) {
+            await automation.typeText(retype);
+            this.assertNotCancelled(signal);
+            if (await this.dictationWindowUnchanged(windowIdentity, signal)) this.dictationBuffer += retype;
+          }
           break;
         }
       }
     } catch (err) {
+      if (mutationStarted) this.clearDictationTail();
+      if (signal.aborted || err instanceof DecisionCancelledError) throw new DecisionCancelledError("Command cancelled");
+      if (!record) throw err;
       execError = err instanceof Error ? err.message : String(err);
     }
+    this.assertNotCancelled(signal);
+    if (!record) return;
     const totalMs = Date.now() - startedAt;
 
     logger.event("pipeline.dictation_control", {
@@ -656,7 +957,7 @@ export class DragonPipeline {
       transcript: turn.transcript,
       isFinal: true,
       action: actionLabel,
-      status: execError,
+      status: execError ?? this.dictationTrackingNotice,
       latencyMs: totalMs,
       activationMode: settings.activationMode,
     });
@@ -665,7 +966,7 @@ export class DragonPipeline {
       utteranceId: turn.utteranceId,
       timestamp: Date.now(),
       transcript: turn.transcript,
-      intent: control.type === "key" ? "press_key" : control.type === "browser_new_tab" ? "chrome_new_tab" : control.type.startsWith("delete") || control.type === "replace" ? "delete_text" : "type_text",
+      intent: control.type === "key" ? "press_key" : control.type === "browser_new_tab" ? "chrome_new_tab" : control.type === "replace" ? "replace_text" : control.type.startsWith("delete") ? "delete_text" : "type_text",
       action: actionLabel,
       status: execError ? "error" : "success",
       detail: execError ?? "",
@@ -677,6 +978,8 @@ export class DragonPipeline {
     automation.stopSpeaking(); // barge-in: new speech interrupts any spoken reply.
 
     if (turn.event === "TurnResumed") {
+      this.utteranceRevisions.set(turn.utteranceId, (this.utteranceRevisions.get(turn.utteranceId) ?? 0) + 1);
+      while (this.utteranceRevisions.size > MAX_REMEMBERED_UTTERANCES) this.utteranceRevisions.delete(this.utteranceRevisions.keys().next().value!);
       // The previous eager transcript for this turn is stale; drop any in-flight decision for it.
       this.abortUtterance(turn.utteranceId);
       return;
@@ -699,6 +1002,34 @@ export class DragonPipeline {
 
     const effectiveText = turn.transcript;
     if (effectiveText.trim().length === 0) return;
+    const epoch = this.decisionEpoch;
+    const revision = this.utteranceRevisions.get(turn.utteranceId) ?? 0;
+    const work = this.commandQueue.then(async () => {
+      if (epoch !== this.decisionEpoch || revision !== (this.utteranceRevisions.get(turn.utteranceId) ?? 0)) {
+        logger.event("pipeline.queued_decision_cancelled", { utteranceId: turn.utteranceId, turnEvent: turn.event });
+        return;
+      }
+      await this.processCommandTurn(turn, effectiveText, settings);
+    });
+    this.commandQueue = work.catch((err) => {
+      if (!(err instanceof DecisionCancelledError)) logger.error("pipeline.local_command_failed", err, { utteranceId: turn.utteranceId });
+    });
+    await this.commandQueue;
+  }
+
+  private async processCommandTurn(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
+    if (this.executedUtterances.has(turn.utteranceId)) {
+      if (turn.isFinal) this.pruneCacheForUtterance(turn.utteranceId);
+      return;
+    }
+    if (turn.isFinal && this.screenTargets?.kind === "point") this.clearScreenTargets();
+    if (!this.dictationActive && !/^\s*(?:please\s+)?(?:type|write|dictate|enter)\b/i.test(effectiveText) && extractWorkflowSteps(effectiveText)) {
+      if (turn.isFinal) {
+        this.rememberUtterance(this.executedUtterances, turn.utteranceId);
+        this.logIgnored(turn, "compound_command", "none", "Speak one command at a time. Wait for it to finish, then say the next command.");
+      }
+      return;
+    }
 
     // Fast path: deterministic insert-mode/editing commands skip Jev entirely for speed and
     // reliability. Mode entry is allowed outside an active session; edit controls require one.
@@ -724,17 +1055,14 @@ export class DragonPipeline {
         return;
       }
       if (this.executedUtterances.has(turn.utteranceId)) return;
-      this.executedUtterances.add(turn.utteranceId);
-      await this.runDictationControl(turn, control, settings);
-      return;
-    }
-
-    if (this.workflowActive && turn.isFinal) {
-      const workflowSteps = extractWorkflowSteps(effectiveText);
-      if (workflowSteps) {
-        await this.runWorkflowPlan(turn, workflowSteps, settings);
-        return;
+      this.rememberUtterance(this.executedUtterances, turn.utteranceId);
+      const controller = this.registerInFlight(turn.utteranceId);
+      try {
+        await this.runDictationControl(turn, control, settings, controller.signal);
+      } finally {
+        this.unregisterInFlight(controller);
       }
+      return;
     }
 
     await this.runDecision(turn, effectiveText, settings);
@@ -773,66 +1101,6 @@ export class DragonPipeline {
     this.inFlight = this.inFlight.filter((f) => f.controller !== controller);
   }
 
-  private async runWorkflowPlan(turn: TranscriptEvent, steps: string[], settings: DragonSettings): Promise<void> {
-    logger.event("workflow.plan_detected", {
-      utteranceId: turn.utteranceId,
-      stepCount: steps.length,
-      steps,
-    });
-
-    for (let index = 0; index < steps.length; index++) {
-      if (!this.workflowActive) break;
-      const text = steps[index];
-      const now = Date.now();
-      const stepTurn: TranscriptEvent = {
-        ...turn,
-        utteranceId: `${turn.utteranceId}_workflow_${index + 1}`,
-        turnIndex: index + 1,
-        event: "EndOfTurn",
-        transcript: text,
-        isFinal: true,
-        turnStartedAt: now,
-        receivedAt: now,
-      };
-      logger.event("workflow.step_started", {
-        utteranceId: stepTurn.utteranceId,
-        step: index + 1,
-        stepCount: steps.length,
-        text,
-      });
-      this.onOverlay({
-        utteranceId: stepTurn.utteranceId,
-        state: "thinking",
-        transcript: text,
-        isFinal: true,
-        action: `Workflow step ${index + 1} of ${steps.length}`,
-        status: null,
-        latencyMs: null,
-        activationMode: settings.activationMode,
-      });
-      await this.runDecision(stepTurn, text, settings);
-      logger.event(this.workflowActive ? "workflow.step_completed" : "workflow.step_failed", {
-        utteranceId: stepTurn.utteranceId,
-        step: index + 1,
-        stepCount: steps.length,
-        text,
-      });
-    }
-
-    if (this.workflowActive) {
-      this.onOverlay({
-        utteranceId: turn.utteranceId,
-        state: "done",
-        transcript: turn.transcript,
-        isFinal: true,
-        action: `Workflow complete · ${steps.length} steps`,
-        status: null,
-        latencyMs: null,
-        activationMode: settings.activationMode,
-      });
-    }
-  }
-
   private async runDecision(turn: TranscriptEvent, effectiveText: string, settings: DragonSettings): Promise<void> {
     // Serialize decisions per utterance so an EagerEndOfTurn and the EndOfTurn behind it can't
     // both spend a provider call on the same sentence. The chaining has to happen
@@ -840,8 +1108,15 @@ export class DragonPipeline {
     // turns arriving in the same tick both read the same `previous`, both resumed when it
     // settled, and both ran — three concurrent provider calls for one utterance were logged on
     // 2026-09-25, and a response derived from a stale interim transcript could win that race.
+    const epoch = this.decisionEpoch;
     const previous = this.decisionInFlightByUtterance.get(turn.utteranceId);
-    const run = () => this.runDecisionInternal(turn, effectiveText, settings);
+    const run = () => {
+      if (epoch !== this.decisionEpoch) {
+        logger.event("pipeline.queued_decision_cancelled", { utteranceId: turn.utteranceId, turnEvent: turn.event });
+        return Promise.resolve();
+      }
+      return this.runDecisionInternal(turn, effectiveText, settings);
+    };
     const current = previous ? previous.then(run, run) : run();
     this.decisionInFlightByUtterance.set(turn.utteranceId, current);
     try {
@@ -874,7 +1149,7 @@ export class DragonPipeline {
       activationMode: settings.activationMode,
     });
 
-    if (this.pendingChoice && Date.now() > this.pendingChoice.expiresAt) this.pendingChoice = null;
+    if (this.pendingChoice && Date.now() > this.pendingChoice.expiresAt) this.clearScreenTargets();
     if (this.pendingChoice) {
       // A live picker owns the next utterance: a partial "2" must not reach Jev.
       if (!turn.isFinal) {
@@ -885,9 +1160,13 @@ export class DragonPipeline {
         this.unregisterInFlight(controller);
         return;
       }
-      const handled = await this.handlePendingChoice(effectiveText);
+      const handled = await this.handlePendingChoice(effectiveText, controller.signal);
       if (handled) {
-        this.executedUtterances.add(turn.utteranceId);
+        if (handled.cancelled || controller.signal.aborted) {
+          this.unregisterInFlight(controller);
+          return;
+        }
+        this.rememberUtterance(this.executedUtterances, turn.utteranceId);
         this.unregisterInFlight(controller);
         this.history.add({ utteranceId: turn.utteranceId, timestamp: Date.now(), transcript: effectiveText, intent: "screen_click", action: "Choose option", status: handled.error ? "error" : "success", detail: handled.error ?? "" });
         this.onOverlay({ utteranceId: turn.utteranceId, state: handled.error ? "error" : "done", transcript: effectiveText, isFinal: true, action: "Choose option", status: handled.error, latencyMs: Date.now() - startedAt, activationMode: settings.activationMode });
@@ -899,8 +1178,8 @@ export class DragonPipeline {
       this.dictationActive &&
       shouldTypeDirectlyInInsertMode(effectiveText, extractKeyName(effectiveText))
     ) {
-      this.unregisterInFlight(controller);
       if (!turn.isFinal) {
+        this.unregisterInFlight(controller);
         this.onOverlay({
           utteranceId: turn.utteranceId,
           state: "listening",
@@ -918,7 +1197,11 @@ export class DragonPipeline {
         reason: "text_first",
         sttTurnMs,
       });
-      await this.continueDictation(turn, effectiveText, settings, Date.now() - startedAt, sttToDecisionMs);
+      try {
+        await this.continueDictation(turn, effectiveText, settings, Date.now() - startedAt, sttToDecisionMs, controller.signal);
+      } finally {
+        this.unregisterInFlight(controller);
+      }
       return;
     }
 
@@ -949,6 +1232,7 @@ export class DragonPipeline {
           return value;
         }),
       ]);
+      if (controller.signal.aborted) throw new DecisionCancelledError("Command cancelled");
       // Chrome page elements only make sense when Chrome is frontmost. Otherwise "click add
       // device" in WhatsApp matched stale Chrome tab elements, became chrome_click and clicked
       // nothing (2026-10-02). Cache hits skip the app read, so reuse the last known one.
@@ -964,7 +1248,6 @@ export class DragonPipeline {
         // Same utterance, same text, same mode as an already-answered request (typically
         // EagerEndOfTurn immediately followed by an EndOfTurn with no new words) — reuse the
         // answer instead of spending another Jev call on an identical question.
-        this.unregisterInFlight(controller);
         logger.event("pipeline.decision_cache_hit", {
           utteranceId: turn.utteranceId,
           turnEvent: turn.event,
@@ -1008,7 +1291,6 @@ export class DragonPipeline {
           questions,
           controller.signal
         );
-        this.unregisterInFlight(controller);
         jevMs = result.timingMs;
 
         const deterministicControl = this.deterministicUtterances.has(turn.utteranceId);
@@ -1053,8 +1335,10 @@ export class DragonPipeline {
         summary = summarizeAnswers(result.answers);
         decisionMs = Date.now() - startedAt;
         this.jevAnswerCache.set(cacheKey, summary);
+        while (this.jevAnswerCache.size > MAX_CACHED_ANSWERS) this.jevAnswerCache.delete(this.jevAnswerCache.keys().next().value!);
       }
       if (turn.isFinal) this.pruneCacheForUtterance(turn.utteranceId);
+      if (controller.signal.aborted) throw new DecisionCancelledError("Command cancelled");
 
       // Skip the "addressed" gate entirely while actively dictating: continued natural speech
       // ("How are you doing?") reads as not-addressed-to-an-assistant almost by definition,
@@ -1091,7 +1375,7 @@ export class DragonPipeline {
             reason: "embedded_keyboard_phrase",
             jevIntent: summary.intent,
           });
-          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs);
+          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs, controller.signal);
           return;
         }
         this.onOverlay({
@@ -1109,7 +1393,8 @@ export class DragonPipeline {
 
       const isReady =
         turn.isFinal ||
-        (turn.event === "EagerEndOfTurn" &&
+        (!extractScreenPreviewTarget(effectiveText) &&
+          turn.event === "EagerEndOfTurn" &&
           INTERIM_ELIGIBLE_INTENTS.has(summary.intent) &&
           summary.intentConfidence >= INTERIM_EXEC_INTENT_CONFIDENCE &&
           summary.complete >= INTERIM_EXEC_COMPLETE);
@@ -1134,7 +1419,8 @@ export class DragonPipeline {
       // spoken, entirely executable command. Only enforce the completeness gate on turns
       // that *aren't* final yet, where it protects against acting on a truncated interim.
       const incomplete = !turn.isFinal && summary.complete < COMPLETE_THRESHOLD;
-      const deterministicClick = turn.isFinal && !this.dictationActive && !this.workflowActive && isDeterministicScreenClick(effectiveText, payload);
+      const deterministicClick = turn.isFinal && !this.dictationActive &&
+        (!this.workflowActive || extractScreenPreviewTarget(effectiveText) !== null) && isDeterministicScreenClick(effectiveText, payload);
       const noCommand = !deterministicClick && (summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete);
 
       if (noCommand) {
@@ -1147,7 +1433,7 @@ export class DragonPipeline {
         if (this.dictationActive && turn.isFinal && effectiveText.trim().length > 0) {
           // Jev didn't recognize a command; while actively dictating, treat this as more
           // dictated text so the user doesn't have to say "type" again for every sentence.
-          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs);
+          await this.continueDictation(turn, effectiveText, settings, decisionMs, sttToDecisionMs, controller.signal);
           return;
         }
         this.updateJevDecisionOutcome(turn.utteranceId, "ignored", "No confident command recognized");
@@ -1159,7 +1445,8 @@ export class DragonPipeline {
         logger.event("pipeline.duplicate_suppressed", { utteranceId: turn.utteranceId });
         return;
       }
-      this.executedUtterances.add(turn.utteranceId);
+      if (controller.signal.aborted) throw new DecisionCancelledError("Command cancelled");
+      this.rememberUtterance(this.executedUtterances, turn.utteranceId);
 
       const resolved = resolveCommand(summary, payload, effectiveText);
       if (!resolved) {
@@ -1199,7 +1486,9 @@ export class DragonPipeline {
       let choicePrompt: string | null = null;
       try {
         await this.executeCommand(resolved, effectiveText, controller.signal);
+        this.assertNotCancelled(controller.signal);
       } catch (err) {
+        if (controller.signal.aborted || err instanceof DecisionCancelledError) throw new DecisionCancelledError("Command cancelled");
         if (err instanceof ChoiceRequiredError) choicePrompt = err.message;
         else execError = err instanceof Error ? err.message : String(err);
       }
@@ -1241,10 +1530,6 @@ export class DragonPipeline {
       } else if (!execError) {
         if (this.workflowActive) {
           this.workflowStepCount += 1;
-        } else if (resolved.kind === "type_text") {
-          this.startOrContinueDictation(resolved.text!);
-        } else if (resolved.kind === "insert_newline") {
-          this.appendDictationRaw("\n");
         } else if (!keepsDictationOpen(resolved.kind)) {
           this.endDictation();
         }
@@ -1272,7 +1557,7 @@ export class DragonPipeline {
           transcript: effectiveText,
           isFinal: true,
           action: describeCommand(resolved),
-          status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
+          status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : this.dictationTrackingNotice),
           latencyMs: totalMs,
           activationMode: settings.activationMode,
         });
@@ -1296,6 +1581,7 @@ export class DragonPipeline {
     } catch (err) {
       this.unregisterInFlight(controller);
       if (err instanceof DecisionCancelledError) {
+        if (this.executingUtteranceId === turn.utteranceId) this.executingUtteranceId = null;
         logger.event("pipeline.decision_cancelled", { utteranceId: turn.utteranceId });
         return;
       }
@@ -1313,6 +1599,8 @@ export class DragonPipeline {
         latencyMs: Date.now() - startedAt,
         activationMode: settings.activationMode,
       });
+    } finally {
+      this.unregisterInFlight(controller);
     }
   }
 
@@ -1323,18 +1611,19 @@ export class DragonPipeline {
     effectiveText: string,
     settings: DragonSettings,
     decisionMs: number,
-    sttToDecisionMs: number
+    sttToDecisionMs: number,
+    signal: AbortSignal
   ): Promise<void> {
     if (this.executedUtterances.has(turn.utteranceId)) return;
-    this.executedUtterances.add(turn.utteranceId);
+    this.rememberUtterance(this.executedUtterances, turn.utteranceId);
 
     const execStarted = Date.now();
     const sttTurnMs = Math.max(0, turn.receivedAt - turn.turnStartedAt);
     let execError: string | null = null;
     try {
-      await automation.typeText(effectiveText);
-      this.startOrContinueDictation(effectiveText);
+      await this.typeDictation(effectiveText, signal);
     } catch (err) {
+      if (signal.aborted || err instanceof DecisionCancelledError) throw new DecisionCancelledError("Command cancelled");
       execError = err instanceof Error ? err.message : String(err);
     }
     const executionMs = Date.now() - execStarted;
@@ -1363,7 +1652,7 @@ export class DragonPipeline {
       transcript: effectiveText,
       isFinal: true,
       action: "Continue typing",
-      status: execError,
+      status: execError ?? this.dictationTrackingNotice,
       latencyMs: totalMs,
       activationMode: settings.activationMode,
     });
@@ -1383,7 +1672,7 @@ export class DragonPipeline {
 
   private logIgnored(turn: TranscriptEvent, reason: string, intent: string, status = "No command recognized") {
     if (this.ignoredLoggedUtterances.has(turn.utteranceId) && !turn.isFinal) return;
-    if (turn.isFinal) this.ignoredLoggedUtterances.add(turn.utteranceId);
+    if (turn.isFinal) this.rememberUtterance(this.ignoredLoggedUtterances, turn.utteranceId);
     logger.event("pipeline.ignored", { utteranceId: turn.utteranceId, reason, intent });
     this.onOverlay({
       utteranceId: turn.utteranceId,
@@ -1398,6 +1687,8 @@ export class DragonPipeline {
   }
 
   private async executeCommand(cmd: ResolvedCommand, transcript: string, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new DecisionCancelledError("Command cancelled");
+    this.clearScreenTargets();
     switch (cmd.kind) {
       case "open_app":
         return automation.openApp(cmd.appAlias!);
@@ -1410,12 +1701,23 @@ export class DragonPipeline {
       case "switch_previous_app":
         return automation.switchToPreviousApp();
       case "type_text":
-        return automation.typeText(cmd.text!);
-      case "insert_newline":
-        return automation.typeText("\n");
+        return this.typeDictation(cmd.text!, signal);
+      case "insert_newline": {
+        if (this.workflowActive) {
+          await automation.typeText("\n");
+          this.assertNotCancelled(signal);
+          return;
+        }
+        const identity = await this.syncDictationWindow(signal);
+        await automation.typeText("\n");
+        this.assertNotCancelled(signal);
+        this.dictationActive = true;
+        if (await this.dictationWindowUnchanged(identity, signal)) this.appendDictationRaw("\n");
+        return;
+      }
       case "press_key":
       case "shortcut":
-        return automation.pressNamedKey(cmd.keyName!);
+        return this.pressTrackedKey(cmd.keyName!, signal);
       case "window_minimize":
         return automation.windowMinimize();
       case "window_maximize":
@@ -1445,10 +1747,10 @@ export class DragonPipeline {
       case "open_finder_location":
         return automation.openFinderLocation(cmd.location!);
       case "chrome_open_url":
-        return this.openUrlPreferringExistingTab(cmd.url!);
+        return this.openUrlPreferringExistingTab(cmd.url!, signal);
       case "chrome_search":
         return this.openUrlPreferringExistingTab(
-          cmd.url ?? `https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`
+          cmd.url ?? `https://www.google.com/search?q=${encodeURIComponent(cmd.query!)}`, signal
         );
       case "chrome_click":
         return this.requireBrowserAction({ kind: "click", elementId: cmd.elementId! });
@@ -1456,8 +1758,18 @@ export class DragonPipeline {
         return this.requireBrowserAction({ kind: "type", elementId: cmd.elementId!, text: cmd.text! });
       case "chrome_select":
         return this.requireBrowserAction({ kind: "select", elementId: cmd.elementId!, text: cmd.text });
-      case "chrome_scroll":
-        return this.requireBrowserAction({ kind: "scroll", direction: cmd.direction ?? "down" });
+      case "chrome_scroll": {
+        const activeApp = await automation.getActiveAppName().catch(() => null);
+        this.assertNotCancelled(signal);
+        if (activeApp && /chrome/i.test(activeApp) && this.browserBridge.isConnected()) {
+          return this.requireBrowserAction({ kind: "scroll", direction: cmd.direction ?? "down" });
+        }
+        const keys: Record<string, string> = {
+          up: "page up", down: "page down", left: "arrow left", right: "arrow right",
+          top: "beginning of document", bottom: "end of document",
+        };
+        return this.pressTrackedKey(keys[cmd.direction ?? "down"] ?? "page down", signal);
+      }
       case "chrome_back":
         return this.requireBrowserAction({ kind: "back" });
       case "chrome_forward":
@@ -1469,11 +1781,11 @@ export class DragonPipeline {
       case "chrome_close_tab":
         return this.requireBrowserAction({ kind: "close_tab" });
       case "chrome_switch_tab":
-        return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next" });
+        return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next", index: cmd.amount, title: cmd.query });
       case "screen_click":
-        return this.executeScreenClick(cmd.text!, transcript, signal, cmd.double ? 2 : 1);
+        return this.executeScreenClick(cmd.text!, transcript, signal, cmd.double ? 2 : 1, cmd.preview ?? false);
       case "search_in_app":
-        return this.executeSearchInApp(cmd.query!);
+        return this.executeSearchInApp(cmd.query!, signal);
       case "replace_text": {
         if (!this.dictationActive) {
           throw new Error("Nothing to replace — say \"type ...\" first to dictate something.");
@@ -1481,7 +1793,7 @@ export class DragonPipeline {
         await this.runDictationControl(
           SYNTHETIC_TURN,
           { type: "replace", find: cmd.find!, replacement: cmd.replacement! },
-          this.getSettings()
+          this.getSettings(), signal, false
         );
         return;
       }
@@ -1495,7 +1807,7 @@ export class DragonPipeline {
             : cmd.deleteScope === "words"
               ? { type: "delete_words", count: cmd.wordCount ?? DEFAULT_DELETE_WORD_COUNT }
               : { type: "delete_last_chunk" };
-        await this.runDictationControl(SYNTHETIC_TURN, control, this.getSettings());
+        await this.runDictationControl(SYNTHETIC_TURN, control, this.getSettings(), signal, false);
         return;
       }
       default:
@@ -1509,49 +1821,70 @@ export class DragonPipeline {
    * one. Falls back to the plain OS-level open (which always creates a new tab/window) when
    * the extension isn't loaded/connected — no DOM access required either way.
    */
-  private async openUrlPreferringExistingTab(url: string): Promise<void> {
+  private async openUrlPreferringExistingTab(url: string, signal: AbortSignal): Promise<void> {
+    this.assertNotCancelled(signal);
     if (this.browserBridge.isConnected()) {
       const res = await this.browserBridge.sendAction({ kind: "focus_or_open", url });
+      this.assertNotCancelled(signal);
       if (res.ok) return;
       logger.event("pipeline.focus_or_open_failed_fallback", { error: res.error });
     }
+    this.assertNotCancelled(signal);
     await automation.openUrlInChrome(url);
   }
 
   /** Generic "search inside the current non-browser app" via its quick-open/jump-to shortcut
    * (Cmd/Ctrl+K — Slack, Notion, VS Code, Discord, Linear, and many other apps all use this
    * convention). Not app-specific automation; just the one nearly-universal shortcut. */
-  private async executeSearchInApp(query: string): Promise<void> {
+  private async executeSearchInApp(query: string, signal: AbortSignal): Promise<void> {
+    this.assertNotCancelled(signal);
     await automation.pressNamedKey("quick switcher");
-    await new Promise((r) => setTimeout(r, 300));
+    await this.delay(300, signal);
     await automation.typeText(query);
-    await new Promise((r) => setTimeout(r, 200));
+    await this.delay(200, signal);
     await automation.pressNamedKey("enter");
+    this.assertNotCancelled(signal);
+  }
+
+  private delay(ms: number, signal: AbortSignal): Promise<void> {
+    this.assertNotCancelled(signal);
+    return new Promise((resolve, reject) => {
+      const onAbort = () => { clearTimeout(timer); reject(new DecisionCancelledError("Command cancelled")); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /** Vision-based click: screenshots the frontmost window only, discovers every on-screen match
    * for the description, independently verifies each one, disambiguates if more than one survives
    * verification, then moves+clicks at the corresponding absolute screen coordinate (window
    * bounds + relative offset). */
-  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal, clicks = 1): Promise<void> {
+  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal, clicks = 1, preview = false): Promise<void> {
+    // Clear markers before lookup/capture so Dragon's hints never appear in its own image.
+    this.clearScreenTargets();
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     const settings = this.getSettings();
-    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
+    const windowIdentity = await this.readWindowIdentity(signal);
+    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal, clicks, preview, windowIdentity);
     if (settings.screenClickMethod === "auto") {
       try {
-        return await this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
+        return await this.executeAccessibilityClick(description, transcript, settings, signal, clicks, preview, windowIdentity);
       } catch (err) {
         if (signal.aborted || !(err instanceof AccessibilityMissError)) throw err;
         logger.event("screen_click.fallback", { description, fallback: "accessibility_miss" });
       }
     }
+    await this.assertWindowIdentity(windowIdentity, signal);
     const window = await automation.captureFrontmostWindow();
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     // Decode once per click; every verify/relocate crop reuses it.
     const image = nativeImage.createFromBuffer(Buffer.from(window.imageBase64, "base64"));
-    const rawMatches = await locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight);
+    const rawMatches = await locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight, signal);
     if (rawMatches.length === 0) {
       saveScreenClickDebugImage(window.imageBase64, description, "no_match");
       throw new Error(`Could not find "${description}" on screen.`);
     }
+    this.assertNotCancelled(signal);
     const candidates = dedupeMatches(rawMatches);
 
     // The model's own `label` field turned out to be self-consistently unreliable as a
@@ -1562,9 +1895,10 @@ export class DragonPipeline {
     // doesn't match, the point itself is wrong regardless of what the first call's label
     // claimed. See PROGRESS.md 2026-09-28.
     const verify = (p: LocatedPoint) =>
-      readLabelAtPoint(settings.openRouterApiKey, cropImage(image, window.imageWidth, window.imageHeight, verifyBox(p, window.imageWidth, window.imageHeight)).imageBase64);
+      readLabelAtPoint(settings.openRouterApiKey, cropImage(image, window.imageWidth, window.imageHeight, verifyBox(p, window.imageWidth, window.imageHeight)).imageBase64, signal);
 
     const { verified } = await verifyCandidates(description, candidates, verify);
+    this.assertNotCancelled(signal);
 
     let point: ScreenPoint;
     let retried = false;
@@ -1575,7 +1909,7 @@ export class DragonPipeline {
       // using the model's best guess as the starting point.
       retried = true;
       saveScreenClickDebugImage(window.imageBase64, description, "unverified");
-      point = await this.recoverScreenClickPoint(description, candidates[0], window, image, settings, verify);
+      point = await this.recoverScreenClickPoint(description, candidates[0], window, image, settings, verify, signal);
     } else if (verified.length === 1) {
       point = verified[0];
     } else {
@@ -1585,7 +1919,7 @@ export class DragonPipeline {
       // PROGRESS.md 2026-09-29.
       disambiguated = true;
       saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
-      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal, clicks);
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal, clicks, preview, windowIdentity);
     }
 
     // The vision model's point is in the sent image's pixel space, which can differ from
@@ -1595,7 +1929,7 @@ export class DragonPipeline {
     const scaleY = window.bounds.height / window.imageHeight;
     const screenX = window.bounds.x + point.x * scaleX;
     const screenY = window.bounds.y + point.y * scaleY;
-    logger.event("automation.click_at", {
+    logger.event(preview ? "screen_click.preview_located" : "automation.click_at", {
       description,
       bounds: window.bounds,
       imageWidth: window.imageWidth,
@@ -1610,16 +1944,17 @@ export class DragonPipeline {
       screenX,
       screenY,
     });
-    await automation.clickAt(screenX, screenY, clicks);
+    await this.finishScreenTarget({ x: screenX, y: screenY, label: point.label }, preview, signal, clicks, windowIdentity);
   }
 
   /** screen_click via the OS accessibility tree instead of a screenshot: exact element frames,
    * no vision call. Only labelled elements are findable; unlabelled icons need Vision mode. */
-  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal, clicks = 1): Promise<void> {
+  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal, clicks = 1, preview = false, windowIdentity: string): Promise<void> {
     const tokens = labelTokens(description);
     const terms = tokens.filter((t) => t.length >= 3).length ? tokens.filter((t) => t.length >= 3) : tokens;
     if (!terms.length) throw new Error(`Nothing to look up for "${description}".`);
     const { window, elements } = await automation.findAccessibleElements(terms);
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     // Window-relative, and only on-screen: scrolled-away list rows stay in the tree. Labels are
     // capped because some rows' AXDescription carries a message preview (Slack Activity).
     const located = elements
@@ -1660,11 +1995,11 @@ export class DragonPipeline {
       throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
     }
     const point =
-      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal, clicks);
+      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal, clicks, preview, windowIdentity);
     const screenX = window.x + point.x;
     const screenY = window.y + point.y;
-    logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
-    await automation.clickAt(screenX, screenY, clicks);
+    logger.event(preview ? "screen_click.preview_located" : "automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
+    await this.finishScreenTarget({ x: screenX, y: screenY, label: point.label }, preview, signal, clicks, windowIdentity);
   }
 
   /** Recovery path for when zero of `locateElements`' reported matches survive independent
@@ -1677,7 +2012,8 @@ export class DragonPipeline {
     window: ScreenClickWindow,
     image: NativeImage,
     settings: DragonSettings,
-    verify: (p: LocatedPoint) => Promise<string>
+    verify: (p: LocatedPoint) => Promise<string>,
+    signal: AbortSignal
   ): Promise<ScreenPoint> {
     // Two different failure modes need two different retries: a *close but imprecise* miss is
     // fixed by re-asking on a tighter crop around the same point (less competing UI per
@@ -1692,10 +2028,10 @@ export class DragonPipeline {
       box: { x0: relocateCrop.offsetX + m.box.x0, y0: relocateCrop.offsetY + m.box.y0, x1: relocateCrop.offsetX + m.box.x1, y1: relocateCrop.offsetY + m.box.y1 },
     });
     const attempts = await Promise.allSettled([
-      locateElements(settings.openRouterApiKey, relocateCrop.imageBase64, description, relocateCrop.width, relocateCrop.height).then((ms) =>
+      locateElements(settings.openRouterApiKey, relocateCrop.imageBase64, description, relocateCrop.width, relocateCrop.height, signal).then((ms) =>
         verifyCandidates(description, ms.slice(0, 1).map(toFullImage), verify)
       ),
-      locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight).then((ms) =>
+      locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight, signal).then((ms) =>
         verifyCandidates(description, ms.slice(0, 1), verify)
       ),
     ]);
@@ -1711,9 +2047,8 @@ export class DragonPipeline {
   /** Disambiguates among several independently-verified on-screen matches for the same
    * description by asking Jev to choose using the full utterance's context (same "give Jev N
    * candidates, let it choose" pattern as `buildTargetCandidates`/the `target` question — see
-   * PROGRESS.md 2026-09-29). Falls back to a deterministic pick (natural reading order: topmost,
-   * then leftmost) whenever Jev can't be asked, times out, or isn't confident enough — a click
-   * should still happen even with no disambiguating signal. */
+   * PROGRESS.md 2026-09-29). Shows numbered choices when the model cannot distinguish the
+   * matching elements. */
   private async disambiguateScreenClickCandidates(
     description: string,
     transcript: string,
@@ -1722,8 +2057,11 @@ export class DragonPipeline {
     toScreen: (p: ScreenPoint) => { x: number; y: number },
     settings: DragonSettings,
     signal: AbortSignal,
-    clicks = 1
+    clicks = 1,
+    preview = false,
+    windowIdentity: string
   ): Promise<ScreenPoint> {
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     // Exactly one read-back equals the spoken target (e.g. "Harshit" vs "Harshit Agarwal") —
     // no need to ask Jev.
     const exact = candidates.filter((c) => labelExact(description, c.label));
@@ -1747,6 +2085,7 @@ export class DragonPipeline {
     const instructions = `The user asked to click "${description}", and multiple matching on-screen elements were found. Which one did they mean, based on the full transcript?`;
 
     const answer = await askDisambiguationChoice(config, state, instructions, criteria, signal);
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
     const idx = answer ? Number(answer.choice) : NaN;
     const confident = !!answer && answer.confidence >= SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD && Number.isInteger(idx) && !!candidates[idx];
 
@@ -1764,22 +2103,33 @@ export class DragonPipeline {
     // Still ambiguous: don't guess, ask. The next final utterance "1".."5" picks (see
     // `handlePendingChoice`); anything else clears it.
     const ordered = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x).slice(0, 5);
+    await this.assertWindowIdentity(windowIdentity, signal);
+    const app = await automation.getActiveAppName().catch(() => null);
+    if (signal.aborted) throw new DecisionCancelledError("Screen target request cancelled");
+    const expiresAt = Date.now() + PENDING_CHOICE_TTL_MS;
     this.pendingChoice = {
-      app: await automation.getActiveAppName().catch(() => null),
-      expiresAt: Date.now() + PENDING_CHOICE_TTL_MS,
-      clicks,
+      app,
+      expiresAt,
       options: ordered.map((c) => ({ label: c.label, ...toScreen(c) })),
+      preview,
+      clicks,
+      windowIdentity,
     };
+    this.showScreenTargets({
+      kind: "choice",
+      targets: this.pendingChoice.options.map((c, i) => ({ ...c, number: i + 1 })),
+      expiresAt,
+    });
     const list = ordered.map((c, i) => `${i + 1}: "${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`).join("; ");
     throw new ChoiceRequiredError(`Which one? Say a number — ${list}`);
   }
 
   /** Consumes a pending numbered choice. Returns true when the utterance was handled (picked
    * or cancelled); false when there is no live choice or the utterance is something else. */
-  private async handlePendingChoice(text: string): Promise<{ error: string | null } | false> {
+  private async handlePendingChoice(text: string, signal: AbortSignal): Promise<{ error: string | null; cancelled?: boolean } | false> {
     const pending = this.pendingChoice;
     if (!pending) return false;
-    this.pendingChoice = null;
+    this.clearScreenTargets();
     if (Date.now() > pending.expiresAt) return false;
     const t = text.trim().toLowerCase().replace(/[.!?]+$/, "");
     if (/^(?:cancel|never ?mind|stop)$/.test(t)) return { error: null };
@@ -1791,11 +2141,10 @@ export class DragonPipeline {
     if (!choice) return false;
     try {
       // Coordinates are absolute; if the user switched apps meanwhile they're stale.
-      if (pending.app && (await automation.getActiveAppName()) !== pending.app) {
-        return { error: "Window changed, try again" };
-      }
+      await this.assertWindowIdentity(pending.windowIdentity, signal);
+      if (signal.aborted) return { error: null, cancelled: true };
       logger.event("screen_click.choice_picked", { n, label: choice.label });
-      await automation.clickAt(choice.x, choice.y, pending.clicks);
+      await this.finishScreenTarget(choice, pending.preview, signal, pending.clicks, pending.windowIdentity);
       return { error: null };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -1832,7 +2181,7 @@ function describeCommand(cmd: ResolvedCommand): string {
     case "search_in_app":
       return `Search for "${cmd.query}" in app`;
     case "screen_click":
-      return `Click "${cmd.text}"`;
+      return `${cmd.preview ? "Highlight" : cmd.double ? "Double click" : "Click"} "${cmd.text}"`;
     case "replace_text":
       return `Replace "${cmd.find}" with "${cmd.replacement}"`;
     default:
@@ -1857,7 +2206,7 @@ function shortReplyFor(cmd: ResolvedCommand): string {
     case "chrome_search":
       return "Searching";
     case "screen_click":
-      return "Clicking";
+      return cmd.preview ? "Highlighted" : "Clicking";
     case "chrome_open_url":
       return "Opening";
     default:
