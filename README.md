@@ -69,6 +69,21 @@ record of what Dragon typed — it never reads the contents of the app you're in
 
 Navigation and search work without the extension. Clicking, typing, scrolling, and tabs need it.
 
+### Click anything on screen (any app)
+
+| Say | Result |
+|---|---|
+| `click on Bluetooth` · `click accessibility` · `click on sign in options` | Click the labelled element in the frontmost window of **any** app (Settings, WhatsApp, VS Code, …) |
+| `click on chat` (several matches) | Dragon picks the best one, or shows a numbered list — say `1`…`5` within 15 seconds |
+
+A literal "click X" is handled deterministically, without waiting on the model's confidence. How
+the element is found depends on the **Screen click method** setting (default **Auto**): first the
+OS accessibility tree — element *labels* from the frontmost window only, clicked at their exact
+position, no screenshot — then, if nothing matches, a vision model on a screenshot of the
+frontmost window only. Windows clicks are DPI-aware, and off-screen list items are scrolled into
+view only when no match is already visible. macOS vision mode also needs **Screen Recording**
+permission.
+
 ### System and media
 
 | Say | Result |
@@ -175,6 +190,7 @@ a missing alias can't fail silently at runtime.
 |---|---|
 | **Decision provider** | `Jev via OpenRouter` (default) or `Laya via local server` |
 | **API keys** | Masked after saving; leave blank on Save to keep the existing key |
+| **Screen click method** | `Auto` (default: accessibility, then vision), `Vision model`, or `Accessibility tree`. Only `Auto` falls back to vision on a miss |
 | **Activation mode** | Push to talk, or always listening |
 | **Shortcuts** | PTT, emergency stop, Insert Mode — all rebindable |
 | **Speak short replies** | Spoken acknowledgements (toggle off when recording) |
@@ -289,9 +305,13 @@ These are real and deliberate, not oversights:
 - **Spoken words can still be misheard** — keyterm prompting improves the common command words
   but doesn't eliminate it. "minimize" occasionally arrives as "many" or "mini mice".
 - **Windows: exact volume % and separate mute/unmute** aren't implemented; mute is a toggle.
-- **Windows Store apps** (Calculator, Photos, Settings, …) host their windows under
-  `ApplicationFrameHost`, so activating one may open a second instance rather than focus the
-  running one. Untested since that targeting was changed.
+- **Windows Store apps** (Calculator, Photos, Settings, WhatsApp, …) host their windows under
+  `ApplicationFrameHost`. Dragon falls back to finding that window by title, which works for
+  Settings and WhatsApp but is untested for other Store apps.
+- **Screen click on Windows is new and lightly tested.** WebView2/Electron apps (WhatsApp)
+  build their accessibility tree lazily, so list items such as contact names may not be found;
+  use `Auto` so vision can take over. The latest Windows fixes (DPI scaling, scroll behaviour)
+  have not been re-verified on a real machine yet.
 - **Insert Mode dictates commands as text** — leave it before saying "open Chrome".
 - **No automated tests, no code signing, no notarization.**
 

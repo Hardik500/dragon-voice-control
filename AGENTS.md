@@ -62,14 +62,33 @@ PowerShell/User32 on Windows). Read `/home/hardik/.opencode/plan/dragon-alpha-pl
 - **Dictation session state** (`dictationActive`/`dictationBuffer`/`lastDictationChunk` in
   `DragonPipeline`) tracks exactly what Dragon has typed so "delete the last 3 words" /
   "replace X with Y" can compute exact backspace counts instead of guessing — Dragon never
-  reads the focused app's actual text content (no Accessibility text APIs, no vision). Keep
-  this buffer in sync with every `typeText`/`deleteBackward` call path; if you add a new way
-  text can be typed, update the buffer alongside it or these commands will silently drift out
-  of sync with what's actually on screen.
+  reads the focused app's actual text content (no Accessibility text APIs, no vision) **except
+  for the narrowly-scoped `screen_click` intent** (`src/decision/vision-client.ts`), which
+  screenshots only the frontmost window and asks a vision model for click coordinates — never
+  text content, and never more than the frontmost window. Don't generalize this exception to
+  other intents. Keep this buffer in sync with every `typeText`/`deleteBackward` call path; if
+  you add a new way text can be typed, update the buffer alongside it or these commands will
+  silently drift out of sync with what's actually on screen.
+- **`pendingChoice`** (numbered disambiguation for `screen_click`) stores only screen coordinates,
+  option labels and the frontmost app name; it expires after 15s and is dropped if the frontmost
+  app changed. The reply ("1".."5") is consumed at the top of `runDecisionInternal`, before Jev.
 - Dragon runs **one command per utterance** by design (no multi-step/cross-app planning). A
   request like "open Slack, search for X, and type a message" is expected to be spoken as
   separate sequential utterances, each a direct command — don't build a planner to chain them
   automatically.
+- **Vision-based clicking (`screen_click`).** The one intentional exception to "no vision" above.
+  `automation.captureFrontmostWindow()` screenshots only the frontmost/focused window (never the
+  whole screen or other windows); `src/decision/vision-client.ts` sends it to a vision-capable
+  model via OpenRouter's standard chat-completions API (distinct from the Jev System One
+  endpoint) to get element bounding boxes, then `automation.clickAt()` moves and clicks the box
+  centre in one action. `VISION_MODEL` in `vision-client.ts` is the single model switch. macOS additionally requires Screen Recording permission (System Settings -> Privacy &
+  Security -> Screen Recording) on top of the Accessibility permission Dragon already needs.
+- **Accessibility-tree clicking (`screenClickMethod: "accessibility"`, also used first by the
+  default `"auto"` mode, which falls back to vision on a miss).** A second, equally narrow exception for the same `screen_click` intent:
+  `automation.findAccessibleElements()` reads element *labels* (macOS AXTitle/AXDescription and
+  AXStaticText values; Windows UIA Name) from the frontmost window only, to click an element's
+  exact frame without a screenshot. Never editable text / text-field values; labels are capped
+  at 80 chars in the pipeline. Don't reuse it for other intents.
 
 ## Making changes
 

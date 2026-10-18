@@ -88,6 +88,7 @@ async function load() {
   byId<HTMLInputElement>("workflowModeShortcut").value = settings.workflowModeShortcut;
   byId<HTMLInputElement>("voiceReplyEnabled").checked = settings.voiceReplyEnabled;
   byId<HTMLSelectElement>("logVerbosity").value = settings.logVerbosity;
+  byId<HTMLSelectElement>("screenClickMethod").value = settings.screenClickMethod;
   await refreshHistory();
 }
 
@@ -104,6 +105,7 @@ async function save() {
     workflowModeShortcut: byId<HTMLInputElement>("workflowModeShortcut").value,
     voiceReplyEnabled: byId<HTMLInputElement>("voiceReplyEnabled").checked,
     logVerbosity: byId<HTMLSelectElement>("logVerbosity").value,
+    screenClickMethod: byId<HTMLSelectElement>("screenClickMethod").value,
   };
   // The mask means "keep what is stored". Anything else the user typed is a real new value, so
   // it replaces the stored one. An emptied field also keeps what is stored — that has always

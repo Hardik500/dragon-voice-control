@@ -1,6 +1,6 @@
 {
   "name": "dragon",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Dragon: macOS voice-control agent alpha (Electron + Deepgram Flux + decision providers)",
   "private": true,
   "main": "dist/main/index.js",

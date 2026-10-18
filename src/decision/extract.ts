@@ -74,6 +74,25 @@ export function extractDictatedText(transcript: string): string | null {
   return null;
 }
 
+/** "click/tap [on] [the] X" -> X. Deliberately excludes "press" (ambiguous with press_key,
+ * e.g. "press enter"). Used for vision-based clicking outside the Chrome DOM path. */
+export function extractClickTarget(transcript: string): string | null {
+  const m = transcript.match(/\b(?:click|tap)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i);
+  if (m && m[1].trim().length > 0) return m[1].trim();
+  return extractImplicitClickTarget(transcript);
+}
+
+/** Implicit UI-control phrasing: "select Rose", "change to Agave", "turn on dark mode".
+ * Deliberately excludes "go to"/"switch to" (app launch / search_in_app own those) and
+ * "select all" (a key command). Anchored at the start so mid-sentence uses don't match. */
+const IMPLICIT_CLICK_RE = /^\s*(?:please\s+)?(?:select|choose|pick|change\s+to|set\s+to|turn\s+on|turn\s+off|toggle)\s+(?:the\s+)?(.+?)\s*[.!?]*$/i;
+export function extractImplicitClickTarget(transcript: string): string | null {
+  const m = transcript.match(IMPLICIT_CLICK_RE);
+  const target = m?.[1].trim();
+  if (!target || /^(?:all|everything|text)$/i.test(target)) return null;
+  return target;
+}
+
 function cleanSearchQuery(query: string): string {
   return query
     .replace(/\s+on\s+(?:google(?:\s+dot\s+com)?|chrome)\s*[.!?]*$/i, "")
@@ -319,5 +338,6 @@ export function extractPayload(transcript: string, page: BrowserPageState | null
     finderLocation: extractFinderLocation(transcript),
     deleteWordCount: extractDeleteWordCount(transcript),
     replacePair: extractReplacePair(transcript),
+    clickTarget: extractClickTarget(transcript),
   };
 }

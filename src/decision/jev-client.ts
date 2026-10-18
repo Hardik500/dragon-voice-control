@@ -170,6 +170,56 @@ export async function callDecisionProvider(
   }
 }
 
+export interface DisambiguationAnswer {
+  choice: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+}
+
+/**
+ * Ad-hoc single-Choice follow-up question, used mid-execution to disambiguate among several
+ * verified on-screen matches for the same screen_click description (see PROGRESS.md
+ * 2026-09-29). Reuses the same provider/endpoint plumbing as `callDecisionProvider` but sends a
+ * minimal one-question schema instead of the fixed 5-question bundle — `callDecisionProvider`'s
+ * response validator requires intent/target/direction/complete, none of which apply to a
+ * standalone follow-up question. Returns null on any failure (network error, timeout,
+ * cancellation, malformed response); callers should fall back to a deterministic pick rather
+ * than surfacing this as a hard error, since a screen click should still happen either way.
+ */
+export async function askDisambiguationChoice(
+  config: DecisionProviderConfig,
+  state: string,
+  instructions: string,
+  criteria: Record<string, string>,
+  signal: AbortSignal
+): Promise<DisambiguationAnswer | null> {
+  const request = providerRequest(config);
+  const timeout = withTimeout(signal, TIMEOUT_MS);
+  try {
+    const res = await fetch(request.endpoint, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify({ model: request.model, state, questions: { choice: { type: "choice", instructions, criteria } } }),
+      signal: timeout.controller.signal,
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { answers?: { choice?: JevChoiceAnswer } };
+    const choice = json.answers?.choice;
+    if (!choice || typeof choice.choice !== "string" || typeof choice.confidence !== "number") return null;
+    logger.event("decision.disambiguation_response", {
+      provider: config.provider,
+      choice: choice.choice,
+      confidence: choice.confidence,
+      probabilities: choice.probabilities,
+    });
+    return choice;
+  } catch {
+    return null;
+  } finally {
+    timeout.cleanup();
+  }
+}
+
 /** Lightweight connectivity check used by Settings; Laya is intentionally local-only. */
 export async function checkDecisionProvider(config: DecisionProviderConfig): Promise<ProviderHealth> {
   if (config.provider === "jev") {

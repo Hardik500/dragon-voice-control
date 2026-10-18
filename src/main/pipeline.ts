@@ -1,11 +1,16 @@
+import { nativeImage, NativeImage } from "electron";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { DeepgramFluxConnection } from "../stt/deepgram-client";
 import { BrowserBridge } from "../browser/server";
 import { logger } from "../logging/logger";
 import { automation } from "../automation";
 import { extractDeleteScope, extractKeyName, extractPayload, extractReplacePair, extractWorkflowSteps, isStandaloneKeyboardCommand, shouldTypeDirectlyInInsertMode } from "../decision/extract";
 import { buildQuestions, buildState, buildTargetCandidates } from "../decision/questions";
-import { callDecisionProvider, DecisionCancelledError, DecisionRequestError } from "../decision/jev-client";
-import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, resolveCommand, summarizeAnswers } from "../decision/resolve";
+import { askDisambiguationChoice, callDecisionProvider, DecisionCancelledError, DecisionProviderConfig, DecisionRequestError } from "../decision/jev-client";
+import { Box, dedupeMatches, LocatedPoint, locateElements, labelExact, labelMatches, labelTokens, readLabelAtPoint } from "../decision/vision-client";
+import { INTERIM_ELIGIBLE_INTENTS, isDeterministicAppLaunch, isDeterministicScreenClick, resolveCommand, summarizeAnswers } from "../decision/resolve";
 import { BrowserAction } from "../types/browser-protocol";
 import { HistoryEntry, JevAnswerSummary, JevDecisionOutcome, JevDecisionTrace, OverlayUpdate, ResolvedCommand, TranscriptEvent } from "../types/pipeline";
 import { DragonSettings } from "../types/settings";
@@ -19,6 +24,95 @@ const COMPLETE_THRESHOLD = 0.5;
 const INTERIM_EXEC_INTENT_CONFIDENCE = 0.6;
 const INTERIM_EXEC_COMPLETE = 0.6;
 const DEFAULT_DELETE_WORD_COUNT = 3;
+const SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD = 0.35; // mirrors INTENT_CONFIDENCE_THRESHOLD
+
+type ScreenClickWindow = Awaited<ReturnType<typeof automation.captureFrontmostWindow>>;
+type ScreenPoint = { x: number; y: number; label: string };
+type ImageCrop = { imageBase64: string; width: number; height: number; offsetX: number; offsetY: number };
+
+/** Crops `box` (clamped to the image) out of an already-decoded screenshot, as base64 JPEG.
+ * Returns the crop's offset within the original image so the caller can translate points back. */
+function cropImage(image: NativeImage, imageWidth: number, imageHeight: number, box: Box): ImageCrop {
+  const offsetX = Math.min(imageWidth - 1, Math.max(0, Math.round(box.x0)));
+  const offsetY = Math.min(imageHeight - 1, Math.max(0, Math.round(box.y0)));
+  const width = Math.max(1, Math.min(imageWidth - offsetX, Math.round(box.x1) - offsetX));
+  const height = Math.max(1, Math.min(imageHeight - offsetY, Math.round(box.y1) - offsetY));
+  const cropped = image.crop({ x: offsetX, y: offsetY, width, height });
+  const size = cropped.getSize();
+  return { imageBase64: cropped.toJPEG(90).toString("base64"), width: size.width, height: size.height, offsetX, offsetY };
+}
+
+/** Box of ±margin (fraction of the full image's width/height) around a point. */
+function boxAroundPoint(x: number, y: number, imageWidth: number, imageHeight: number, margin: { x: number; y: number }): Box {
+  return { x0: x - imageWidth * margin.x, y0: y - imageHeight * margin.y, x1: x + imageWidth * margin.x, y1: y + imageHeight * margin.y };
+}
+
+/** Margins for the wide re-localization crop (used when the first point fails verification) vs
+ * the narrow verification crop (used to independently read back what's actually at a point). */
+const RELOCATE_CROP_MARGIN = { x: 0.25, y: 0.15 };
+const VERIFY_CROP_MARGIN = { x: 0.06, y: 0.035 };
+const VERIFY_BOX_PAD_PX = 8;
+const DEBUG_IMAGE_PREFIX = "dragon-screenclick-";
+const DEBUG_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Verification crop: the element's own box plus a small pad, but never smaller than the fixed
+ * margin around its centre — so the read-back sees exactly the element the model claimed. */
+function verifyBox(p: LocatedPoint, imageWidth: number, imageHeight: number): Box {
+  const m = boxAroundPoint(p.x, p.y, imageWidth, imageHeight, VERIFY_CROP_MARGIN);
+  return {
+    x0: Math.min(m.x0, p.box.x0 - VERIFY_BOX_PAD_PX),
+    y0: Math.min(m.y0, p.box.y0 - VERIFY_BOX_PAD_PX),
+    x1: Math.max(m.x1, p.box.x1 + VERIFY_BOX_PAD_PX),
+    y1: Math.max(m.y1, p.box.y1 + VERIFY_BOX_PAD_PX),
+  };
+}
+
+/** Verifies all candidates concurrently. One failed read-back (timeout/5xx) only drops that
+ * candidate; if every read-back fails, rethrows the first error so real API-key/network
+ * problems stay visible instead of silently entering recovery. */
+async function verifyCandidates(
+  description: string,
+  candidates: LocatedPoint[],
+  verify: (p: LocatedPoint) => Promise<string>
+): Promise<{ verified: ScreenPoint[]; readbacks: string[] }> {
+  if (candidates.length === 0) return { verified: [], readbacks: [] };
+  const results = await Promise.allSettled(candidates.map(verify));
+  if (results.every((r) => r.status === "rejected")) throw (results[0] as PromiseRejectedResult).reason;
+  const readbacks = results.map((r) => (r.status === "fulfilled" ? r.value : ""));
+  const verified = candidates.flatMap((p, i) => (results[i].status === "fulfilled" && labelMatches(description, readbacks[i]) ? [{ x: p.x, y: p.y, label: readbacks[i] }] : []));
+  return { verified, readbacks };
+}
+
+/** Saves the (frontmost-window-only) screenshot of a failed/ambiguous screen_click to the OS
+ * temp dir for offline model comparison, and deletes ones older than 24h. Never uploaded. */
+function saveScreenClickDebugImage(imageBase64: string, description: string, reason: string): void {
+  const dir = os.tmpdir();
+  const file = path.join(dir, `${DEBUG_IMAGE_PREFIX}${Date.now()}.jpg`);
+  fs.promises
+    .writeFile(file, Buffer.from(imageBase64, "base64"))
+    .then(() => logger.event("screen_click.debug_image", { description, reason, path: file }))
+    .catch(() => {});
+  fs.promises
+    .readdir(dir)
+    .then((names) => {
+      for (const n of names) {
+        const ts = Number(n.slice(DEBUG_IMAGE_PREFIX.length, -4));
+        if (n.startsWith(DEBUG_IMAGE_PREFIX) && Date.now() - ts > DEBUG_IMAGE_TTL_MS) fs.promises.unlink(path.join(dir, n)).catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
+/** Coarse positional description of a point within the window image, used to give Jev enough
+ * context to tell apart multiple verified screen_click matches with the same/similar label
+ * (e.g. two "General" rows in different panes) — see PROGRESS.md 2026-09-29. */
+function describeRegion(x: number, y: number, imageWidth: number, imageHeight: number): string {
+  const xPct = (x / imageWidth) * 100;
+  const yPct = (y / imageHeight) * 100;
+  const vert = yPct < 33 ? "near the top" : yPct < 66 ? "in the vertical middle" : "near the bottom";
+  const horiz = xPct < 33 ? "on the left" : xPct < 66 ? "in the horizontal center" : "on the right";
+  return `(${vert}, ${horiz} of the window)`;
+}
 
 function normalizeDecisionText(text: string): string {
   return text.toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ").trim();
@@ -91,12 +185,27 @@ function keepsDictationOpen(kind: ResolvedCommand["kind"]): boolean {
   );
 }
 
+/** Thrown when the accessibility lookup found nothing; "auto" mode falls back to vision on it. */
+class AccessibilityMissError extends Error {}
+/** Not a failure: the click is ambiguous and `pendingChoice` now awaits a spoken number. */
+class ChoiceRequiredError extends Error {}
+const PENDING_CHOICE_TTL_MS = 15_000;
+
 export class DragonPipeline {
   private deepgram: DeepgramFluxConnection | null = null;
+  private lastActiveApp: string | null = null;
   private inFlight: InFlight[] = [];
   /** Serializes Jev work per utterance so EagerEndOfTurn cannot race the final EndOfTurn. */
   private decisionInFlightByUtterance = new Map<string, Promise<void>>();
   private executedUtterances = new Set<string>();
+  /** Set while a resolved command is actually running (between the "executing" and "done"/
+   * "error" overlay updates). Deepgram keeps streaming ambient audio during a slow command
+   * (e.g. screen_click's screenshot+vision+click round trip), which fires StartOfTurn/Update
+   * events for incidental noise — without this guard, onTurn's "listening" overlay push for
+   * those events overwrote "Executing" almost immediately, making the loading state look like
+   * it vanished before the command actually finished. Purely cosmetic: only gates the overlay
+   * push, not turn processing. */
+  private executingUtteranceId: string | null = null;
   private ignoredLoggedUtterances = new Set<string>();
   private utteranceCounter = 0;
   private micStreaming = false;
@@ -124,6 +233,8 @@ export class DragonPipeline {
   /** True once "type X" has executed; lets subsequent utterances that Jev doesn't recognize
    * as any other command continue being typed verbatim, without repeating "type" each time. */
   private dictationActive = false;
+  /** Ambiguous screen_click awaiting a spoken number; screen coordinates, cleared on next utterance. */
+  private pendingChoice: { app: string | null; expiresAt: number; clicks: number; options: { label: string; x: number; y: number }[] } | null = null;
   /** Everything typed in the current dictation session, kept in sync with what's on screen
    * so "delete the last 3 words" / "replace X with Y" can compute exact backspace counts
    * instead of guessing. Cleared when dictation ends. */
@@ -571,16 +682,18 @@ export class DragonPipeline {
       return;
     }
     if (turn.event === "StartOfTurn" || turn.event === "Update") {
-      this.onOverlay({
-        utteranceId: turn.utteranceId,
-        state: "listening",
-        transcript: turn.transcript,
-        isFinal: false,
-        action: null,
-        status: null,
-        latencyMs: null,
-        activationMode: settings.activationMode,
-      });
+      if (this.executingUtteranceId == null) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: "listening",
+          transcript: turn.transcript,
+          isFinal: false,
+          action: null,
+          status: null,
+          latencyMs: null,
+          activationMode: settings.activationMode,
+        });
+      }
       return; // Only EagerEndOfTurn/EndOfTurn trigger decisions (debounces interim noise).
     }
 
@@ -761,6 +874,27 @@ export class DragonPipeline {
       activationMode: settings.activationMode,
     });
 
+    if (this.pendingChoice && Date.now() > this.pendingChoice.expiresAt) this.pendingChoice = null;
+    if (this.pendingChoice) {
+      // A live picker owns the next utterance: a partial "2" must not reach Jev.
+      if (!turn.isFinal) {
+        this.unregisterInFlight(controller);
+        return;
+      }
+      if (this.executedUtterances.has(turn.utteranceId)) {
+        this.unregisterInFlight(controller);
+        return;
+      }
+      const handled = await this.handlePendingChoice(effectiveText);
+      if (handled) {
+        this.executedUtterances.add(turn.utteranceId);
+        this.unregisterInFlight(controller);
+        this.history.add({ utteranceId: turn.utteranceId, timestamp: Date.now(), transcript: effectiveText, intent: "screen_click", action: "Choose option", status: handled.error ? "error" : "success", detail: handled.error ?? "" });
+        this.onOverlay({ utteranceId: turn.utteranceId, state: handled.error ? "error" : "done", transcript: effectiveText, isFinal: true, action: "Choose option", status: handled.error, latencyMs: Date.now() - startedAt, activationMode: settings.activationMode });
+        return;
+      }
+    }
+
     if (
       this.dictationActive &&
       shouldTypeDirectlyInInsertMode(effectiveText, extractKeyName(effectiveText))
@@ -815,7 +949,13 @@ export class DragonPipeline {
           return value;
         }),
       ]);
-      const payload = extractPayload(effectiveText, browserPage);
+      // Chrome page elements only make sense when Chrome is frontmost. Otherwise "click add
+      // device" in WhatsApp matched stale Chrome tab elements, became chrome_click and clicked
+      // nothing (2026-10-02). Cache hits skip the app read, so reuse the last known one.
+      if (activeApp) this.lastActiveApp = activeApp;
+      const frontApp = activeApp ?? this.lastActiveApp;
+      const chromeFront = !frontApp || /chrome/i.test(frontApp);
+      const payload = extractPayload(effectiveText, chromeFront ? browserPage : null);
       let summary: JevAnswerSummary;
       let decisionMs: number;
       let jevMs: number | null = null;
@@ -932,7 +1072,8 @@ export class DragonPipeline {
         !this.workflowActive &&
         !isExplicitMediaControl(turn, summary) &&
         !standaloneKeyboardCommand &&
-        !isDeterministicAppLaunch(effectiveText, payload)
+        !isDeterministicAppLaunch(effectiveText, payload) &&
+        !(turn.isFinal && isDeterministicScreenClick(effectiveText, payload))
       ) {
         const addressedThreshold = settings.decisionProvider === "laya" ? LAYA_ADDRESSED_THRESHOLD : JEV_ADDRESSED_THRESHOLD;
         if (summary.addressed == null || summary.addressed < addressedThreshold) {
@@ -993,7 +1134,8 @@ export class DragonPipeline {
       // spoken, entirely executable command. Only enforce the completeness gate on turns
       // that *aren't* final yet, where it protects against acting on a truncated interim.
       const incomplete = !turn.isFinal && summary.complete < COMPLETE_THRESHOLD;
-      const noCommand = summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete;
+      const deterministicClick = turn.isFinal && !this.dictationActive && !this.workflowActive && isDeterministicScreenClick(effectiveText, payload);
+      const noCommand = !deterministicClick && (summary.intent === "none" || summary.intentConfidence < INTENT_CONFIDENCE_THRESHOLD || incomplete);
 
       if (noCommand) {
         if (this.workflowActive) {
@@ -1052,13 +1194,35 @@ export class DragonPipeline {
       });
 
       const execStarted = Date.now();
+      this.executingUtteranceId = turn.utteranceId;
       let execError: string | null = null;
+      let choicePrompt: string | null = null;
       try {
-        await this.executeCommand(resolved);
+        await this.executeCommand(resolved, effectiveText, controller.signal);
       } catch (err) {
-        execError = err instanceof Error ? err.message : String(err);
+        if (err instanceof ChoiceRequiredError) choicePrompt = err.message;
+        else execError = err instanceof Error ? err.message : String(err);
       }
+      // If the user spoke again before this (slow) command finished, a newer utterance's own
+      // execution may have already overwritten executingUtteranceId with its own id — in that
+      // case this command is stale: don't reclaim the flag (it belongs to the newer command
+      // now) and don't push this command's "done"/"error" overlay below, since it would
+      // overwrite whatever the newer command has since displayed with old information (visible
+      // as a brief jitter to a stale state before the newer command's own update corrects it).
+      const isCurrentExecution = this.executingUtteranceId === turn.utteranceId;
+      if (isCurrentExecution) this.executingUtteranceId = null;
       const executionMs = Date.now() - execStarted;
+      if (choicePrompt) {
+        // Not a failure: awaiting a spoken number (see handlePendingChoice).
+        this.unregisterInFlight(controller);
+        this.updateJevDecisionOutcome(turn.utteranceId, "ignored", choicePrompt, describeCommand(resolved), executionMs);
+        logger.event("pipeline.choice_prompt", { utteranceId: turn.utteranceId, executionMs });
+        if (isCurrentExecution) {
+          this.onOverlay({ utteranceId: turn.utteranceId, state: "listening", transcript: effectiveText, isFinal: true, action: describeCommand(resolved), status: choicePrompt, latencyMs: sttToDecisionMs + decisionMs + executionMs, activationMode: settings.activationMode });
+        }
+        return;
+      }
+
       this.updateJevDecisionOutcome(
         turn.utteranceId,
         execError ? "error" : "success",
@@ -1101,16 +1265,18 @@ export class DragonPipeline {
         error: execError,
       });
 
-      this.onOverlay({
-        utteranceId: turn.utteranceId,
-        state: execError ? "error" : "done",
-        transcript: effectiveText,
-        isFinal: true,
-        action: describeCommand(resolved),
-        status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
-        latencyMs: totalMs,
-        activationMode: settings.activationMode,
-      });
+      if (isCurrentExecution) {
+        this.onOverlay({
+          utteranceId: turn.utteranceId,
+          state: execError ? "error" : "done",
+          transcript: effectiveText,
+          isFinal: true,
+          action: describeCommand(resolved),
+          status: execError || (this.workflowActive ? `Workflow · Step ${this.workflowStepCount}` : null),
+          latencyMs: totalMs,
+          activationMode: settings.activationMode,
+        });
+      }
 
       this.history.add({
         utteranceId: turn.utteranceId,
@@ -1231,7 +1397,7 @@ export class DragonPipeline {
     });
   }
 
-  private async executeCommand(cmd: ResolvedCommand): Promise<void> {
+  private async executeCommand(cmd: ResolvedCommand, transcript: string, signal: AbortSignal): Promise<void> {
     switch (cmd.kind) {
       case "open_app":
         return automation.openApp(cmd.appAlias!);
@@ -1304,6 +1470,8 @@ export class DragonPipeline {
         return this.requireBrowserAction({ kind: "close_tab" });
       case "chrome_switch_tab":
         return this.requireBrowserAction({ kind: "switch_tab", direction: cmd.direction ?? "next" });
+      case "screen_click":
+        return this.executeScreenClick(cmd.text!, transcript, signal, cmd.double ? 2 : 1);
       case "search_in_app":
         return this.executeSearchInApp(cmd.query!);
       case "replace_text": {
@@ -1361,6 +1529,279 @@ export class DragonPipeline {
     await automation.pressNamedKey("enter");
   }
 
+  /** Vision-based click: screenshots the frontmost window only, discovers every on-screen match
+   * for the description, independently verifies each one, disambiguates if more than one survives
+   * verification, then moves+clicks at the corresponding absolute screen coordinate (window
+   * bounds + relative offset). */
+  private async executeScreenClick(description: string, transcript: string, signal: AbortSignal, clicks = 1): Promise<void> {
+    const settings = this.getSettings();
+    if (settings.screenClickMethod === "accessibility") return this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
+    if (settings.screenClickMethod === "auto") {
+      try {
+        return await this.executeAccessibilityClick(description, transcript, settings, signal, clicks);
+      } catch (err) {
+        if (signal.aborted || !(err instanceof AccessibilityMissError)) throw err;
+        logger.event("screen_click.fallback", { description, fallback: "accessibility_miss" });
+      }
+    }
+    const window = await automation.captureFrontmostWindow();
+    // Decode once per click; every verify/relocate crop reuses it.
+    const image = nativeImage.createFromBuffer(Buffer.from(window.imageBase64, "base64"));
+    const rawMatches = await locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight);
+    if (rawMatches.length === 0) {
+      saveScreenClickDebugImage(window.imageBase64, description, "no_match");
+      throw new Error(`Could not find "${description}" on screen.`);
+    }
+    const candidates = dedupeMatches(rawMatches);
+
+    // The model's own `label` field turned out to be self-consistently unreliable as a
+    // verification signal — it can echo back the requested description even when its
+    // coordinates land on a completely different row (grounding failure, not a wrong-row pick).
+    // So verify each reported match independently: crop tightly around it and ask a
+    // separately-framed "what text is here?" question with no hint of the target — if that
+    // doesn't match, the point itself is wrong regardless of what the first call's label
+    // claimed. See PROGRESS.md 2026-09-28.
+    const verify = (p: LocatedPoint) =>
+      readLabelAtPoint(settings.openRouterApiKey, cropImage(image, window.imageWidth, window.imageHeight, verifyBox(p, window.imageWidth, window.imageHeight)).imageBase64);
+
+    const { verified } = await verifyCandidates(description, candidates, verify);
+
+    let point: ScreenPoint;
+    let retried = false;
+    let disambiguated = false;
+    if (verified.length === 0) {
+      // None of the reported matches survived independent verification — fall back to the
+      // recovery path (tight relocate-crop retry + one fresh full-image attempt, concurrently)
+      // using the model's best guess as the starting point.
+      retried = true;
+      saveScreenClickDebugImage(window.imageBase64, description, "unverified");
+      point = await this.recoverScreenClickPoint(description, candidates[0], window, image, settings, verify);
+    } else if (verified.length === 1) {
+      point = verified[0];
+    } else {
+      // Multiple genuinely distinct matches survived verification (e.g. several people named
+      // "Harshit", or repeated "General" rows across panes) — a single vision call can't tell
+      // which one the user meant, so ask Jev to pick using the full utterance's intent. See
+      // PROGRESS.md 2026-09-29.
+      disambiguated = true;
+      saveScreenClickDebugImage(window.imageBase64, description, "ambiguous");
+      point = await this.disambiguateScreenClickCandidates(description, transcript, verified, { width: window.imageWidth, height: window.imageHeight }, (p) => ({ x: window.bounds.x + p.x * (window.bounds.width / window.imageWidth), y: window.bounds.y + p.y * (window.bounds.height / window.imageHeight) }), settings, signal, clicks);
+    }
+
+    // The vision model's point is in the sent image's pixel space, which can differ from
+    // bounds' point space (Retina scaling and/or downscaling for cost/latency) — scale back
+    // rather than assuming a 1:1 ratio.
+    const scaleX = window.bounds.width / window.imageWidth;
+    const scaleY = window.bounds.height / window.imageHeight;
+    const screenX = window.bounds.x + point.x * scaleX;
+    const screenY = window.bounds.y + point.y * scaleY;
+    logger.event("automation.click_at", {
+      description,
+      bounds: window.bounds,
+      imageWidth: window.imageWidth,
+      imageHeight: window.imageHeight,
+      imagePoint: point,
+      verifiedLabel: point.label,
+      matchCount: rawMatches.length,
+      dedupedCount: candidates.length,
+      verifiedCount: verified.length,
+      retried,
+      disambiguated,
+      screenX,
+      screenY,
+    });
+    await automation.clickAt(screenX, screenY, clicks);
+  }
+
+  /** screen_click via the OS accessibility tree instead of a screenshot: exact element frames,
+   * no vision call. Only labelled elements are findable; unlabelled icons need Vision mode. */
+  private async executeAccessibilityClick(description: string, transcript: string, settings: DragonSettings, signal: AbortSignal, clicks = 1): Promise<void> {
+    const tokens = labelTokens(description);
+    const terms = tokens.filter((t) => t.length >= 3).length ? tokens.filter((t) => t.length >= 3) : tokens;
+    if (!terms.length) throw new Error(`Nothing to look up for "${description}".`);
+    const { window, elements } = await automation.findAccessibleElements(terms);
+    // Window-relative, and only on-screen: scrolled-away list rows stay in the tree. Labels are
+    // capped because some rows' AXDescription carries a message preview (Slack Activity).
+    const located = elements
+      .filter((e) => e.width > 0 && e.height > 0)
+      .map((e) => ({ menu: e.menu, label: e.label.slice(0, 80), x: e.x - window.x + e.width / 2, y: e.y - window.y + e.height / 2, box: { x0: e.x - window.x, y0: e.y - window.y, x1: e.x - window.x + e.width, y1: e.y - window.y + e.height } }));
+    const onScreen = located.filter((p) => p.menu || p.x >= 0 && p.y >= 0 && p.x <= window.width && p.y <= window.height);
+    const inWindow = onScreen.filter((p) => labelMatches(description, p.label));
+    const candidates = dedupeMatches(inWindow);
+    // Logged on EVERY accessibility lookup, hit or miss. Without it a failure and a stale build are
+    // indistinguishable: both "just don't work", and `auto` mode swallows the miss by falling back
+    // to vision. `matchCount` is the number of labels UIA returned and `candidateCount` what
+    // survived the window-bounds + labelMatches filters, which splits the two failure modes apart.
+    logger.event("screen_click.ax_lookup", {
+      description,
+      terms,
+      matchCount: elements.length,
+      locatedCount: located.length,
+      onScreenCount: onScreen.length,
+      labelMatchCount: inWindow.length,
+      candidateCount: candidates.length,
+      window,
+      // Capped: enough to see which labels were found and where they sit relative to the window.
+      labels: located.slice(0, 12).map((p) => ({ label: p.label, x: Math.round(p.x), y: Math.round(p.y) })),
+    });
+    if (candidates.length === 0) {
+      // Two very different situations used to produce one indistinguishable message. Found but
+      // off-screen means the row exists and is scrolled out of view -- clicking its stored
+      // coordinates would hit whatever is at that spot instead, so refusing is correct, but
+      // "scroll it into view first" is the fix, not "try Vision mode" (observed 2026-10-02: a
+      // restored 1415x641 Settings window kept several sidebar rows out of view, and every one of
+      // them was reported as "could not find ... in the accessibility tree").
+      if (inWindow.length === 0 && onScreen.length > 0) {
+        throw new AccessibilityMissError(`Found "${description}" but its label does not match the target — try naming it more exactly.`);
+      }
+      if (located.length > 0 && onScreen.length === 0) {
+        throw new AccessibilityMissError(`Found "${description}" but it is scrolled out of view — scroll it into view and say that again.`);
+      }
+      throw new AccessibilityMissError(`Could not find "${description}" in the accessibility tree — try Vision screen-click mode.`);
+    }
+    const point =
+      candidates.length === 1 ? candidates[0] : await this.disambiguateScreenClickCandidates(description, transcript, candidates, window, (p) => ({ x: window.x + p.x, y: window.y + p.y }), settings, signal, clicks);
+    const screenX = window.x + point.x;
+    const screenY = window.y + point.y;
+    logger.event("automation.click_at", { description, method: "accessibility", bounds: window, matchCount: elements.length, candidateCount: candidates.length, label: point.label, screenX, screenY });
+    await automation.clickAt(screenX, screenY, clicks);
+  }
+
+  /** Recovery path for when zero of `locateElements`' reported matches survive independent
+   * verification: a tight relocate-crop retry around the model's best guess and one fresh
+   * full-image attempt, run concurrently (same call budget as running them in sequence, one
+   * round trip instead of two). The relocate-crop result wins if both verify. */
+  private async recoverScreenClickPoint(
+    description: string,
+    bestGuess: LocatedPoint,
+    window: ScreenClickWindow,
+    image: NativeImage,
+    settings: DragonSettings,
+    verify: (p: LocatedPoint) => Promise<string>
+  ): Promise<ScreenPoint> {
+    // Two different failure modes need two different retries: a *close but imprecise* miss is
+    // fixed by re-asking on a tighter crop around the same point (less competing UI per
+    // pixel); a *wrong region entirely* miss (e.g. landed on a tab bar instead of the list
+    // below it) means the target isn't even inside that crop — that case needs a fresh
+    // full-image attempt instead.
+    const relocateCrop = cropImage(image, window.imageWidth, window.imageHeight, boxAroundPoint(bestGuess.x, bestGuess.y, window.imageWidth, window.imageHeight, RELOCATE_CROP_MARGIN));
+    const toFullImage = (m: LocatedPoint): LocatedPoint => ({
+      x: relocateCrop.offsetX + m.x,
+      y: relocateCrop.offsetY + m.y,
+      label: m.label,
+      box: { x0: relocateCrop.offsetX + m.box.x0, y0: relocateCrop.offsetY + m.box.y0, x1: relocateCrop.offsetX + m.box.x1, y1: relocateCrop.offsetY + m.box.y1 },
+    });
+    const attempts = await Promise.allSettled([
+      locateElements(settings.openRouterApiKey, relocateCrop.imageBase64, description, relocateCrop.width, relocateCrop.height).then((ms) =>
+        verifyCandidates(description, ms.slice(0, 1).map(toFullImage), verify)
+      ),
+      locateElements(settings.openRouterApiKey, window.imageBase64, description, window.imageWidth, window.imageHeight).then((ms) =>
+        verifyCandidates(description, ms.slice(0, 1), verify)
+      ),
+    ]);
+    if (attempts.every((a) => a.status === "rejected")) throw (attempts[0] as PromiseRejectedResult).reason;
+
+    const results = attempts.flatMap((a) => (a.status === "fulfilled" ? [a.value] : []));
+    const winner = results.find((r) => r.verified.length > 0);
+    if (winner) return winner.verified[0];
+    const found = results.flatMap((r) => r.readbacks).find(Boolean) ?? "";
+    throw new Error(`Could not confidently locate "${description}" on screen (found "${found}" instead).`);
+  }
+
+  /** Disambiguates among several independently-verified on-screen matches for the same
+   * description by asking Jev to choose using the full utterance's context (same "give Jev N
+   * candidates, let it choose" pattern as `buildTargetCandidates`/the `target` question — see
+   * PROGRESS.md 2026-09-29). Falls back to a deterministic pick (natural reading order: topmost,
+   * then leftmost) whenever Jev can't be asked, times out, or isn't confident enough — a click
+   * should still happen even with no disambiguating signal. */
+  private async disambiguateScreenClickCandidates(
+    description: string,
+    transcript: string,
+    candidates: ScreenPoint[],
+    area: { width: number; height: number },
+    toScreen: (p: ScreenPoint) => { x: number; y: number },
+    settings: DragonSettings,
+    signal: AbortSignal,
+    clicks = 1
+  ): Promise<ScreenPoint> {
+    // Exactly one read-back equals the spoken target (e.g. "Harshit" vs "Harshit Agarwal") —
+    // no need to ask Jev.
+    const exact = candidates.filter((c) => labelExact(description, c.label));
+    if (exact.length === 1) {
+      logger.event("screen_click.disambiguation", { description, candidateCount: candidates.length, chosenLabel: exact[0].label, usedExactLabelMatch: true });
+      return exact[0];
+    }
+
+    const criteria: Record<string, string> = {};
+    candidates.forEach((c, i) => {
+      criteria[String(i)] = `"${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`;
+    });
+
+    const config: DecisionProviderConfig = {
+      provider: settings.decisionProvider,
+      openRouterApiKey: settings.openRouterApiKey,
+      layaBaseUrl: settings.layaBaseUrl,
+      layaModel: settings.layaModel,
+    };
+    const state = buildState({ transcript, activeApp: null, browserPage: null });
+    const instructions = `The user asked to click "${description}", and multiple matching on-screen elements were found. Which one did they mean, based on the full transcript?`;
+
+    const answer = await askDisambiguationChoice(config, state, instructions, criteria, signal);
+    const idx = answer ? Number(answer.choice) : NaN;
+    const confident = !!answer && answer.confidence >= SCREEN_CLICK_DISAMBIGUATION_CONFIDENCE_THRESHOLD && Number.isInteger(idx) && !!candidates[idx];
+
+    logger.event("screen_click.disambiguation", {
+      description,
+      candidateCount: candidates.length,
+      criteria,
+      chosen: answer?.choice ?? null,
+      confidence: answer?.confidence ?? null,
+      askedUser: !confident,
+    });
+
+    if (confident) return candidates[idx];
+
+    // Still ambiguous: don't guess, ask. The next final utterance "1".."5" picks (see
+    // `handlePendingChoice`); anything else clears it.
+    const ordered = [...candidates].sort((a, b) => a.y - b.y || a.x - b.x).slice(0, 5);
+    this.pendingChoice = {
+      app: await automation.getActiveAppName().catch(() => null),
+      expiresAt: Date.now() + PENDING_CHOICE_TTL_MS,
+      clicks,
+      options: ordered.map((c) => ({ label: c.label, ...toScreen(c) })),
+    };
+    const list = ordered.map((c, i) => `${i + 1}: "${c.label}" ${describeRegion(c.x, c.y, area.width, area.height)}`).join("; ");
+    throw new ChoiceRequiredError(`Which one? Say a number — ${list}`);
+  }
+
+  /** Consumes a pending numbered choice. Returns true when the utterance was handled (picked
+   * or cancelled); false when there is no live choice or the utterance is something else. */
+  private async handlePendingChoice(text: string): Promise<{ error: string | null } | false> {
+    const pending = this.pendingChoice;
+    if (!pending) return false;
+    this.pendingChoice = null;
+    if (Date.now() > pending.expiresAt) return false;
+    const t = text.trim().toLowerCase().replace(/[.!?]+$/, "");
+    if (/^(?:cancel|never ?mind|stop)$/.test(t)) return { error: null };
+    const m = t.match(/^(?:number |option )?(\d|one|won|two|to|too|three|four|for|five)$/);
+    if (!m) return false;
+    const words: Record<string, number> = { one: 1, won: 1, two: 2, to: 2, too: 2, three: 3, four: 4, for: 4, five: 5 };
+    const n = /\d/.test(m[1]) ? Number(m[1]) : words[m[1]];
+    const choice = pending.options[n - 1];
+    if (!choice) return false;
+    try {
+      // Coordinates are absolute; if the user switched apps meanwhile they're stale.
+      if (pending.app && (await automation.getActiveAppName()) !== pending.app) {
+        return { error: "Window changed, try again" };
+      }
+      logger.event("screen_click.choice_picked", { n, label: choice.label });
+      await automation.clickAt(choice.x, choice.y, pending.clicks);
+      return { error: null };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   private async requireBrowserAction(action: BrowserAction): Promise<void> {
     if (!this.browserBridge.isConnected()) {
       throw new Error("Chrome extension is not connected. Load the unpacked extension and reload the page.");
@@ -1390,6 +1831,8 @@ function describeCommand(cmd: ResolvedCommand): string {
       return `Search for "${cmd.query}"`;
     case "search_in_app":
       return `Search for "${cmd.query}" in app`;
+    case "screen_click":
+      return `Click "${cmd.text}"`;
     case "replace_text":
       return `Replace "${cmd.find}" with "${cmd.replacement}"`;
     default:
@@ -1413,6 +1856,8 @@ function shortReplyFor(cmd: ResolvedCommand): string {
       return "Muted";
     case "chrome_search":
       return "Searching";
+    case "screen_click":
+      return "Clicking";
     case "chrome_open_url":
       return "Opening";
     default:

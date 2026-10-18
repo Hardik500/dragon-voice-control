@@ -1,6 +1,6 @@
 import { KEY_PHRASE_NAMES, LOCATION_NAMES, SETTINGS_PANE_NAMES } from "../commands/registry";
 import { AppCandidate, Direction, ExtractedPayload, Intent, JevAnswerSummary, ResolvedCommand } from "../types/pipeline";
-import { extractDeleteScope } from "./extract";
+import { extractDeleteScope, extractImplicitClickTarget } from "./extract";
 import { JevAnswers } from "./jev-client";
 
 /** Intents that may execute from a confident interim transcript (closed, low-risk-of-truncation commands). */
@@ -80,6 +80,42 @@ function clickElementOverride(effectiveText: string, payload: ExtractedPayload):
   return { kind: "chrome_click", elementId: payload.browserElementCandidates[0].id };
 }
 
+const SCREEN_CLICK_PATTERN = /^\s*(?:please\s+)?(?:click|tap)\s+(?:on\s+)?(?:the\s+)?.+/i;
+
+/** "click/tap X" with no Chrome page-element candidates available means X must be a screen
+ * element outside the DOM path (a native app's button/icon). If there ARE browser element
+ * candidates, `clickElementOverride` above already owns "click on X" — don't double-handle. */
+/** "double click X" / "open file X": file-tree rows open on double-click, not single. */
+const DOUBLE_CLICK_RE = /^\s*(?:please\s+)?(?:double[\s-]?(?:click|tap)|open\s+(?:the\s+)?file)\s+(?:on\s+)?(?:the\s+)?(.+?)\s*[.!?]*$/i;
+
+/** Bare "open package dot json" / "open main.ts [file]": a filename (spoken "dot ext" or literal
+ * ".ext"), not an app or site. Web TLDs are excluded so "open google dot com" still navigates. */
+const OPEN_FILENAME_RE = /^\s*(?:please\s+)?open\s+(?:the\s+)?(.+?\s+dot\s+(?!(?:com|org|net|io|dev|co|gov|edu|app|ai|uk)\b)[a-z0-9]{1,5}|[^\s.]+\.(?!(?:com|org|net|io|dev|co|gov|edu|app|ai|uk)\b)[a-z0-9]{1,5})(?:\s+file)?\s*[.!?]*$/i;
+
+function doubleClickTarget(effectiveText: string, payload: ExtractedPayload): string | null {
+  const explicit = effectiveText.match(DOUBLE_CLICK_RE)?.[1].trim();
+  if (explicit) return explicit;
+  if (payload.appCandidates.length > 0 || payload.url) return null;
+  return effectiveText.match(OPEN_FILENAME_RE)?.[1].trim() || null;
+}
+
+function screenClickOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
+  const dbl = doubleClickTarget(effectiveText, payload);
+  if (dbl) return { kind: "screen_click", text: dbl, double: true };
+  if (payload.browserElementCandidates.length > 0) return null;
+  if (!SCREEN_CLICK_PATTERN.test(effectiveText) && !extractImplicitClickTarget(effectiveText)) return null;
+  const text = payload.clickTarget ?? effectiveText.trim();
+  return { kind: "screen_click", text };
+}
+
+/** True for a literal "click/tap X" with no page-element candidates. Exported so the pipeline can
+ * stop Jev's `none`/low-confidence verdict from dropping it (observed: "Click system." scored
+ * `none` 0.45 and was ignored). Only the explicit verb — implicit verbs ("select X") still
+ * need Jev's confidence. */
+export function isDeterministicScreenClick(effectiveText: string, payload: ExtractedPayload): boolean {
+  return payload.browserElementCandidates.length === 0 && (SCREEN_CLICK_PATTERN.test(effectiveText) || doubleClickTarget(effectiveText, payload) !== null);
+}
+
 function openAppOverride(effectiveText: string, payload: ExtractedPayload): ResolvedCommand | null {
   if (!isDeterministicAppLaunch(effectiveText, payload)) return null;
   const cand = payload.appCandidates[0];
@@ -132,6 +168,11 @@ export function resolveCommand(
   if (intent !== "chrome_click") {
     const clickOverride = clickElementOverride(effectiveText, payload);
     if (clickOverride) return clickOverride;
+  }
+  const jevPickedApp = (intent === "open_app" || intent === "activate_app") && payload.appCandidates.length > 0;
+  if ((intent !== "screen_click" || doubleClickTarget(effectiveText, payload)) && !jevPickedApp) {
+    const screenOverride = screenClickOverride(effectiveText, payload);
+    if (screenOverride) return screenOverride;
   }
 
   switch (intent) {
@@ -239,6 +280,11 @@ export function resolveCommand(
       return { kind: intent };
     case "chrome_switch_tab":
       return { kind: intent, direction };
+    case "screen_click": {
+      const text = payload.clickTarget ?? effectiveText.trim();
+      if (!text) return null;
+      return { kind: intent, text };
+    }
     case "insert_newline":
       return { kind: intent };
     case "search_in_app": {
