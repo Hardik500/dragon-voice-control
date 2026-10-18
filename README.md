@@ -12,7 +12,7 @@ down"*, *"delete the last 3 words"* — Dragon acts and shows the selected actio
 Sixty seconds, no cuts: launching an app and bringing it to the front, dictating a paragraph into
 Notepad, then driving Chrome.
 
-[![Watch the Dragon demo](https://www.loom.com/v1/videos/129c880fd1a34c21be42fc4e95d53934/thumbnail.gif)](https://www.loom.com/share/129c880fd1a34c21be42fc4e95d53934)
+[![Watch the Dragon demo](https://i9.ytimg.com/vi_webp/swvqV3osBls/mq1.webp?sqp=CKj6ttYG-oaymwEmCMACELQB8quKqQMa8AEB-AH-CYAC0AWKAgwIABABGEQgOyh_MA8=&rs=AOn4CLCIYzGWLPQSZVdFk-50dQX-zcJzow)](https://youtu.be/swvqV3osBls)
 
 ## Screenshots
 

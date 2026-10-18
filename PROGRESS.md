@@ -2436,3 +2436,40 @@ Additional exact probes: `node /tmp/dragon-independent-buffer-review.cjs` — ex
 in İstanbul cat with correct original-text offsets;
 `xvfb-run -a node_modules/electron/dist/electron --no-sandbox --disable-gpu /tmp/dragon-content-target-state.cjs --verify`
 — exit 0, six actual DOM regressions. Existing background and 20-group DOM probes also pass.
+
+## 2026-10-18 — Resolve PR #2 after PR #1 was squash-merged
+
+**Acceptance scope.** Update the existing voice/workspace upgrade PR for main, preserve its
+implementation and assets, preserve changes already on main, and remove merge conflicts.
+Do not merge the PR itself or add features as part of this resolution.
+
+**Source identity and resolution.** Started from PR head df7da49 and merged origin/main at
+0ff3355 (PR #1's squash merge). The main tree equals the old feature-branch tree at 0bfea59
+except for the newer YouTube demo thumbnail/link in README.md. This explains the repeated
+feature conflicts introduced by squash history. Resolved all 17 conflicted paths using the
+upgrade versions and kept main's newer demo line. Removed an automatically duplicated block
+in PlatformAutomation; the restored file matches the upgrade version exactly.
+
+**Preservation evidence.** Before this log entry, compared the full resolved working tree/index
+with df7da49: README.md's demo line was the only changed file. All code, config and assets
+were byte-identical to the reviewed upgrade. After this entry, expected differences from that
+head are README.md and this progress log only. No user settings, clipboard or other saved
+application data was accessed or changed.
+
+**Checks actually run in Ubuntu-24.04**, from /home/hardik/projects/dragon with
+/home/hardik/.nvm/versions/node/v24.21.0/bin first on PATH:
+
+- `npm run typecheck` — exit 0 (main and renderer).
+- `npm run build` — exit 0 (clean rebuild of main and renderer; Node v24.21.0).
+- `git diff --check HEAD` — exit 0.
+- `git diff --name-only --diff-filter=U` — empty; no unresolved index entries.
+- Python/subprocess preservation assertions — pass, including the expected single README
+  change before this entry and preservation of the newer main demo link.
+
+No new runtime journey or native/live-service check was run. The earlier disposable /tmp
+harnesses are no longer present; their 2026-10-15 results above remain historical, not rerun
+claims. Build artifacts were regenerated from the preserved source but no running renderer
+or deployed app was asserted to be current. Native verification limits remain unchanged.
+
+Delivery is to the existing PR #2 targeting main. Confirm the pushed SHA equals local HEAD,
+main is an ancestor, and GitHub reports the PR mergeable before reporting resolution complete.
